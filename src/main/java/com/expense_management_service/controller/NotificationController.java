@@ -1,0 +1,50 @@
+package com.expense_management_service.controller;
+
+import com.expense_management_service.common.ApiResponse;
+import com.expense_management_service.dto.request.NotificationRequest;
+import com.expense_management_service.dto.response.NotificationResponse;
+import com.expense_management_service.service.NotificationService;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.UUID;
+
+@RestController
+@RequestMapping("/api/v1/notifications")
+@RequiredArgsConstructor
+public class NotificationController {
+
+    private final NotificationService notificationService;
+
+    @PostMapping
+    @ResponseStatus(HttpStatus.CREATED)
+    public ApiResponse<NotificationResponse> create(@Valid @RequestBody NotificationRequest request) {
+        return ApiResponse.success("Notification created", notificationService.create(request));
+    }
+
+    @PutMapping("/{notificationId}")
+    public ApiResponse<NotificationResponse> update(@PathVariable UUID notificationId,
+                                                     @Valid @RequestBody NotificationRequest request) {
+        return ApiResponse.success("Notification updated", notificationService.update(notificationId, request));
+    }
+
+    @GetMapping("/{notificationId}")
+    public ApiResponse<NotificationResponse> getById(@PathVariable UUID notificationId) {
+        return ApiResponse.success(notificationService.getById(notificationId));
+    }
+
+    @GetMapping
+    public ApiResponse<Page<NotificationResponse>> getAll(Pageable pageable) {
+        return ApiResponse.success(notificationService.getAll(pageable));
+    }
+
+    @DeleteMapping("/{notificationId}")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void delete(@PathVariable UUID notificationId) {
+        notificationService.delete(notificationId);
+    }
+}

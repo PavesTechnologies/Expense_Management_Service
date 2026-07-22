@@ -26,7 +26,7 @@ public class GlAccountMapper {
         entity.setStatus(request.status());
     }
 
-    public GlAccountResponse toResponse(GlAccount entity) {
+    public GlAccountResponse toResponse(GlAccount entity, long mappedCategoryCount) {
         return new GlAccountResponse(
                 entity.getGlAccountId(),
                 entity.getGlAccountCode(),
@@ -35,7 +35,8 @@ public class GlAccountMapper {
                 entity.getDescription(),
                 entity.getStatus(),
                 entity.getCreatedAt(),
-                entity.getUpdatedAt()
+                entity.getUpdatedAt(),
+                mappedCategoryCount
         );
     }
 }

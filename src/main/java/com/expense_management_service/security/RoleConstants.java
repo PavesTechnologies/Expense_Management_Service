@@ -8,13 +8,28 @@ package com.expense_management_service.security;
  * before they become {@link org.springframework.security.core.GrantedAuthority}s,
  * so {@code @PreAuthorize("hasRole('GENERAL')")} matches a raw claim value of "General".
  * <p>
- * Only {@code GENERAL} is confirmed by the sample token; add further roles here as
- * UMS defines them rather than inventing new ones in XMS.
+ * Only {@code GENERAL} is confirmed by the sample token. {@code ADMIN}, {@code FINANCE},
+ * {@code MANAGER}, and {@code EMPLOYEE} are the XMS-module roles expected for expense
+ * management RBAC (GL Account, Expense Category, Cost Center administration, approvals,
+ * etc.) — confirm the exact claim values with the UMS team before relying on them in
+ * production checks.
  */
 public final class RoleConstants {
 
     public static final String GENERAL = "GENERAL";
     public static final String ROLE_GENERAL = SecurityConstants.ROLE_PREFIX + GENERAL;
+
+    public static final String ADMIN = "ADMIN";
+    public static final String ROLE_ADMIN = SecurityConstants.ROLE_PREFIX + ADMIN;
+
+    public static final String FINANCE = "FINANCE";
+    public static final String ROLE_FINANCE = SecurityConstants.ROLE_PREFIX + FINANCE;
+
+    public static final String MANAGER = "MANAGER";
+    public static final String ROLE_MANAGER = SecurityConstants.ROLE_PREFIX + MANAGER;
+
+    public static final String EMPLOYEE = "EMPLOYEE";
+    public static final String ROLE_EMPLOYEE = SecurityConstants.ROLE_PREFIX + EMPLOYEE;
 
     private RoleConstants() {
     }

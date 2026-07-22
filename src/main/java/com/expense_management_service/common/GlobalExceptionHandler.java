@@ -1,0 +1,84 @@
+package com.expense_management_service.common;
+
+import com.expense_management_service.common.exception.ResourceNotFoundException;
+import com.expense_management_service.common.exception.UmsIntegrationException;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.client.ResourceAccessException;
+import org.springframework.web.client.RestClientResponseException;
+
+import java.util.stream.Collectors;
+
+/**
+ * Translates exceptions into the uniform {@link ApiResponse} envelope.
+ * <p>
+ * JWT validation failures (missing/expired/malformed token) are rejected by
+ * Spring Security's resource-server filter chain before a request reaches a
+ * controller, so they are not handled here. This advice covers authorization
+ * failures ({@link AccessDeniedException} — a valid token lacking the required
+ * authority), request validation, not-found, and UMS integration failures.
+ */
+@Slf4j
+@RestControllerAdvice
+public class GlobalExceptionHandler {
+
+    @ExceptionHandler(ResourceNotFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNotFound(ResourceNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(ApiResponse.error("You do not have permission to perform this action"));
+    }
+
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleAuthentication(AuthenticationException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.error("Authentication required"));
+    }
+
+    @ExceptionHandler(MethodArgumentNotValidException.class)
+    public ResponseEntity<ApiResponse<Void>> handleValidation(MethodArgumentNotValidException ex) {
+        String message = ex.getBindingResult().getFieldErrors().stream()
+                .map(error -> error.getField() + ": " + error.getDefaultMessage())
+                .collect(Collectors.joining("; "));
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(message));
+    }
+
+    @ExceptionHandler(UmsIntegrationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUmsIntegration(UmsIntegrationException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(RestClientResponseException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUmsHttpError(RestClientResponseException ex) {
+        // TEMPORARY DIAGNOSTIC LOGGING — remove once the UMS 401 is root-caused.
+        // ex.getStatusText() alone (e.g. "Unauthorized") discards UMS's actual explanation;
+        // the response body is where the real reason (invalid audience, missing scope,
+        // wrong token type, etc.) will show up.
+        log.error("[UMS-IN] UMS call failed with status {} {} — response body: {}",
+                ex.getStatusCode(), ex.getStatusText(), ex.getResponseBodyAsString());
+
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(ApiResponse.error("UMS request failed: " + ex.getStatusText()));
+    }
+
+    @ExceptionHandler(ResourceAccessException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUmsUnreachable(ResourceAccessException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(ApiResponse.error("Could not reach UMS — is it running at the configured ums.base-url?"));
+    }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<ApiResponse<Void>> handleGeneric(Exception ex) {
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(ApiResponse.error("An unexpected error occurred"));
+    }
+}

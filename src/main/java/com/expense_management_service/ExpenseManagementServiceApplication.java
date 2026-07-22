@@ -1,22 +1,19 @@
 package com.expense_management_service;
 
-import org.springframework.boot.SpringApplication;
+import me.paulschwarz.springdotenv.spring.DotenvApplicationInitializer;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
+import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
-import org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration;
 
 
-@SpringBootApplication(
-    exclude = {
-        DataSourceAutoConfiguration.class
-    }
-)
+@SpringBootApplication
 @ConfigurationPropertiesScan
-
 public class ExpenseManagementServiceApplication {
 
 	public static void main(String[] args) {
-		SpringApplication.run(ExpenseManagementServiceApplication.class, args);
+		new SpringApplicationBuilder(ExpenseManagementServiceApplication.class)
+				.initializers(new DotenvApplicationInitializer())
+				.run(args);
 	}
 
 }

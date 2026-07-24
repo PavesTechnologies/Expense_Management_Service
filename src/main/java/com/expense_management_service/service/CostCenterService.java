@@ -2,9 +2,7 @@ package com.expense_management_service.service;
 
 import com.expense_management_service.dto.request.CostCenterRequest;
 import com.expense_management_service.dto.response.CostCenterResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-
+import java.util.List;
 import java.util.UUID;
 
 public interface CostCenterService {
@@ -15,7 +13,7 @@ public interface CostCenterService {
 
     CostCenterResponse getById(UUID costCenterId);
 
-    Page<CostCenterResponse> getAll(Pageable pageable);
+    List<CostCenterResponse> getAll();
 
     void delete(UUID costCenterId);
 }

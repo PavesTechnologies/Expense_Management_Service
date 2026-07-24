@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.CostCenterBudgetRequest;
 import com.expense_management_service.dto.response.CostCenterBudgetResponse;
@@ -10,8 +12,7 @@ import com.expense_management_service.repository.CostCenterBudgetRepository;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.service.CostCenterBudgetService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,8 +50,8 @@ public class CostCenterBudgetServiceImpl implements CostCenterBudgetService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<CostCenterBudgetResponse> getAll(Pageable pageable) {
-        return costCenterBudgetRepository.findAll(pageable).map(costCenterBudgetMapper::toResponse);
+    public List<CostCenterBudgetResponse> getAll() {
+        return costCenterBudgetRepository.findAll().stream().map(costCenterBudgetMapper::toResponse).toList();
     }
 
     @Override

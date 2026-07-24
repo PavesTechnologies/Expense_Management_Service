@@ -11,6 +11,7 @@ public record GlAccountResponse(
         String description,
         String status,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        Long mappedCategoryCount
 ) {
 }

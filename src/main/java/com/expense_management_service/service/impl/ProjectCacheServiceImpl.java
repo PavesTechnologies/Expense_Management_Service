@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ProjectCacheRequest;
 import com.expense_management_service.dto.response.ProjectCacheResponse;
@@ -8,8 +10,7 @@ import com.expense_management_service.mapper.ProjectCacheMapper;
 import com.expense_management_service.repository.ProjectCacheRepository;
 import com.expense_management_service.service.ProjectCacheService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,8 +48,8 @@ public class ProjectCacheServiceImpl implements ProjectCacheService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<ProjectCacheResponse> getAll(Pageable pageable) {
-        return projectCacheRepository.findAll(pageable).map(projectCacheMapper::toResponse);
+    public List<ProjectCacheResponse> getAll() {
+        return projectCacheRepository.findAll().stream().map(projectCacheMapper::toResponse).toList();
     }
 
     @Override

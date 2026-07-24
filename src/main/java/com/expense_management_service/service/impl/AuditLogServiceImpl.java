@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.AuditLogRequest;
 import com.expense_management_service.dto.response.AuditLogResponse;
@@ -8,8 +10,7 @@ import com.expense_management_service.mapper.AuditLogMapper;
 import com.expense_management_service.repository.AuditLogRepository;
 import com.expense_management_service.service.AuditLogService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,8 +47,8 @@ public class AuditLogServiceImpl implements AuditLogService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<AuditLogResponse> getAll(Pageable pageable) {
-        return auditLogRepository.findAll(pageable).map(auditLogMapper::toResponse);
+    public List<AuditLogResponse> getAll() {
+        return auditLogRepository.findAll().stream().map(auditLogMapper::toResponse).toList();
     }
 
     @Override

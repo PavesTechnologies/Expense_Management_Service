@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ApprovalDelegationRequest;
 import com.expense_management_service.dto.response.ApprovalDelegationResponse;
@@ -8,8 +10,7 @@ import com.expense_management_service.mapper.ApprovalDelegationMapper;
 import com.expense_management_service.repository.ApprovalDelegationRepository;
 import com.expense_management_service.service.ApprovalDelegationService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,8 +45,8 @@ public class ApprovalDelegationServiceImpl implements ApprovalDelegationService 
 
     @Override
     @Transactional(readOnly = true)
-    public Page<ApprovalDelegationResponse> getAll(Pageable pageable) {
-        return approvalDelegationRepository.findAll(pageable).map(approvalDelegationMapper::toResponse);
+    public List<ApprovalDelegationResponse> getAll() {
+        return approvalDelegationRepository.findAll().stream().map(approvalDelegationMapper::toResponse).toList();
     }
 
     @Override

@@ -14,6 +14,8 @@ public record ExchangeRateResponse(
         BigDecimal rate,
         LocalDate effectiveDate,
         String source,
-        LocalDateTime createdAt
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt,
+        LocalDateTime fetchedAt
 ) {
 }

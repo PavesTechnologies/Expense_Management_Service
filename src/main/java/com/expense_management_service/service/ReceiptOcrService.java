@@ -1,9 +1,10 @@
 package com.expense_management_service.service;
 
+import java.util.List;
+
 import com.expense_management_service.dto.request.ReceiptOcrRequest;
 import com.expense_management_service.dto.response.ReceiptOcrResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 
 import java.util.UUID;
 
@@ -15,7 +16,7 @@ public interface ReceiptOcrService {
 
     ReceiptOcrResponse getById(UUID ocrId);
 
-    Page<ReceiptOcrResponse> getAll(Pageable pageable);
+    List<ReceiptOcrResponse> getAll();
 
     void delete(UUID ocrId);
 }

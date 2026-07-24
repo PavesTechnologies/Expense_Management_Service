@@ -15,6 +15,9 @@ public class ExpenseCategoryMapper {
                 .description(request.description())
                 .receiptRequired(request.receiptRequired())
                 .maxLimit(request.maxLimit())
+                .taxCode(request.taxCode())
+                .effectiveFrom(request.effectiveFrom())
+                .effectiveTo(request.effectiveTo())
                 .status(request.status())
                 .build();
     }
@@ -25,6 +28,9 @@ public class ExpenseCategoryMapper {
         entity.setDescription(request.description());
         entity.setReceiptRequired(request.receiptRequired());
         entity.setMaxLimit(request.maxLimit());
+        entity.setTaxCode(request.taxCode());
+        entity.setEffectiveFrom(request.effectiveFrom());
+        entity.setEffectiveTo(request.effectiveTo());
         entity.setStatus(request.status());
     }
 
@@ -38,6 +44,9 @@ public class ExpenseCategoryMapper {
                 entity.getDescription(),
                 entity.getReceiptRequired(),
                 entity.getMaxLimit(),
+                entity.getTaxCode(),
+                entity.getEffectiveFrom(),
+                entity.getEffectiveTo(),
                 entity.getStatus(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt()

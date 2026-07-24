@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.IntegrationSyncRequest;
 import com.expense_management_service.dto.response.IntegrationSyncResponse;
@@ -8,8 +10,7 @@ import com.expense_management_service.mapper.IntegrationSyncMapper;
 import com.expense_management_service.repository.IntegrationSyncRepository;
 import com.expense_management_service.service.IntegrationSyncService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -47,8 +48,8 @@ public class IntegrationSyncServiceImpl implements IntegrationSyncService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<IntegrationSyncResponse> getAll(Pageable pageable) {
-        return integrationSyncRepository.findAll(pageable).map(integrationSyncMapper::toResponse);
+    public List<IntegrationSyncResponse> getAll() {
+        return integrationSyncRepository.findAll().stream().map(integrationSyncMapper::toResponse).toList();
     }
 
     @Override

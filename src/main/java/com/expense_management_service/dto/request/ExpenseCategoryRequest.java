@@ -5,6 +5,7 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.UUID;
 
 public record ExpenseCategoryRequest(
@@ -14,6 +15,9 @@ public record ExpenseCategoryRequest(
         String description,
         Boolean receiptRequired,
         BigDecimal maxLimit,
+        @Size(max = 255) String taxCode,
+        @NotNull LocalDate effectiveFrom,
+        LocalDate effectiveTo,
         @Size(max = 255) String status
 ) {
 }

@@ -2,9 +2,7 @@ package com.expense_management_service.service;
 
 import com.expense_management_service.dto.request.ProjectCacheRequest;
 import com.expense_management_service.dto.response.ProjectCacheResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-
+import java.util.List;
 import java.util.UUID;
 
 public interface ProjectCacheService {
@@ -15,7 +13,7 @@ public interface ProjectCacheService {
 
     ProjectCacheResponse getById(UUID projectId);
 
-    Page<ProjectCacheResponse> getAll(Pageable pageable);
+    List<ProjectCacheResponse> getAll();
 
     void delete(UUID projectId);
 }

@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.CostAllocationRequest;
 import com.expense_management_service.dto.response.CostAllocationResponse;
@@ -12,8 +14,7 @@ import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.service.CostAllocationService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -54,8 +55,8 @@ public class CostAllocationServiceImpl implements CostAllocationService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<CostAllocationResponse> getAll(Pageable pageable) {
-        return costAllocationRepository.findAll(pageable).map(costAllocationMapper::toResponse);
+    public List<CostAllocationResponse> getAll() {
+        return costAllocationRepository.findAll().stream().map(costAllocationMapper::toResponse).toList();
     }
 
     @Override

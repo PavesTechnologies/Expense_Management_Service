@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.CashAdvanceRequest;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
@@ -10,8 +12,7 @@ import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.service.CashAdvanceService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,8 +50,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<CashAdvanceResponse> getAll(Pageable pageable) {
-        return cashAdvanceRepository.findAll(pageable).map(cashAdvanceMapper::toResponse);
+    public List<CashAdvanceResponse> getAll() {
+        return cashAdvanceRepository.findAll().stream().map(cashAdvanceMapper::toResponse).toList();
     }
 
     @Override

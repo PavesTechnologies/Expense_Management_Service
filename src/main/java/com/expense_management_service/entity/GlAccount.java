@@ -33,7 +33,7 @@ public class GlAccount {
     @Column(name = "gl_account_name", length = 255, nullable = false)
     private String glAccountName;
 
-    @Column(name = "account_type", length = 255)
+    @Column(name = "account_type", length = 255, nullable = false)
     private String accountType;
 
     @Lob

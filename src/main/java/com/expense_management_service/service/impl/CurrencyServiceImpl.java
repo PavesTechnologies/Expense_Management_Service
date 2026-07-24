@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.CurrencyRequest;
 import com.expense_management_service.dto.response.CurrencyResponse;
@@ -8,8 +10,7 @@ import com.expense_management_service.mapper.CurrencyMapper;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.service.CurrencyService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,8 +45,8 @@ public class CurrencyServiceImpl implements CurrencyService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<CurrencyResponse> getAll(Pageable pageable) {
-        return currencyRepository.findAll(pageable).map(currencyMapper::toResponse);
+    public List<CurrencyResponse> getAll() {
+        return currencyRepository.findAll().stream().map(currencyMapper::toResponse).toList();
     }
 
     @Override

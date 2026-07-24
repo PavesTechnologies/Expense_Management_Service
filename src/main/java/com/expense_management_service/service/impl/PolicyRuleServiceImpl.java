@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.PolicyRuleRequest;
 import com.expense_management_service.dto.response.PolicyRuleResponse;
@@ -10,8 +12,7 @@ import com.expense_management_service.repository.ExpenseCategoryRepository;
 import com.expense_management_service.repository.PolicyRuleRepository;
 import com.expense_management_service.service.PolicyRuleService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,8 +50,8 @@ public class PolicyRuleServiceImpl implements PolicyRuleService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<PolicyRuleResponse> getAll(Pageable pageable) {
-        return policyRuleRepository.findAll(pageable).map(policyRuleMapper::toResponse);
+    public List<PolicyRuleResponse> getAll() {
+        return policyRuleRepository.findAll().stream().map(policyRuleMapper::toResponse).toList();
     }
 
     @Override

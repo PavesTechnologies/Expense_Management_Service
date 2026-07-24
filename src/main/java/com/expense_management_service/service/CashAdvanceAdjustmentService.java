@@ -1,9 +1,10 @@
 package com.expense_management_service.service;
 
+import java.util.List;
+
 import com.expense_management_service.dto.request.CashAdvanceAdjustmentRequest;
 import com.expense_management_service.dto.response.CashAdvanceAdjustmentResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 
 import java.util.UUID;
 
@@ -15,7 +16,7 @@ public interface CashAdvanceAdjustmentService {
 
     CashAdvanceAdjustmentResponse getById(UUID adjustmentId);
 
-    Page<CashAdvanceAdjustmentResponse> getAll(Pageable pageable);
+    List<CashAdvanceAdjustmentResponse> getAll();
 
     void delete(UUID adjustmentId);
 }

@@ -1,21 +1,24 @@
 package com.expense_management_service.controller;
 
+import java.util.List;
+
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.IntegrationSyncRequest;
 import com.expense_management_service.dto.response.IntegrationSyncResponse;
 import com.expense_management_service.service.IntegrationSyncService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.http.HttpStatus;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/api/v1/integration-syncs")
+@RequestMapping("/xms/admin/integration-syncs")
 @RequiredArgsConstructor
+@PreAuthorize("hasRole('ADMIN')")
 public class IntegrationSyncController {
 
     private final IntegrationSyncService integrationSyncService;
@@ -38,8 +41,8 @@ public class IntegrationSyncController {
     }
 
     @GetMapping
-    public ApiResponse<Page<IntegrationSyncResponse>> getAll(Pageable pageable) {
-        return ApiResponse.success(integrationSyncService.getAll(pageable));
+    public ApiResponse<List<IntegrationSyncResponse>> getAll() {
+        return ApiResponse.success(integrationSyncService.getAll());
     }
 
     @DeleteMapping("/{integrationId}")

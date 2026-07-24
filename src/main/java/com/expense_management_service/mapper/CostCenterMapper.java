@@ -12,6 +12,8 @@ public class CostCenterMapper {
         return CostCenter.builder()
                 .costCenterCode(request.costCenterCode())
                 .costCenterName(request.costCenterName())
+                .departmentUuid(request.departmentUuid())
+                .description(request.description())
                 .ownerEmployeeId(request.ownerEmployeeId())
                 .status(request.status())
                 .build();
@@ -20,18 +22,19 @@ public class CostCenterMapper {
     public void updateEntity(CostCenter entity, CostCenterRequest request) {
         entity.setCostCenterCode(request.costCenterCode());
         entity.setCostCenterName(request.costCenterName());
+        entity.setDepartmentUuid(request.departmentUuid());
+        entity.setDescription(request.description());
         entity.setOwnerEmployeeId(request.ownerEmployeeId());
         entity.setStatus(request.status());
     }
 
     public CostCenterResponse toResponse(CostCenter entity) {
-        CostCenter parent = entity.getParentCostCenter();
         return new CostCenterResponse(
                 entity.getCostCenterId(),
                 entity.getCostCenterCode(),
                 entity.getCostCenterName(),
-                parent != null ? parent.getCostCenterId() : null,
-                parent != null ? parent.getCostCenterName() : null,
+                entity.getDepartmentUuid(),
+                entity.getDescription(),
                 entity.getOwnerEmployeeId(),
                 entity.getStatus(),
                 entity.getCreatedAt(),

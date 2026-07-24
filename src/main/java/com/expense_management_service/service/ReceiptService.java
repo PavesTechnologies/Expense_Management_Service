@@ -1,9 +1,10 @@
 package com.expense_management_service.service;
 
+import java.util.List;
+
 import com.expense_management_service.dto.request.ReceiptRequest;
 import com.expense_management_service.dto.response.ReceiptResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 
 import java.util.UUID;
 
@@ -15,7 +16,7 @@ public interface ReceiptService {
 
     ReceiptResponse getById(UUID receiptId);
 
-    Page<ReceiptResponse> getAll(Pageable pageable);
+    List<ReceiptResponse> getAll();
 
     void delete(UUID receiptId);
 }

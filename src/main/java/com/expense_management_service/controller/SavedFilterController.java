@@ -1,21 +1,24 @@
 package com.expense_management_service.controller;
 
+import java.util.List;
+
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.SavedFilterRequest;
 import com.expense_management_service.dto.response.SavedFilterResponse;
 import com.expense_management_service.service.SavedFilterService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.http.HttpStatus;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/api/v1/saved-filters")
+@RequestMapping("/xms/employee/saved-filters")
 @RequiredArgsConstructor
+@PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
 public class SavedFilterController {
 
     private final SavedFilterService savedFilterService;
@@ -37,8 +40,8 @@ public class SavedFilterController {
     }
 
     @GetMapping
-    public ApiResponse<Page<SavedFilterResponse>> getAll(Pageable pageable) {
-        return ApiResponse.success(savedFilterService.getAll(pageable));
+    public ApiResponse<List<SavedFilterResponse>> getAll() {
+        return ApiResponse.success(savedFilterService.getAll());
     }
 
     @DeleteMapping("/{filterId}")

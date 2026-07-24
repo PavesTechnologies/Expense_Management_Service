@@ -1,9 +1,10 @@
 package com.expense_management_service.service;
 
+import java.util.List;
+
 import com.expense_management_service.dto.request.SavedFilterRequest;
 import com.expense_management_service.dto.response.SavedFilterResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 
 import java.util.UUID;
 
@@ -15,7 +16,7 @@ public interface SavedFilterService {
 
     SavedFilterResponse getById(UUID filterId);
 
-    Page<SavedFilterResponse> getAll(Pageable pageable);
+    List<SavedFilterResponse> getAll();
 
     void delete(UUID filterId);
 }

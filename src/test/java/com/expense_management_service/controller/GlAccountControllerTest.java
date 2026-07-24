@@ -68,7 +68,7 @@ class GlAccountControllerTest {
         UUID id = UUID.randomUUID();
         when(glAccountService.create(any())).thenReturn(sampleResponse(id));
 
-        mockMvc.perform(post("/api/v1/gl-accounts")
+        mockMvc.perform(post("/xms/admin/gl-accounts")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_ADMIN)))
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(request)))
@@ -80,7 +80,7 @@ class GlAccountControllerTest {
     void create_returns403_forFinance() throws Exception {
         GlAccountRequest request = new GlAccountRequest("6000", "Travel Expense", "EXPENSE", "desc", "ACTIVE");
 
-        mockMvc.perform(post("/api/v1/gl-accounts")
+        mockMvc.perform(post("/xms/admin/gl-accounts")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE)))
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(request)))
@@ -91,7 +91,7 @@ class GlAccountControllerTest {
     void create_returns401_whenUnauthenticated() throws Exception {
         GlAccountRequest request = new GlAccountRequest("6000", "Travel Expense", "EXPENSE", "desc", "ACTIVE");
 
-        mockMvc.perform(post("/api/v1/gl-accounts")
+        mockMvc.perform(post("/xms/admin/gl-accounts")
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isUnauthorized());
@@ -102,7 +102,7 @@ class GlAccountControllerTest {
         UUID id = UUID.randomUUID();
         when(glAccountService.getById(eq(id))).thenReturn(sampleResponse(id));
 
-        mockMvc.perform(get("/api/v1/gl-accounts/{id}", id)
+        mockMvc.perform(get("/xms/admin/gl-accounts/{id}", id)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.glAccountId").value(id.toString()));
@@ -112,7 +112,7 @@ class GlAccountControllerTest {
     void getById_returns403_forEmployee() throws Exception {
         UUID id = UUID.randomUUID();
 
-        mockMvc.perform(get("/api/v1/gl-accounts/{id}", id)
+        mockMvc.perform(get("/xms/admin/gl-accounts/{id}", id)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
                 .andExpect(status().isForbidden());
     }
@@ -121,7 +121,7 @@ class GlAccountControllerTest {
     void getActive_returns200_forManager() throws Exception {
         when(glAccountService.getActiveAccounts()).thenReturn(List.of(sampleResponse(UUID.randomUUID())));
 
-        mockMvc.perform(get("/api/v1/gl-accounts/active")
+        mockMvc.perform(get("/xms/admin/gl-accounts/active")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_MANAGER))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].status").value("ACTIVE"));
@@ -131,7 +131,7 @@ class GlAccountControllerTest {
     void delete_returns204_forAdmin() throws Exception {
         UUID id = UUID.randomUUID();
 
-        mockMvc.perform(delete("/api/v1/gl-accounts/{id}", id)
+        mockMvc.perform(delete("/xms/admin/gl-accounts/{id}", id)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_ADMIN))))
                 .andExpect(status().isNoContent());
     }
@@ -140,7 +140,7 @@ class GlAccountControllerTest {
     void delete_returns403_forManager() throws Exception {
         UUID id = UUID.randomUUID();
 
-        mockMvc.perform(delete("/api/v1/gl-accounts/{id}", id)
+        mockMvc.perform(delete("/xms/admin/gl-accounts/{id}", id)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_MANAGER))))
                 .andExpect(status().isForbidden());
     }

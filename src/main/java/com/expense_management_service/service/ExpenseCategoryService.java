@@ -2,9 +2,7 @@ package com.expense_management_service.service;
 
 import com.expense_management_service.dto.request.ExpenseCategoryRequest;
 import com.expense_management_service.dto.response.ExpenseCategoryResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-
+import java.util.List;
 import java.util.UUID;
 
 public interface ExpenseCategoryService {
@@ -15,7 +13,10 @@ public interface ExpenseCategoryService {
 
     ExpenseCategoryResponse getById(UUID categoryId);
 
-    Page<ExpenseCategoryResponse> getAll(Pageable pageable);
+    List<ExpenseCategoryResponse> getAll();
+
+    /** Active-only, name-ordered list for downstream pickers (e.g. the Expense Line Item form). */
+    List<ExpenseCategoryResponse> getActiveCategories();
 
     void delete(UUID categoryId);
 }

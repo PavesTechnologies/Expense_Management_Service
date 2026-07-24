@@ -2,9 +2,7 @@ package com.expense_management_service.service;
 
 import com.expense_management_service.dto.request.SystemConfigurationRequest;
 import com.expense_management_service.dto.response.SystemConfigurationResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-
+import java.util.List;
 import java.util.UUID;
 
 public interface SystemConfigurationService {
@@ -15,7 +13,7 @@ public interface SystemConfigurationService {
 
     SystemConfigurationResponse getById(UUID configId);
 
-    Page<SystemConfigurationResponse> getAll(Pageable pageable);
+    List<SystemConfigurationResponse> getAll();
 
     void delete(UUID configId);
 }

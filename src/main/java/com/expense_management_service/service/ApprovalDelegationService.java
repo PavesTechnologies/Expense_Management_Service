@@ -1,9 +1,10 @@
 package com.expense_management_service.service;
 
+import java.util.List;
+
 import com.expense_management_service.dto.request.ApprovalDelegationRequest;
 import com.expense_management_service.dto.response.ApprovalDelegationResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 
 import java.util.UUID;
 
@@ -15,7 +16,7 @@ public interface ApprovalDelegationService {
 
     ApprovalDelegationResponse getById(UUID delegationId);
 
-    Page<ApprovalDelegationResponse> getAll(Pageable pageable);
+    List<ApprovalDelegationResponse> getAll();
 
     void delete(UUID delegationId);
 }

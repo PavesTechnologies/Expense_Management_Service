@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.SavedFilterRequest;
 import com.expense_management_service.dto.response.SavedFilterResponse;
@@ -8,8 +10,7 @@ import com.expense_management_service.mapper.SavedFilterMapper;
 import com.expense_management_service.repository.SavedFilterRepository;
 import com.expense_management_service.service.SavedFilterService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,8 +45,8 @@ public class SavedFilterServiceImpl implements SavedFilterService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<SavedFilterResponse> getAll(Pageable pageable) {
-        return savedFilterRepository.findAll(pageable).map(savedFilterMapper::toResponse);
+    public List<SavedFilterResponse> getAll() {
+        return savedFilterRepository.findAll().stream().map(savedFilterMapper::toResponse).toList();
     }
 
     @Override

@@ -2,9 +2,7 @@ package com.expense_management_service.service;
 
 import com.expense_management_service.dto.request.PolicyRuleRequest;
 import com.expense_management_service.dto.response.PolicyRuleResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-
+import java.util.List;
 import java.util.UUID;
 
 public interface PolicyRuleService {
@@ -15,7 +13,7 @@ public interface PolicyRuleService {
 
     PolicyRuleResponse getById(UUID policyId);
 
-    Page<PolicyRuleResponse> getAll(Pageable pageable);
+    List<PolicyRuleResponse> getAll();
 
     void delete(UUID policyId);
 }

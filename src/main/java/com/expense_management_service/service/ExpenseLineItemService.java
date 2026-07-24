@@ -2,9 +2,7 @@ package com.expense_management_service.service;
 
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-
+import java.util.List;
 import java.util.UUID;
 
 public interface ExpenseLineItemService {
@@ -15,7 +13,7 @@ public interface ExpenseLineItemService {
 
     ExpenseLineItemResponse getById(UUID lineItemId);
 
-    Page<ExpenseLineItemResponse> getAll(Pageable pageable);
+    List<ExpenseLineItemResponse> getAll();
 
     void delete(UUID lineItemId);
 }

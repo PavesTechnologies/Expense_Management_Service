@@ -1,9 +1,10 @@
 package com.expense_management_service.service;
 
+import java.util.List;
+
 import com.expense_management_service.dto.request.NotificationRequest;
 import com.expense_management_service.dto.response.NotificationResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 
 import java.util.UUID;
 
@@ -15,7 +16,7 @@ public interface NotificationService {
 
     NotificationResponse getById(UUID notificationId);
 
-    Page<NotificationResponse> getAll(Pageable pageable);
+    List<NotificationResponse> getAll();
 
     void delete(UUID notificationId);
 }

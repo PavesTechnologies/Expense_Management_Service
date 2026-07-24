@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ApprovalMatrixRequest;
 import com.expense_management_service.dto.response.ApprovalMatrixResponse;
@@ -10,8 +12,7 @@ import com.expense_management_service.repository.ApprovalMatrixRepository;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.service.ApprovalMatrixService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -49,8 +50,8 @@ public class ApprovalMatrixServiceImpl implements ApprovalMatrixService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<ApprovalMatrixResponse> getAll(Pageable pageable) {
-        return approvalMatrixRepository.findAll(pageable).map(approvalMatrixMapper::toResponse);
+    public List<ApprovalMatrixResponse> getAll() {
+        return approvalMatrixRepository.findAll().stream().map(approvalMatrixMapper::toResponse).toList();
     }
 
     @Override

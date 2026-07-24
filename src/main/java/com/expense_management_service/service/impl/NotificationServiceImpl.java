@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.NotificationRequest;
 import com.expense_management_service.dto.response.NotificationResponse;
@@ -8,8 +10,7 @@ import com.expense_management_service.mapper.NotificationMapper;
 import com.expense_management_service.repository.NotificationRepository;
 import com.expense_management_service.service.NotificationService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,8 +47,8 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<NotificationResponse> getAll(Pageable pageable) {
-        return notificationRepository.findAll(pageable).map(notificationMapper::toResponse);
+    public List<NotificationResponse> getAll() {
+        return notificationRepository.findAll().stream().map(notificationMapper::toResponse).toList();
     }
 
     @Override

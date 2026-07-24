@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.CostCenterRequest;
 import com.expense_management_service.dto.response.CostCenterResponse;
@@ -8,8 +10,7 @@ import com.expense_management_service.mapper.CostCenterMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.service.CostCenterService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -46,8 +47,8 @@ public class CostCenterServiceImpl implements CostCenterService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<CostCenterResponse> getAll(Pageable pageable) {
-        return costCenterRepository.findAll(pageable).map(costCenterMapper::toResponse);
+    public List<CostCenterResponse> getAll() {
+        return costCenterRepository.findAll().stream().map(costCenterMapper::toResponse).toList();
     }
 
     @Override

@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ApprovalTaskRequest;
 import com.expense_management_service.dto.response.ApprovalTaskResponse;
@@ -10,8 +12,7 @@ import com.expense_management_service.repository.ApprovalTaskRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.service.ApprovalTaskService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,8 +52,8 @@ public class ApprovalTaskServiceImpl implements ApprovalTaskService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<ApprovalTaskResponse> getAll(Pageable pageable) {
-        return approvalTaskRepository.findAll(pageable).map(approvalTaskMapper::toResponse);
+    public List<ApprovalTaskResponse> getAll() {
+        return approvalTaskRepository.findAll().stream().map(approvalTaskMapper::toResponse).toList();
     }
 
     @Override

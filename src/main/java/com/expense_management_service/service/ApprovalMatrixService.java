@@ -2,9 +2,7 @@ package com.expense_management_service.service;
 
 import com.expense_management_service.dto.request.ApprovalMatrixRequest;
 import com.expense_management_service.dto.response.ApprovalMatrixResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
-
+import java.util.List;
 import java.util.UUID;
 
 public interface ApprovalMatrixService {
@@ -15,7 +13,7 @@ public interface ApprovalMatrixService {
 
     ApprovalMatrixResponse getById(UUID matrixId);
 
-    Page<ApprovalMatrixResponse> getAll(Pageable pageable);
+    List<ApprovalMatrixResponse> getAll();
 
     void delete(UUID matrixId);
 }

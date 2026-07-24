@@ -14,7 +14,7 @@ import java.util.List;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/api/v1/gl-accounts")
+@RequestMapping("/xms/admin/gl-accounts")
 @RequiredArgsConstructor
 public class GlAccountController {
 

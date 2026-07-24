@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.SystemConfigurationRequest;
 import com.expense_management_service.dto.response.SystemConfigurationResponse;
@@ -8,8 +10,7 @@ import com.expense_management_service.mapper.SystemConfigurationMapper;
 import com.expense_management_service.repository.SystemConfigurationRepository;
 import com.expense_management_service.service.SystemConfigurationService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -44,8 +45,8 @@ public class SystemConfigurationServiceImpl implements SystemConfigurationServic
 
     @Override
     @Transactional(readOnly = true)
-    public Page<SystemConfigurationResponse> getAll(Pageable pageable) {
-        return systemConfigurationRepository.findAll(pageable).map(systemConfigurationMapper::toResponse);
+    public List<SystemConfigurationResponse> getAll() {
+        return systemConfigurationRepository.findAll().stream().map(systemConfigurationMapper::toResponse).toList();
     }
 
     @Override

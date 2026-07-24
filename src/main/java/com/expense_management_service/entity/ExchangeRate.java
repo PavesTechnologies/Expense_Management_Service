@@ -3,6 +3,7 @@ package com.expense_management_service.entity;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -10,7 +11,8 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "exchange_rate")
+@Table(name = "exchange_rate", uniqueConstraints = @UniqueConstraint(
+        columnNames = {"from_currency_id", "to_currency_id", "effective_date"}))
 @Getter
 @Setter
 @NoArgsConstructor
@@ -48,4 +50,12 @@ public class ExchangeRate {
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
+
+    /** When this rate value was actually retrieved from its source (manual entry or the refresh job), as opposed to {@link #createdAt} (row insert time). */
+    @Column(name = "fetched_at")
+    private LocalDateTime fetchedAt;
 }

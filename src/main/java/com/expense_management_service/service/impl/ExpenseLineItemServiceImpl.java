@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
@@ -18,8 +20,7 @@ import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.ProjectCacheRepository;
 import com.expense_management_service.service.ExpenseLineItemService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -61,8 +62,8 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<ExpenseLineItemResponse> getAll(Pageable pageable) {
-        return expenseLineItemRepository.findAll(pageable).map(expenseLineItemMapper::toResponse);
+    public List<ExpenseLineItemResponse> getAll() {
+        return expenseLineItemRepository.findAll().stream().map(expenseLineItemMapper::toResponse).toList();
     }
 
     @Override

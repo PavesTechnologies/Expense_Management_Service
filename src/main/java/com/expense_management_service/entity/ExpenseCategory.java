@@ -6,13 +6,17 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
 @Entity
-@Table(name = "expense_category", uniqueConstraints = @UniqueConstraint(columnNames = "category_code"))
+@Table(name = "expense_category", uniqueConstraints = {
+        @UniqueConstraint(columnNames = "category_code"),
+        @UniqueConstraint(columnNames = "category_name")
+})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -48,6 +52,15 @@ public class ExpenseCategory {
 
     @Column(name = "max_limit", precision = 19, scale = 4)
     private BigDecimal maxLimit;
+
+    @Column(name = "tax_code", length = 255)
+    private String taxCode;
+
+    @Column(name = "effective_from", nullable = false)
+    private LocalDate effectiveFrom;
+
+    @Column(name = "effective_to")
+    private LocalDate effectiveTo;
 
     @Column(name = "status", length = 255)
     private String status;

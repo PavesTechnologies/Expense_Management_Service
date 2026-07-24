@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import java.util.List;
+
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ReceiptOcrRequest;
 import com.expense_management_service.dto.response.ReceiptOcrResponse;
@@ -10,8 +12,7 @@ import com.expense_management_service.repository.ReceiptOcrRepository;
 import com.expense_management_service.repository.ReceiptRepository;
 import com.expense_management_service.service.ReceiptOcrService;
 import lombok.RequiredArgsConstructor;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -51,8 +52,8 @@ public class ReceiptOcrServiceImpl implements ReceiptOcrService {
 
     @Override
     @Transactional(readOnly = true)
-    public Page<ReceiptOcrResponse> getAll(Pageable pageable) {
-        return receiptOcrRepository.findAll(pageable).map(receiptOcrMapper::toResponse);
+    public List<ReceiptOcrResponse> getAll() {
+        return receiptOcrRepository.findAll().stream().map(receiptOcrMapper::toResponse).toList();
     }
 
     @Override

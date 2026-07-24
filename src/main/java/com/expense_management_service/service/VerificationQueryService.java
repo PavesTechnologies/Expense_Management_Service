@@ -1,9 +1,10 @@
 package com.expense_management_service.service;
 
+import java.util.List;
+
 import com.expense_management_service.dto.request.VerificationQueryRequest;
 import com.expense_management_service.dto.response.VerificationQueryResponse;
-import org.springframework.data.domain.Page;
-import org.springframework.data.domain.Pageable;
+
 
 import java.util.UUID;
 
@@ -15,7 +16,7 @@ public interface VerificationQueryService {
 
     VerificationQueryResponse getById(UUID queryId);
 
-    Page<VerificationQueryResponse> getAll(Pageable pageable);
+    List<VerificationQueryResponse> getAll();
 
     void delete(UUID queryId);
 }

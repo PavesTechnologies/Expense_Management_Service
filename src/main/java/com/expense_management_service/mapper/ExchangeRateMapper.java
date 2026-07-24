@@ -32,7 +32,9 @@ public class ExchangeRateMapper {
                 entity.getRate(),
                 entity.getEffectiveDate(),
                 entity.getSource(),
-                entity.getCreatedAt()
+                entity.getCreatedAt(),
+                entity.getUpdatedAt(),
+                entity.getFetchedAt()
         );
     }
 }

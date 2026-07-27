@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "cost_center_budget")
+@Table(name = "cost_center_budget", uniqueConstraints = @UniqueConstraint(columnNames = {"cost_center_id", "fiscal_year"}))
 @Getter
 @Setter
 @NoArgsConstructor
@@ -37,7 +37,7 @@ public class CostCenterBudget {
     @Column(name = "budget_amount", precision = 19, scale = 4, nullable = false)
     private BigDecimal budgetAmount;
 
-    @Column(name = "available_budget", precision = 19, scale = 4)
+    @Column(name = "available_budget", precision = 19, scale = 4, nullable = false)
     private BigDecimal availableBudget;
 
     @CreationTimestamp

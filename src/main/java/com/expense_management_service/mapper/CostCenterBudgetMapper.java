@@ -8,18 +8,17 @@ import org.springframework.stereotype.Component;
 @Component
 public class CostCenterBudgetMapper {
 
+    /** {@code availableBudget} is deliberately not mapped here — the service owns its default-fill and cross-field validation against {@code budgetAmount}. */
     public CostCenterBudget toEntity(CostCenterBudgetRequest request) {
         return CostCenterBudget.builder()
                 .fiscalYear(request.fiscalYear())
                 .budgetAmount(request.budgetAmount())
-                .availableBudget(request.availableBudget())
                 .build();
     }
 
     public void updateEntity(CostCenterBudget entity, CostCenterBudgetRequest request) {
         entity.setFiscalYear(request.fiscalYear());
         entity.setBudgetAmount(request.budgetAmount());
-        entity.setAvailableBudget(request.availableBudget());
     }
 
     public CostCenterBudgetResponse toResponse(CostCenterBudget entity) {

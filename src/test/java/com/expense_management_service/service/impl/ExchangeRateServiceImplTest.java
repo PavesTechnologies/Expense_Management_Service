@@ -16,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -54,6 +55,7 @@ class ExchangeRateServiceImplTest {
     void setUp() {
         exchangeRateService = new ExchangeRateServiceImpl(
                 exchangeRateRepository, currencyRepository, new ExchangeRateMapper(), exchangeRateProvider);
+        ReflectionTestUtils.setField(exchangeRateService, "baseCurrencyCode", "INR");
 
         usd = Currency.builder().currencyId(UUID.randomUUID()).currencyCode("USD")
                 .currencyName("US Dollar").decimalPlaces(2).status("ACTIVE").build();
@@ -283,8 +285,7 @@ class ExchangeRateServiceImplTest {
         assertThat(response.pairsProcessed()).isEqualTo(2);
         assertThat(response.ratesCreated()).isEqualTo(2);
         assertThat(response.ratesSkipped()).isZero();
-
-        
+        verify(exchangeRateRepository, times(2)).save(any(ExchangeRate.class));
     }
 
     @Test

@@ -15,8 +15,14 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
+/**
+ * Add/edit/delete expense line item endpoints (EP02-S2), nested under their parent report
+ * so a line item can never be addressed independently of the report it belongs to.
+ * Ownership and status-gating (Draft / Policy Rejected / Query Raised only) are enforced
+ * inside {@link ExpenseLineItemService}.
+ */
 @RestController
-@RequestMapping("/xms/employee/expenses")
+@RequestMapping("/xms/employee/expense-reports/{reportId}/line-items")
 @RequiredArgsConstructor
 public class ExpenseLineItemController {
 
@@ -25,33 +31,35 @@ public class ExpenseLineItemController {
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
-    public ApiResponse<ExpenseLineItemResponse> create(@Valid @RequestBody ExpenseLineItemRequest request) {
-        return ApiResponse.success("Expense line item created", expenseLineItemService.create(request));
+    public ApiResponse<ExpenseLineItemResponse> create(@PathVariable UUID reportId,
+                                                        @Valid @RequestBody ExpenseLineItemRequest request) {
+        return ApiResponse.success("Expense line item added", expenseLineItemService.create(reportId, request));
     }
 
     @PutMapping("/{lineItemId}")
     @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
-    public ApiResponse<ExpenseLineItemResponse> update(@PathVariable UUID lineItemId,
+    public ApiResponse<ExpenseLineItemResponse> update(@PathVariable UUID reportId,
+                                                        @PathVariable UUID lineItemId,
                                                         @Valid @RequestBody ExpenseLineItemRequest request) {
-        return ApiResponse.success("Expense line item updated", expenseLineItemService.update(lineItemId, request));
+        return ApiResponse.success("Expense line item updated", expenseLineItemService.update(reportId, lineItemId, request));
     }
 
     @GetMapping("/{lineItemId}")
     @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
-    public ApiResponse<ExpenseLineItemResponse> getById(@PathVariable UUID lineItemId) {
-        return ApiResponse.success(expenseLineItemService.getById(lineItemId));
+    public ApiResponse<ExpenseLineItemResponse> getById(@PathVariable UUID reportId, @PathVariable UUID lineItemId) {
+        return ApiResponse.success(expenseLineItemService.getById(reportId, lineItemId));
     }
 
     @GetMapping
     @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
-    public ApiResponse<List<ExpenseLineItemResponse>> getAll() {
-        return ApiResponse.success(expenseLineItemService.getAll());
+    public ApiResponse<List<ExpenseLineItemResponse>> getAll(@PathVariable UUID reportId) {
+        return ApiResponse.success(expenseLineItemService.getAllForReport(reportId));
     }
 
     @DeleteMapping("/{lineItemId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    @PreAuthorize("hasRole('ADMIN')")
-    public void delete(@PathVariable UUID lineItemId) {
-        expenseLineItemService.delete(lineItemId);
+    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
+    public void delete(@PathVariable UUID reportId, @PathVariable UUID lineItemId) {
+        expenseLineItemService.delete(reportId, lineItemId);
     }
 }

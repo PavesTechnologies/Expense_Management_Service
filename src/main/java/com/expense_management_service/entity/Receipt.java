@@ -30,14 +30,20 @@ public class Receipt {
     @ToString.Exclude
     private ExpenseLineItem lineItem;
 
-    @Column(name = "file_name", length = 255, nullable = false)
-    private String fileName;
+    /** Original file name as supplied by the browser, e.g. "taxi-receipt.pdf" — used for display and as the download file name. */
+    @Column(name = "original_file_name", length = 255, nullable = false)
+    private String originalFileName;
 
-    @Column(name = "file_path", length = 255)
-    private String filePath;
+    /** Sanitized, de-duplicated file name actually stored in S3 (the last path segment of {@link #objectKey}). */
+    @Column(name = "stored_file_name", length = 255, nullable = false)
+    private String storedFileName;
 
-    @Column(name = "file_type", length = 255)
-    private String fileType;
+    /** Full S3 object key, e.g. "receipts/{employeeId}/{reportId}/{lineItemId}/{uuid}-taxi-receipt.pdf". Never exposed to clients. */
+    @Column(name = "object_key", length = 512, nullable = false)
+    private String objectKey;
+
+    @Column(name = "content_type", length = 255)
+    private String contentType;
 
     @Column(name = "file_size")
     private Integer fileSize;

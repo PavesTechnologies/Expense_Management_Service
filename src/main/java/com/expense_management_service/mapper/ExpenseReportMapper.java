@@ -10,39 +10,25 @@ public class ExpenseReportMapper {
 
     public ExpenseReport toEntity(ExpenseReportRequest request) {
         return ExpenseReport.builder()
-                .reportNumber(request.reportNumber())
-                .employeeId(request.employeeId())
                 .title(request.title())
                 .businessPurpose(request.businessPurpose())
-                .reportStatus(request.reportStatus())
-                .totalAmount(request.totalAmount())
-                .reimbursableAmount(request.reimbursableAmount())
-                .submittedAt(request.submittedAt())
-                .approvedAt(request.approvedAt())
-                .closedAt(request.closedAt())
                 .build();
     }
 
+    /** Only the fields an owner may revise while a report stays editable — identity, number, fiscal period and workflow timestamps are immutable via this path. */
     public void updateEntity(ExpenseReport entity, ExpenseReportRequest request) {
-        entity.setReportNumber(request.reportNumber());
-        entity.setEmployeeId(request.employeeId());
         entity.setTitle(request.title());
         entity.setBusinessPurpose(request.businessPurpose());
-        entity.setReportStatus(request.reportStatus());
-        entity.setTotalAmount(request.totalAmount());
-        entity.setReimbursableAmount(request.reimbursableAmount());
-        entity.setSubmittedAt(request.submittedAt());
-        entity.setApprovedAt(request.approvedAt());
-        entity.setClosedAt(request.closedAt());
     }
 
-    public ExpenseReportResponse toResponse(ExpenseReport entity) {
+    public ExpenseReportResponse toResponse(ExpenseReport entity, boolean editable, boolean deletable) {
         return new ExpenseReportResponse(
                 entity.getReportId(),
                 entity.getReportNumber(),
                 entity.getEmployeeId(),
                 entity.getTitle(),
                 entity.getBusinessPurpose(),
+                entity.getFiscalYear(),
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterId() : null,
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterName() : null,
                 entity.getReportStatus(),
@@ -54,7 +40,10 @@ public class ExpenseReportMapper {
                 entity.getApprovedAt(),
                 entity.getClosedAt(),
                 entity.getCreatedAt(),
-                entity.getUpdatedAt()
+                entity.getUpdatedAt(),
+                entity.getExpenseLineItems() == null ? 0 : entity.getExpenseLineItems().size(),
+                editable,
+                deletable
         );
     }
 }

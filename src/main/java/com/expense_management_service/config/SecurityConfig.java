@@ -36,20 +36,39 @@ public class SecurityConfig {
     private final JwtAuthConverter jwtAuthConverter;
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
-        http
-                .csrf(csrf -> csrf.disable())
-                .formLogin(form -> form.disable())
-                .httpBasic(basic -> basic.disable())
-                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
-                .authorizeHttpRequests(auth -> auth
-                        .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
-                        .anyRequest().authenticated()
-                )
-                .oauth2ResourceServer(oauth2 -> oauth2
-                        .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthConverter))
-                );
+public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
 
-        return http.build();
-    }
+    http
+            .csrf(csrf -> csrf.disable())
+
+            .cors(cors -> {})
+
+            .formLogin(form -> form.disable())
+
+            .httpBasic(basic -> basic.disable())
+
+            .sessionManagement(session ->
+                    session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+            )
+
+            .authorizeHttpRequests(auth -> auth
+
+                    // Allow CORS preflight requests
+                    .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
+
+                    // Public endpoints
+                    .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
+
+                    // Everything else requires JWT
+                    .anyRequest().authenticated()
+            )
+
+            .oauth2ResourceServer(oauth2 ->
+                    oauth2.jwt(jwt ->
+                            jwt.jwtAuthenticationConverter(jwtAuthConverter)
+                    )
+            );
+
+    return http.build();
 }
+        }

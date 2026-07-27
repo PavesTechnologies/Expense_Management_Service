@@ -1,9 +1,12 @@
 package com.expense_management_service.common;
 
+import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.DuplicateResourceException;
+import com.expense_management_service.common.exception.EmployeeInactiveException;
 import com.expense_management_service.common.exception.ResourceInUseException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.common.exception.UmsIntegrationException;
+import com.expense_management_service.storage.StorageException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.core.PropertyReferenceException;
@@ -16,6 +19,8 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientResponseException;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.MultipartException;
 
 import java.util.stream.Collectors;
 
@@ -83,6 +88,16 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.error(ex.getMessage()));
     }
 
+    @ExceptionHandler(BusinessRuleViolationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleBusinessRuleViolation(BusinessRuleViolationException ex) {
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(ApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(EmployeeInactiveException.class)
+    public ResponseEntity<ApiResponse<Void>> handleEmployeeInactive(EmployeeInactiveException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.error(ex.getMessage()));
+    }
+
     @ExceptionHandler(UmsIntegrationException.class)
     public ResponseEntity<ApiResponse<Void>> handleUmsIntegration(UmsIntegrationException ex) {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(ex.getMessage()));
@@ -105,6 +120,25 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Void>> handleUmsUnreachable(ResourceAccessException ex) {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(ApiResponse.error("Could not reach UMS — is it running at the configured ums.base-url?"));
+    }
+
+    @ExceptionHandler(MaxUploadSizeExceededException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMaxUploadSizeExceeded(MaxUploadSizeExceededException ex) {
+        return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
+                .body(ApiResponse.error("Uploaded file exceeds the maximum allowed size"));
+    }
+
+    @ExceptionHandler(MultipartException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMultipartError(MultipartException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error("Request must be a valid multipart/form-data upload with a 'file' part"));
+    }
+
+    @ExceptionHandler(StorageException.class)
+    public ResponseEntity<ApiResponse<Void>> handleStorageFailure(StorageException ex) {
+        log.error("S3 storage operation failed", ex);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(ApiResponse.error("File storage is temporarily unavailable — please try again"));
     }
 
     @ExceptionHandler(Exception.class)

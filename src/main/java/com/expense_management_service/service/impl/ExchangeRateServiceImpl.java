@@ -24,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.UUID;
@@ -124,6 +125,26 @@ public class ExchangeRateServiceImpl implements ExchangeRateService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "No exchange rate is available for this currency pair effective on or before " + asOfDate));
         return exchangeRateMapper.toResponse(rate);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public BigDecimal convertAmount(BigDecimal amount, UUID fromCurrencyId, UUID toCurrencyId, LocalDate asOfDate) {
+        if (amount == null) {
+            return null;
+        }
+        if (fromCurrencyId.equals(toCurrencyId)) {
+            return amount;
+        }
+
+        ExchangeRate rate = exchangeRateRepository
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(
+                        fromCurrencyId, toCurrencyId, asOfDate)
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "No exchange rate is available for this currency pair effective on or before " + asOfDate));
+
+        Currency toCurrency = findCurrency(toCurrencyId);
+        return amount.multiply(rate.getRate()).setScale(toCurrency.getDecimalPlaces(), RoundingMode.HALF_UP);
     }
 
     @Override

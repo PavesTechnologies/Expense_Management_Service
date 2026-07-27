@@ -1,5 +1,6 @@
 package com.expense_management_service.entity;
 
+import com.expense_management_service.enums.ReportStatus;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
@@ -46,8 +47,9 @@ public class ExpenseReport {
     @ToString.Exclude
     private CostCenter costCenter;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "report_status", length = 255)
-    private String reportStatus;
+    private ReportStatus reportStatus;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "currency_id", nullable = false)
@@ -76,6 +78,11 @@ public class ExpenseReport {
     @UpdateTimestamp
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    /** Optimistic lock - protects against two concurrent approval actions racing on the same report. */
+    @Version
+    @Column(name = "version")
+    private Long version;
 
     @OneToMany(mappedBy = "report", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default

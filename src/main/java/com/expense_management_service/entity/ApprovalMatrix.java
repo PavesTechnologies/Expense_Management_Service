@@ -1,5 +1,7 @@
 package com.expense_management_service.entity;
 
+import com.expense_management_service.enums.ApprovalMode;
+import com.expense_management_service.enums.ApproverType;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
@@ -40,11 +42,17 @@ public class ApprovalMatrix {
     @Column(name = "approval_level")
     private Integer approvalLevel;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "approver_type", length = 255)
-    private String approverType;
+    private ApproverType approverType;
 
     @Column(name = "approver_reference", length = 255)
     private String approverReference;
+
+    /** Sequential vs. parallel-any vs. parallel-all for this level (see EP06 plan, S1). */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "approval_mode", length = 255)
+    private ApprovalMode approvalMode;
 
     @Column(name = "status", length = 255)
     private String status;

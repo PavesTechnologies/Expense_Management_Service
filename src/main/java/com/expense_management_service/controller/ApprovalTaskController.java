@@ -3,9 +3,12 @@ package com.expense_management_service.controller;
 import java.util.List;
 
 import com.expense_management_service.common.ApiResponse;
+import com.expense_management_service.dto.request.ApprovalActionRequest;
 import com.expense_management_service.dto.request.ApprovalTaskRequest;
 import com.expense_management_service.dto.response.ApprovalTaskResponse;
+import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.ApprovalTaskService;
+import com.expense_management_service.service.ApprovalWorkflowService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
@@ -21,6 +24,8 @@ import java.util.UUID;
 public class ApprovalTaskController {
 
     private final ApprovalTaskService approvalTaskService;
+    private final ApprovalWorkflowService approvalWorkflowService;
+    private final CurrentUserService currentUserService;
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -52,5 +57,29 @@ public class ApprovalTaskController {
     @PreAuthorize("hasRole('ADMIN')")
     public void delete(@PathVariable UUID taskId) {
         approvalTaskService.delete(taskId);
+    }
+
+    @PostMapping("/{taskId}/approve")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE')")
+    public ApiResponse<ApprovalTaskResponse> approve(@PathVariable UUID taskId,
+                                                      @RequestBody(required = false) ApprovalActionRequest request) {
+        String comments = request != null ? request.comments() : null;
+        return ApiResponse.success("Approval task approved",
+                approvalWorkflowService.approve(taskId, currentUserService.getEmployeeId(), comments));
+    }
+
+    @PostMapping("/{taskId}/reject")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE')")
+    public ApiResponse<ApprovalTaskResponse> reject(@PathVariable UUID taskId,
+                                                     @RequestBody(required = false) ApprovalActionRequest request) {
+        String comments = request != null ? request.comments() : null;
+        return ApiResponse.success("Approval task rejected",
+                approvalWorkflowService.reject(taskId, currentUserService.getEmployeeId(), comments));
+    }
+
+    @GetMapping("/my-queue")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','EMPLOYEE')")
+    public ApiResponse<List<ApprovalTaskResponse>> myQueue() {
+        return ApiResponse.success(approvalWorkflowService.getMyQueue(currentUserService.getEmployeeId()));
     }
 }

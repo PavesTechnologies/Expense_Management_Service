@@ -18,9 +18,10 @@ import com.expense_management_service.repository.ApprovalMatrixRepository;
 import com.expense_management_service.repository.ApprovalTaskRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
-import com.expense_management_service.repository.SystemConfigurationRepository;
 import com.expense_management_service.service.ApproverResolver;
+import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
+import com.expense_management_service.service.SlaPolicyService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -57,9 +58,10 @@ class ApprovalWorkflowServiceImplTest {
     @Mock private ApprovalTaskRepository approvalTaskRepository;
     @Mock private ApprovalMatrixRepository approvalMatrixRepository;
     @Mock private CurrencyRepository currencyRepository;
-    @Mock private SystemConfigurationRepository systemConfigurationRepository;
     @Mock private ExchangeRateService exchangeRateService;
     @Mock private ApproverResolver approverResolver;
+    @Mock private DelegationService delegationService;
+    @Mock private SlaPolicyService slaPolicyService;
 
     private ApprovalWorkflowServiceImpl service;
 
@@ -72,8 +74,8 @@ class ApprovalWorkflowServiceImplTest {
     void setUp() {
         service = new ApprovalWorkflowServiceImpl(
                 expenseReportRepository, approvalTaskRepository, approvalMatrixRepository,
-                currencyRepository, systemConfigurationRepository, exchangeRateService,
-                approverResolver, new ExpenseReportMapper(), new ApprovalTaskMapper());
+                currencyRepository, exchangeRateService,
+                approverResolver, delegationService, slaPolicyService, new ExpenseReportMapper(), new ApprovalTaskMapper());
 
         reportId = UUID.randomUUID();
         costCenterId = UUID.randomUUID();
@@ -94,8 +96,13 @@ class ApprovalWorkflowServiceImplTest {
         when(expenseReportRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
         when(currencyRepository.findByCurrencyCode(any())).thenReturn(Optional.of(currency));
         when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(BigDecimal.valueOf(1000));
+        when(slaPolicyService.resolveSlaBusinessDays()).thenReturn(3);
         when(approverResolver.resolve(any(ApprovalMatrix.class), anyString()))
                 .thenAnswer(inv -> Optional.of(((ApprovalMatrix) inv.getArgument(0)).getApproverReference()));
+        // Default: only the assigned approver can act (mirrors the old plain-equality check).
+        // Delegate-specific tests below override this per-test.
+        when(delegationService.canAct(anyString(), anyString()))
+                .thenAnswer(inv -> inv.getArgument(0).equals(inv.getArgument(1)));
 
         savedTasks.clear();
         when(approvalTaskRepository.save(any())).thenAnswer(inv -> {
@@ -313,6 +320,28 @@ class ApprovalWorkflowServiceImplTest {
     }
 
     @Test
+    void approve_parallelAll_completesLevel_whenASiblingWasSkippedAsADuplicate() {
+        // Regression: a same-level duplicate approver (fin-alex configured twice at level 1) is
+        // SKIPPED, not APPROVED. isLevelComplete must not require a SKIPPED sibling to also
+        // become APPROVED - that can never happen, and would leave the level permanently stuck.
+        givenMatrix(
+                matrixRow(1, "fin-alex", ApprovalMode.PARALLEL_ALL),
+                matrixRow(1, "fin-alex", ApprovalMode.PARALLEL_ALL),
+                matrixRow(1, "fin-priya", ApprovalMode.PARALLEL_ALL));
+        service.submit(reportId);
+        List<ApprovalTask> level1 = tasksAtLevel(1);
+        ApprovalTask skipped = level1.stream().filter(t -> t.getTaskStatus() == TaskStatus.SKIPPED).findFirst().orElseThrow();
+        ApprovalTask alexTask = level1.stream()
+                .filter(t -> t.getApproverId().equals("fin-alex") && t != skipped).findFirst().orElseThrow();
+        ApprovalTask priyaTask = level1.stream().filter(t -> t.getApproverId().equals("fin-priya")).findFirst().orElseThrow();
+
+        service.approve(alexTask.getTaskId(), "fin-alex", null);
+        service.approve(priyaTask.getTaskId(), "fin-priya", null);
+
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+    }
+
+    @Test
     void approve_throwsIllegalArgumentException_whenTaskIsNotPending() {
         givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
         service.submit(reportId);
@@ -331,6 +360,45 @@ class ApprovalWorkflowServiceImplTest {
 
         assertThatThrownBy(() -> service.approve(task.getTaskId(), "someone-else", null))
                 .isInstanceOf(AccessDeniedException.class);
+    }
+
+    // ---- delegation (Phase 3) ----
+
+    @Test
+    void approve_succeeds_whenActingUserIsAnActiveDelegate_andRecordsActedBy() {
+        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
+        service.submit(reportId);
+        ApprovalTask task = tasksAtLevel(1).get(0);
+        when(delegationService.canAct("mgr-alex", "mgr-jane")).thenReturn(true);
+
+        ApprovalTaskResponse response = service.approve(task.getTaskId(), "mgr-alex", "covering for jane");
+
+        assertThat(response.taskStatus()).isEqualTo("APPROVED");
+        // approverId must NOT change - the delegate acted on Jane's task, they didn't become its owner.
+        assertThat(task.getApproverId()).isEqualTo("mgr-jane");
+        assertThat(task.getActedBy()).isEqualTo("mgr-alex");
+    }
+
+    @Test
+    void approve_throwsAccessDeniedException_whenDelegationServiceSaysNoDelegateIsActive() {
+        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
+        service.submit(reportId);
+        ApprovalTask task = tasksAtLevel(1).get(0);
+        when(delegationService.canAct("mgr-alex", "mgr-jane")).thenReturn(false);
+
+        assertThatThrownBy(() -> service.approve(task.getTaskId(), "mgr-alex", null))
+                .isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    void approve_leavesActedByNull_whenTheAssignedApproverActsDirectly() {
+        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
+        service.submit(reportId);
+        ApprovalTask task = tasksAtLevel(1).get(0);
+
+        service.approve(task.getTaskId(), "mgr-jane", null);
+
+        assertThat(task.getActedBy()).isNull();
     }
 
     // ---- reject() ----

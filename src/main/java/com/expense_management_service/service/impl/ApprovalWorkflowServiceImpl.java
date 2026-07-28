@@ -8,7 +8,6 @@ import com.expense_management_service.entity.ApprovalMatrix;
 import com.expense_management_service.entity.ApprovalTask;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseReport;
-import com.expense_management_service.entity.SystemConfiguration;
 import com.expense_management_service.enums.ApprovalMode;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.enums.TaskStatus;
@@ -18,10 +17,11 @@ import com.expense_management_service.repository.ApprovalMatrixRepository;
 import com.expense_management_service.repository.ApprovalTaskRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
-import com.expense_management_service.repository.SystemConfigurationRepository;
 import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ApproverResolver;
+import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
+import com.expense_management_service.service.SlaPolicyService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -46,16 +46,15 @@ import java.util.stream.Collectors;
 public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     private static final String MATRIX_STATUS_ACTIVE = "ACTIVE";
-    private static final String SLA_DAYS_CONFIG_KEY = "approval.sla.business-days";
-    private static final int DEFAULT_SLA_BUSINESS_DAYS = 3;
 
     private final ExpenseReportRepository expenseReportRepository;
     private final ApprovalTaskRepository approvalTaskRepository;
     private final ApprovalMatrixRepository approvalMatrixRepository;
     private final CurrencyRepository currencyRepository;
-    private final SystemConfigurationRepository systemConfigurationRepository;
     private final ExchangeRateService exchangeRateService;
     private final ApproverResolver approverResolver;
+    private final DelegationService delegationService;
+    private final SlaPolicyService slaPolicyService;
     private final ExpenseReportMapper expenseReportMapper;
     private final ApprovalTaskMapper approvalTaskMapper;
 
@@ -105,11 +104,12 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     @Override
     public ApprovalTaskResponse approve(UUID taskId, String actingEmployeeId, String comments) {
         ApprovalTask task = findTask(taskId);
-        assertPendingAndOwnedBy(task, actingEmployeeId);
+        assertPendingAndAuthorized(task, actingEmployeeId);
 
         task.setTaskStatus(TaskStatus.APPROVED);
         task.setActionedAt(LocalDateTime.now());
         task.setComments(comments);
+        stampActedByIfDelegate(task, actingEmployeeId);
         approvalTaskRepository.save(task);
 
         if (isLevelComplete(task)) {
@@ -123,11 +123,12 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     @Override
     public ApprovalTaskResponse reject(UUID taskId, String actingEmployeeId, String comments) {
         ApprovalTask task = findTask(taskId);
-        assertPendingAndOwnedBy(task, actingEmployeeId);
+        assertPendingAndAuthorized(task, actingEmployeeId);
 
         task.setTaskStatus(TaskStatus.REJECTED);
         task.setActionedAt(LocalDateTime.now());
         task.setComments(comments);
+        stampActedByIfDelegate(task, actingEmployeeId);
         approvalTaskRepository.save(task);
 
         // Rejection wins immediately: every other sibling in this level - including an already
@@ -254,7 +255,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             }
 
             LocalDateTime now = LocalDateTime.now();
-            int slaDays = resolveSlaBusinessDays();
+            int slaDays = slaPolicyService.resolveSlaBusinessDays();
             for (ApprovalTask task : queuedAtLevel) {
                 task.setTaskStatus(TaskStatus.PENDING);
                 task.setAssignedAt(now);
@@ -274,8 +275,13 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         if (task.getApprovalMode() != ApprovalMode.PARALLEL_ALL) {
             return true; // SEQUENTIAL and PARALLEL_ANY: one approval always completes the level
         }
+        // SKIPPED (a same-level duplicate approver) and ESCALATED (superseded by a replacement
+        // task sharing this groupId - see EscalationService) never needed a real approval of
+        // their own; only genuine votes (APPROVED) or their absence should block completion.
         return approvalTaskRepository.findByGroupId(task.getGroupId()).stream()
-                .allMatch(sibling -> sibling.getTaskStatus() == TaskStatus.APPROVED);
+                .allMatch(sibling -> sibling.getTaskStatus() == TaskStatus.APPROVED
+                        || sibling.getTaskStatus() == TaskStatus.SKIPPED
+                        || sibling.getTaskStatus() == TaskStatus.ESCALATED);
     }
 
     private void cancelRemainingPendingSiblings(ApprovalTask task) {
@@ -287,23 +293,6 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private void cancel(ApprovalTask task) {
         task.setTaskStatus(TaskStatus.CANCELLED);
         approvalTaskRepository.save(task);
-    }
-
-    private int resolveSlaBusinessDays() {
-        return systemConfigurationRepository.findByConfigKey(SLA_DAYS_CONFIG_KEY)
-                .map(SystemConfiguration::getConfigValue)
-                .map(this::parseSlaDays)
-                .orElse(DEFAULT_SLA_BUSINESS_DAYS);
-    }
-
-    private int parseSlaDays(String value) {
-        try {
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException e) {
-            log.warn("SystemConfiguration '{}' has a non-numeric value '{}', using default of {} business days",
-                    SLA_DAYS_CONFIG_KEY, value, DEFAULT_SLA_BUSINESS_DAYS);
-            return DEFAULT_SLA_BUSINESS_DAYS;
-        }
     }
 
     private void assertDraft(ExpenseReport report) {
@@ -319,13 +308,21 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
     }
 
-    private void assertPendingAndOwnedBy(ApprovalTask task, String actingEmployeeId) {
+    private void assertPendingAndAuthorized(ApprovalTask task, String actingEmployeeId) {
         if (task.getTaskStatus() != TaskStatus.PENDING) {
             throw new IllegalArgumentException("Approval task is not pending, current status: " + task.getTaskStatus());
         }
-        if (!task.getApproverId().equals(actingEmployeeId)) {
-            throw new AccessDeniedException("You are not the assigned approver for this task");
+        if (!delegationService.canAct(actingEmployeeId, task.getApproverId())) {
+            throw new AccessDeniedException("You are not the assigned approver for this task, nor an active delegate");
         }
+    }
+
+    /**
+     * approverId is never rewritten (see DelegationService) - when a delegate acted, actedBy
+     * records who actually did, preserving an accurate "X approved on behalf of Y" audit trail.
+     */
+    private void stampActedByIfDelegate(ApprovalTask task, String actingEmployeeId) {
+        task.setActedBy(actingEmployeeId.equals(task.getApproverId()) ? null : actingEmployeeId);
     }
 
     private ExpenseReport findReport(UUID reportId) {

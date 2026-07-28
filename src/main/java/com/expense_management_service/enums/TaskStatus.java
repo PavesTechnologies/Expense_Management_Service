@@ -20,6 +20,12 @@ public enum TaskStatus {
     SKIPPED,
     /** A sibling in an ALL-required parallel group was rejected, or the report was withdrawn. */
     CANCELLED,
-    /** Reassigned after an SLA breach; the task stays PENDING under the new approver, not this state. */
+    /**
+     * Terminal: this specific row was superseded by a replacement task after an SLA breach (see
+     * EscalationService). actedBy is set to "SYSTEM" and actionedAt records when it was
+     * superseded. The replacement task - same groupId/level/mode/cycle, a fresh PENDING row with
+     * its own SLA window - is what the new approver actually acts on; it is a distinct row, not
+     * this one flipping status.
+     */
     ESCALATED
 }

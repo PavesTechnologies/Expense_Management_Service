@@ -4,6 +4,7 @@ import com.expense_management_service.entity.ApprovalTask;
 import com.expense_management_service.enums.TaskStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -17,4 +18,7 @@ public interface ApprovalTaskRepository extends JpaRepository<ApprovalTask, UUID
 
     /** Backs the "my queue" endpoint. */
     List<ApprovalTask> findByApproverIdAndTaskStatus(String approverId, TaskStatus taskStatus);
+
+    /** Backs the SLA escalation sweep - tasks still awaiting action past their due date. */
+    List<ApprovalTask> findByTaskStatusAndDueDateBefore(TaskStatus taskStatus, LocalDateTime dueDate);
 }

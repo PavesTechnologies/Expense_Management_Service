@@ -13,7 +13,10 @@ import java.util.List;
 import java.util.UUID;
 
 @Entity
-@Table(name = "expense_report", uniqueConstraints = @UniqueConstraint(columnNames = "report_number"))
+@Table(name = "expense_report", uniqueConstraints = {
+        @UniqueConstraint(columnNames = "report_number"),
+        @UniqueConstraint(columnNames = {"employee_id", "fiscal_year", "title"})
+})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -41,6 +44,10 @@ public class ExpenseReport {
     @Lob
     @Column(name = "business_purpose")
     private String businessPurpose;
+
+    /** Calendar-year fiscal period the report was created in, e.g. "2026" — used to scope title uniqueness per FR: "unique per employee per fiscal period". */
+    @Column(name = "fiscal_year", length = 10, nullable = false)
+    private String fiscalYear;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "cost_center_id", nullable = false)

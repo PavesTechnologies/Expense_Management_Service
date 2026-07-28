@@ -14,11 +14,8 @@ public class ExpenseLineItemMapper {
                 .merchantName(request.merchantName())
                 .description(request.description())
                 .amount(request.amount())
-                .exchangeRate(request.exchangeRate())
-                .baseAmount(request.baseAmount())
                 .taxAmount(request.taxAmount())
                 .clientBillable(request.clientBillable())
-                .lineStatus(request.lineStatus())
                 .build();
     }
 
@@ -27,20 +24,23 @@ public class ExpenseLineItemMapper {
         entity.setMerchantName(request.merchantName());
         entity.setDescription(request.description());
         entity.setAmount(request.amount());
-        entity.setExchangeRate(request.exchangeRate());
-        entity.setBaseAmount(request.baseAmount());
         entity.setTaxAmount(request.taxAmount());
         entity.setClientBillable(request.clientBillable());
-        entity.setLineStatus(request.lineStatus());
     }
 
-    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity) {
+    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive) {
+        var category = entity.getCategory();
         return new ExpenseLineItemResponse(
                 entity.getLineItemId(),
                 entity.getReport() != null ? entity.getReport().getReportId() : null,
                 entity.getReport() != null ? entity.getReport().getReportNumber() : null,
-                entity.getCategory() != null ? entity.getCategory().getCategoryId() : null,
-                entity.getCategory() != null ? entity.getCategory().getCategoryName() : null,
+                entity.getReport() != null && entity.getReport().getReportStatus() != null
+                        ? entity.getReport().getReportStatus().name() : null,
+                category != null ? category.getCategoryId() : null,
+                category != null ? category.getCategoryName() : null,
+                categoryActive,
+                category != null && Boolean.TRUE.equals(category.getReceiptRequired()),
+                category != null ? category.getMaxLimit() : null,
                 entity.getExpenseDate(),
                 entity.getMerchantName(),
                 entity.getDescription(),

@@ -1,7 +1,10 @@
 package com.expense_management_service.service.impl;
 
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.UUID;
 
+import com.expense_management_service.common.exception.DuplicateResourceException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.CostCenterBudgetRequest;
 import com.expense_management_service.dto.response.CostCenterBudgetResponse;
@@ -12,16 +15,18 @@ import com.expense_management_service.repository.CostCenterBudgetRepository;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.service.CostCenterBudgetService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.UUID;
-
 @Service
 @RequiredArgsConstructor
 @Transactional
+@Slf4j
 public class CostCenterBudgetServiceImpl implements CostCenterBudgetService {
+
+    private static final String STATUS_ACTIVE = "ACTIVE";
 
     private final CostCenterBudgetRepository costCenterBudgetRepository;
     private final CostCenterRepository costCenterRepository;
@@ -29,17 +34,38 @@ public class CostCenterBudgetServiceImpl implements CostCenterBudgetService {
 
     @Override
     public CostCenterBudgetResponse create(CostCenterBudgetRequest request) {
+        CostCenter costCenter = findActiveCostCenter(request.costCenterId());
+        assertNoDuplicateFiscalYear(null, request.costCenterId(), request.fiscalYear());
+
+        BigDecimal availableBudget = request.availableBudget() != null ? request.availableBudget() : request.budgetAmount();
+        assertAvailableBudgetValid(availableBudget, request.budgetAmount());
+
         CostCenterBudget entity = costCenterBudgetMapper.toEntity(request);
-        entity.setCostCenter(findCostCenter(request.costCenterId()));
-        return costCenterBudgetMapper.toResponse(costCenterBudgetRepository.save(entity));
+        entity.setCostCenter(costCenter);
+        entity.setAvailableBudget(availableBudget);
+
+        CostCenterBudget saved = costCenterBudgetRepository.save(entity);
+        log.info("Created cost center budget for {} fiscal year {}: budgetAmount={}, availableBudget={}",
+                costCenter.getCostCenterCode(), request.fiscalYear(), request.budgetAmount(), availableBudget);
+        return costCenterBudgetMapper.toResponse(saved);
     }
 
     @Override
     public CostCenterBudgetResponse update(UUID budgetId, CostCenterBudgetRequest request) {
         CostCenterBudget entity = findEntity(budgetId);
+        CostCenter costCenter = findActiveCostCenter(request.costCenterId());
+        assertNoDuplicateFiscalYear(budgetId, request.costCenterId(), request.fiscalYear());
+
+        BigDecimal availableBudget = request.availableBudget() != null ? request.availableBudget() : entity.getAvailableBudget();
+        assertAvailableBudgetValid(availableBudget, request.budgetAmount());
+
         costCenterBudgetMapper.updateEntity(entity, request);
-        entity.setCostCenter(findCostCenter(request.costCenterId()));
-        return costCenterBudgetMapper.toResponse(costCenterBudgetRepository.save(entity));
+        entity.setCostCenter(costCenter);
+        entity.setAvailableBudget(availableBudget);
+
+        CostCenterBudget saved = costCenterBudgetRepository.save(entity);
+        log.info("Updated cost center budget {}", budgetId);
+        return costCenterBudgetMapper.toResponse(saved);
     }
 
     @Override
@@ -56,12 +82,38 @@ public class CostCenterBudgetServiceImpl implements CostCenterBudgetService {
 
     @Override
     public void delete(UUID budgetId) {
-        costCenterBudgetRepository.delete(findEntity(budgetId));
+        CostCenterBudget entity = findEntity(budgetId);
+        costCenterBudgetRepository.delete(entity);
+        log.info("Deleted cost center budget {}", budgetId);
     }
 
-    private CostCenter findCostCenter(UUID costCenterId) {
-        return costCenterRepository.findById(costCenterId)
+    private CostCenter findActiveCostCenter(UUID costCenterId) {
+        CostCenter costCenter = costCenterRepository.findById(costCenterId)
                 .orElseThrow(() -> new ResourceNotFoundException("CostCenter not found with id: " + costCenterId));
+        if (!STATUS_ACTIVE.equalsIgnoreCase(costCenter.getStatus())) {
+            throw new IllegalArgumentException(
+                    "Cost center " + costCenter.getCostCenterCode() + " is not Active and cannot have a budget assigned");
+        }
+        return costCenter;
+    }
+
+    private void assertAvailableBudgetValid(BigDecimal availableBudget, BigDecimal budgetAmount) {
+        if (availableBudget.signum() < 0) {
+            throw new IllegalArgumentException("Available budget cannot be negative");
+        }
+        if (availableBudget.compareTo(budgetAmount) > 0) {
+            throw new IllegalArgumentException("Available budget cannot exceed budget amount");
+        }
+    }
+
+    private void assertNoDuplicateFiscalYear(UUID currentBudgetId, UUID costCenterId, String fiscalYear) {
+        costCenterBudgetRepository.findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterId, fiscalYear)
+                .ifPresent(existing -> {
+                    if (!existing.getBudgetId().equals(currentBudgetId)) {
+                        throw new DuplicateResourceException(
+                                "A budget for fiscal year " + fiscalYear + " already exists for this cost center");
+                    }
+                });
     }
 
     private CostCenterBudget findEntity(UUID budgetId) {

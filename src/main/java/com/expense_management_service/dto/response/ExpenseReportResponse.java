@@ -10,6 +10,7 @@ public record ExpenseReportResponse(
         String employeeId,
         String title,
         String businessPurpose,
+        String fiscalYear,
         UUID costCenterId,
         String costCenterName,
         String reportStatus,
@@ -21,6 +22,9 @@ public record ExpenseReportResponse(
         LocalDateTime approvedAt,
         LocalDateTime closedAt,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        int lineItemCount,
+        boolean editable,
+        boolean deletable
 ) {
 }

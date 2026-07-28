@@ -11,7 +11,10 @@ import java.util.List;
 import java.util.UUID;
 
 @Entity
-@Table(name = "cost_center", uniqueConstraints = @UniqueConstraint(columnNames = "cost_center_code"))
+@Table(name = "cost_center", uniqueConstraints = {
+        @UniqueConstraint(columnNames = "cost_center_code"),
+        @UniqueConstraint(columnNames = {"department_uuid", "cost_center_name"})
+})
 @Getter
 @Setter
 @NoArgsConstructor
@@ -33,11 +36,14 @@ public class CostCenter {
     @Column(name = "cost_center_name", length = 255, nullable = false)
     private String costCenterName;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "parent_cost_center_id")
-    @ToString.Exclude
-    private CostCenter parentCostCenter;
+    /** UUID of the owning Department record in Employee Onboarding — EMS stores only the reference, never the department name. */
+    @Column(name = "department_uuid", nullable = false)
+    private UUID departmentUuid;
 
+    @Column(name = "description", length = 1000)
+    private String description;
+
+    /** UUID of the owning employee in UMS, stored as its string form (see {@link com.expense_management_service.dto.request.CostCenterRequest#ownerEmployeeUuid()}). */
     @Column(name = "owner_employee_id", length = 255)
     private String ownerEmployeeId;
 
@@ -51,11 +57,6 @@ public class CostCenter {
     @UpdateTimestamp
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
-
-    @OneToMany(mappedBy = "parentCostCenter")
-    @Builder.Default
-    @ToString.Exclude
-    private List<CostCenter> childCostCenters = new ArrayList<>();
 
     @OneToMany(mappedBy = "costCenter")
     @Builder.Default

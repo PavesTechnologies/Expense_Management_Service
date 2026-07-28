@@ -1,8 +1,10 @@
 package com.expense_management_service.integration.ums;
 
 import com.expense_management_service.integration.ums.dto.EmployeeResponse;
+import com.expense_management_service.integration.ums.dto.UmsUserResponse;
 import com.expense_management_service.integration.ums.dto.UserProfileResponse;
 
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -24,4 +26,7 @@ public interface UmsClient {
 
     /** Fetches employee information by UMS identity UUID. */
     EmployeeResponse getEmployee(UUID uuid);
+
+    /** Fetches every user known to UMS — used to validate/resolve a numeric UMS {@code user_id} (e.g. a Cost Center owner). */
+    List<UmsUserResponse> getAllUsers();
 }

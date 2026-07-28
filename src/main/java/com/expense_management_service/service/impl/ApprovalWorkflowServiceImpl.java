@@ -98,7 +98,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         activateNextEligibleLevel(report, null, cycle);
 
         log.info("Submitted expense report {} for approval (cycle {}), {} level(s) resolved", reportId, cycle, levels.size());
-        return expenseReportMapper.toResponse(findReport(reportId));
+        ExpenseReport updated = findReport(reportId);
+        return expenseReportMapper.toResponse(updated, updated.getReportStatus().isEditable(), updated.getReportStatus().isDeletable());
     }
 
     @Override

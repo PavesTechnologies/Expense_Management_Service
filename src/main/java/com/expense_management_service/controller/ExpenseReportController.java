@@ -16,6 +16,14 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
+/**
+ * Create-and-save-Draft expense report endpoints (EP02-S1).
+ * <p>
+ * Ownership (an Employee may only touch their own report) and status-gating (edits only
+ * while Draft/Policy Rejected/Query Raised, deletes only while Draft) are enforced inside
+ * {@link ExpenseReportService}, not here — {@code @PreAuthorize} only gates coarse role
+ * access; it cannot express "your own record".
+ */
 @RestController
 @RequestMapping("/xms/employee/expense-reports")
 @RequiredArgsConstructor
@@ -52,7 +60,7 @@ public class ExpenseReportController {
 
     @DeleteMapping("/{reportId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    @PreAuthorize("hasRole('ADMIN')")
+    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
     public void delete(@PathVariable UUID reportId) {
         expenseReportService.delete(reportId);
     }

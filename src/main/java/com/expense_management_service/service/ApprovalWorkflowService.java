@@ -2,6 +2,7 @@ package com.expense_management_service.service;
 
 import com.expense_management_service.dto.response.ApprovalTaskResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PolicyWarningResponse;
 
 import java.util.List;
 import java.util.UUID;
@@ -28,4 +29,7 @@ public interface ApprovalWorkflowService {
 
     /** PENDING tasks currently assigned to the given approver. */
     List<ApprovalTaskResponse> getMyQueue(String employeeId);
+
+    /** EP05: every policy warning (with justification, if any) recorded against the task's report — an approver drill-down. */
+    List<PolicyWarningResponse> getPolicyWarningsForTask(UUID taskId);
 }

@@ -18,10 +18,12 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.integration.ums.UmsClient;
 import com.expense_management_service.integration.ums.dto.UmsUserResponse;
+import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.mapper.ExpenseReportMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
@@ -48,6 +50,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     private final UmsClient umsClient;
     private final CurrentUserService currentUserService;
     private final ExpenseReportMapper expenseReportMapper;
+    private final PolicyViolationRepository policyViolationRepository;
 
     /** Minimum character length for the business purpose free-text field — configurable per FR: "minimum 10 characters (configurable)". */
     @Value("${expense-report.business-purpose.min-length:10}")
@@ -230,6 +233,8 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     private ExpenseReportResponse toResponse(ExpenseReport entity) {
         boolean editable = entity.getReportStatus().isEditable();
         boolean deletable = entity.getReportStatus().isDeletable();
-        return expenseReportMapper.toResponse(entity, editable, deletable);
+        List<PolicyViolation> violations = policyViolationRepository.findByLineItem_Report_ReportId(entity.getReportId());
+        int unjustified = (int) violations.stream().filter(v -> v.getJustification() == null).count();
+        return expenseReportMapper.toResponse(entity, editable, deletable, violations.size(), unjustified);
     }
 }

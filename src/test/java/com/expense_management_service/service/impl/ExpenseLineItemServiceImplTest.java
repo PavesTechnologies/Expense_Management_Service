@@ -15,10 +15,16 @@ import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseCategoryRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.entity.PolicyViolation;
+import com.expense_management_service.enums.PolicyRuleType;
+import com.expense_management_service.enums.PolicySeverity;
+import com.expense_management_service.mapper.PolicyViolationMapper;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.repository.ProjectCacheRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.ExchangeRateService;
+import com.expense_management_service.service.PolicyEvaluator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -28,6 +34,7 @@ import org.springframework.security.access.AccessDeniedException;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -58,6 +65,10 @@ class ExpenseLineItemServiceImplTest {
     private ExchangeRateService exchangeRateService;
     @Mock
     private CurrentUserService currentUserService;
+    @Mock
+    private PolicyEvaluator policyEvaluator;
+    @Mock
+    private PolicyViolationRepository policyViolationRepository;
 
     private ExpenseLineItemServiceImpl expenseLineItemService;
 
@@ -73,7 +84,7 @@ class ExpenseLineItemServiceImplTest {
         expenseLineItemService = new ExpenseLineItemServiceImpl(
                 expenseLineItemRepository, expenseReportRepository, expenseCategoryRepository, currencyRepository,
                 costCenterRepository, projectCacheRepository, exchangeRateService, currentUserService,
-                new ExpenseLineItemMapper());
+                new ExpenseLineItemMapper(), policyEvaluator, policyViolationRepository, new PolicyViolationMapper());
 
         reportId = UUID.randomUUID();
         categoryId = UUID.randomUUID();
@@ -254,5 +265,81 @@ class ExpenseLineItemServiceImplTest {
         when(expenseLineItemRepository.findByReport_ReportId(reportId)).thenReturn(List.of(item));
 
         assertThat(expenseLineItemService.getAllForReport(reportId)).hasSize(1);
+    }
+
+    // --- EP05: policy evaluation is advisory-only and must never affect the save --------------
+
+    @Test
+    void create_savesLineItem_whenPolicyEvaluatorThrows() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(policyEvaluator.evaluate(any())).thenThrow(new RuntimeException("boom"));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, validRequest());
+
+        assertThat(response.amount()).isEqualByComparingTo("100.00");
+        assertThat(response.policyWarnings()).isEmpty();
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
+    void create_includesPolicyWarnings_inResponse() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PolicyViolation violation = PolicyViolation.builder()
+                .violationId(UUID.randomUUID())
+                .ruleType(PolicyRuleType.MISSING_DESCRIPTION)
+                .severity(PolicySeverity.WARN)
+                .message("This expense is missing a description")
+                .build();
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(violation));
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of(violation));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, validRequest());
+
+        assertThat(response.policyWarnings()).hasSize(1);
+        assertThat(response.policyWarnings().get(0).message()).isEqualTo("This expense is missing a description");
+    }
+
+    @Test
+    void update_preservesJustification_acrossRecompute() {
+        UUID lineItemId = UUID.randomUUID();
+        ExpenseCategory category = activeCategory("TRAVEL");
+        ExpenseLineItem existingLineItem = ExpenseLineItem.builder().lineItemId(lineItemId).report(draftReport)
+                .category(category).amount(new BigDecimal("50")).currency(currency).build();
+
+        PolicyViolation existingViolation = PolicyViolation.builder()
+                .violationId(UUID.randomUUID())
+                .ruleType(PolicyRuleType.MISSING_DESCRIPTION)
+                .severity(PolicySeverity.WARN)
+                .message("This expense is missing a description")
+                .justification("Client requested no memo")
+                .justifiedAt(LocalDateTime.now().minusDays(1))
+                .build();
+        PolicyViolation recomputedViolation = PolicyViolation.builder()
+                .ruleType(PolicyRuleType.MISSING_DESCRIPTION)
+                .severity(PolicySeverity.WARN)
+                .message("This expense is missing a description")
+                .build();
+
+        stubOwnerAndReport();
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId))
+                .thenReturn(Optional.of(existingLineItem));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(category));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(policyViolationRepository.findByLineItem_LineItemId(lineItemId)).thenReturn(List.of(existingViolation));
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(recomputedViolation));
+
+        expenseLineItemService.update(reportId, lineItemId, validRequest());
+
+        assertThat(recomputedViolation.getJustification()).isEqualTo("Client requested no memo");
+        assertThat(recomputedViolation.getJustifiedAt()).isNotNull();
+        verify(policyViolationRepository).saveAll(List.of(recomputedViolation));
     }
 }

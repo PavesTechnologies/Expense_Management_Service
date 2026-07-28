@@ -66,7 +66,7 @@ class ExpenseReportControllerTest {
         return new ExpenseReportResponse(id, "EXP-2026-ABCD1234", "5100014", "Client visit - Q1",
                 "Client visit to discuss renewal terms", "2026", UUID.randomUUID(), "Backend Development",
                 status, UUID.randomUUID(), "USD", BigDecimal.ZERO, BigDecimal.ZERO, null, null, null,
-                LocalDateTime.now(), LocalDateTime.now(), 0, true, true);
+                LocalDateTime.now(), LocalDateTime.now(), 0, true, true, 0, 0);
     }
 
     private static ExpenseReportRequest sampleRequest() {

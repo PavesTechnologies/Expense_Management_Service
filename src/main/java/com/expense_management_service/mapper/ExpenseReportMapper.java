@@ -27,7 +27,13 @@ public class ExpenseReportMapper {
         entity.setBusinessPurpose(request.businessPurpose());
     }
 
+    /** Convenience overload for call sites that don't (yet) have policy warning counts on hand — defaults to zero. */
     public ExpenseReportResponse toResponse(ExpenseReport entity, boolean editable, boolean deletable) {
+        return toResponse(entity, editable, deletable, 0, 0);
+    }
+
+    public ExpenseReportResponse toResponse(ExpenseReport entity, boolean editable, boolean deletable,
+                                             int policyWarningCount, int policyUnjustifiedCount) {
         return new ExpenseReportResponse(
                 entity.getReportId(),
                 entity.getReportNumber(),
@@ -49,11 +55,9 @@ public class ExpenseReportMapper {
                 entity.getUpdatedAt(),
                 entity.getExpenseLineItems() == null ? 0 : entity.getExpenseLineItems().size(),
                 editable,
-                deletable
+                deletable,
+                policyWarningCount,
+                policyUnjustifiedCount
         );
-    }
-
-    private ReportStatus toReportStatus(String reportStatus) {
-        return reportStatus != null ? ReportStatus.valueOf(reportStatus) : null;
     }
 }

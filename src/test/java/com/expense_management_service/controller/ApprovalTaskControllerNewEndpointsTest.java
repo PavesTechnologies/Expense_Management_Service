@@ -62,7 +62,7 @@ class ApprovalTaskControllerNewEndpointsTest {
 
     private static ApprovalTaskResponse sampleResponse(UUID id, String taskStatus) {
         return new ApprovalTaskResponse(id, UUID.randomUUID(), "ER-1001", "mgr-jane", 1,
-                taskStatus, "ok", null, null, null, UUID.randomUUID(), 1, null, "SEQUENTIAL");
+                taskStatus, "ok", null, null, null, UUID.randomUUID(), 1, null, "SEQUENTIAL", 0, 0);
     }
 
     @Test
@@ -120,5 +120,24 @@ class ApprovalTaskControllerNewEndpointsTest {
     void myQueue_returns401_whenUnauthenticated() throws Exception {
         mockMvc.perform(get("/xms/manager/approvals/my-queue"))
                 .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void getPolicyWarnings_returns200_forManager() throws Exception {
+        UUID taskId = UUID.randomUUID();
+        when(approvalWorkflowService.getPolicyWarningsForTask(taskId)).thenReturn(List.of());
+
+        mockMvc.perform(get("/xms/manager/approvals/{taskId}/policy-warnings", taskId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_MANAGER))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void getPolicyWarnings_returns403_forEmployee() throws Exception {
+        UUID taskId = UUID.randomUUID();
+
+        mockMvc.perform(get("/xms/manager/approvals/{taskId}/policy-warnings", taskId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                .andExpect(status().isForbidden());
     }
 }

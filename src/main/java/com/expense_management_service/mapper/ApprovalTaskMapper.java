@@ -27,7 +27,12 @@ public class ApprovalTaskMapper {
         entity.setDueDate(request.dueDate());
     }
 
+    /** Convenience overload for call sites without policy warning counts on hand — defaults to zero. */
     public ApprovalTaskResponse toResponse(ApprovalTask entity) {
+        return toResponse(entity, 0, 0);
+    }
+
+    public ApprovalTaskResponse toResponse(ApprovalTask entity, int policyWarningCount, int policyUnjustifiedCount) {
         return new ApprovalTaskResponse(
                 entity.getTaskId(),
                 entity.getReport() != null ? entity.getReport().getReportId() : null,
@@ -42,7 +47,9 @@ public class ApprovalTaskMapper {
                 entity.getGroupId(),
                 entity.getSubmissionCycle(),
                 entity.getActedBy(),
-                entity.getApprovalMode() != null ? entity.getApprovalMode().name() : null
+                entity.getApprovalMode() != null ? entity.getApprovalMode().name() : null,
+                policyWarningCount,
+                policyUnjustifiedCount
         );
     }
 

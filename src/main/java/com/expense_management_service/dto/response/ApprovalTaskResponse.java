@@ -17,6 +17,8 @@ public record ApprovalTaskResponse(
         UUID groupId,
         Integer submissionCycle,
         String actedBy,
-        String approvalMode
+        String approvalMode,
+        int policyWarningCount,
+        int policyUnjustifiedCount
 ) {
 }

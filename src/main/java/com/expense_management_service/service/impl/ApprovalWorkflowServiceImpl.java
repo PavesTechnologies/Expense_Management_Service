@@ -4,23 +4,29 @@ import com.expense_management_service.common.BusinessDayCalculator;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.response.ApprovalTaskResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PolicyWarningResponse;
 import com.expense_management_service.entity.ApprovalMatrix;
 import com.expense_management_service.entity.ApprovalTask;
 import com.expense_management_service.entity.Currency;
+import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.enums.ApprovalMode;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.enums.TaskStatus;
 import com.expense_management_service.mapper.ApprovalTaskMapper;
 import com.expense_management_service.mapper.ExpenseReportMapper;
+import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.ApprovalMatrixRepository;
 import com.expense_management_service.repository.ApprovalTaskRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ApproverResolver;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
+import com.expense_management_service.service.PolicyEvaluator;
 import com.expense_management_service.service.SlaPolicyService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -57,6 +63,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private final SlaPolicyService slaPolicyService;
     private final ExpenseReportMapper expenseReportMapper;
     private final ApprovalTaskMapper approvalTaskMapper;
+    private final PolicyEvaluator policyEvaluator;
+    private final PolicyViolationRepository policyViolationRepository;
+    private final PolicyViolationMapper policyViolationMapper;
 
     @Value("${exchange.rate.base-currency}")
     private String baseCurrencyCode;
@@ -69,6 +78,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         if (report.getCostCenter() == null) {
             throw new IllegalArgumentException("Expense report has no cost center assigned");
         }
+
+        refreshPolicyViolationsForReport(report);
 
         BigDecimal convertedAmount = convertToBaseCurrency(report);
         List<ApprovalMatrix> applicable = resolveApplicableMatrixRows(report.getCostCenter().getCostCenterId(), convertedAmount);
@@ -157,14 +168,82 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     @Override
     @Transactional(readOnly = true)
     public List<ApprovalTaskResponse> getMyQueue(String employeeId) {
-        return approvalTaskRepository.findByApproverIdAndTaskStatus(employeeId, TaskStatus.PENDING).stream()
-                .map(approvalTaskMapper::toResponse)
+        List<ApprovalTask> tasks = approvalTaskRepository.findByApproverIdAndTaskStatus(employeeId, TaskStatus.PENDING);
+
+        // Batched once for the whole queue rather than per task, to avoid an N+1 lookup.
+        List<UUID> reportIds = tasks.stream()
+                .map(t -> t.getReport() != null ? t.getReport().getReportId() : null)
+                .filter(Objects::nonNull)
+                .distinct()
+                .toList();
+        Map<UUID, List<PolicyViolation>> violationsByReport = policyViolationRepository
+                .findByLineItem_Report_ReportIdIn(reportIds).stream()
+                .collect(Collectors.groupingBy(v -> v.getLineItem().getReport().getReportId()));
+
+        return tasks.stream()
+                .map(task -> {
+                    UUID reportId = task.getReport() != null ? task.getReport().getReportId() : null;
+                    List<PolicyViolation> violations = violationsByReport.getOrDefault(reportId, List.of());
+                    int unjustified = (int) violations.stream().filter(v -> v.getJustification() == null).count();
+                    return approvalTaskMapper.toResponse(task, violations.size(), unjustified);
+                })
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<PolicyWarningResponse> getPolicyWarningsForTask(UUID taskId) {
+        ApprovalTask task = findTask(taskId);
+        return policyViolationRepository.findByLineItem_Report_ReportId(task.getReport().getReportId()).stream()
+                .map(policyViolationMapper::toResponse)
                 .toList();
     }
 
     // ---------------------------------------------------------------------
     // Submission helpers
     // ---------------------------------------------------------------------
+
+    /**
+     * EP05: re-runs {@link PolicyEvaluator} across every line item on the report so the snapshot
+     * an approver reviews reflects current rules, since rules may have changed since a line item
+     * was last saved. Mirrors {@code ExpenseLineItemServiceImpl.refreshPolicyViolations} (including
+     * justification carry-over), duplicated here rather than shared because this method must never
+     * alter submit()'s control flow — wrapped defensively so a policy failure can never block a
+     * submission, on top of PolicyEvaluator's own never-throw contract.
+     */
+    private void refreshPolicyViolationsForReport(ExpenseReport report) {
+        try {
+            for (ExpenseLineItem lineItem : report.getExpenseLineItems()) {
+                List<PolicyViolation> existing = policyViolationRepository.findByLineItem_LineItemId(lineItem.getLineItemId());
+                List<PolicyViolation> recomputed = policyEvaluator.evaluate(lineItem);
+
+                for (PolicyViolation violation : recomputed) {
+                    existing.stream()
+                            .filter(old -> sameRule(old, violation))
+                            .findFirst()
+                            .ifPresent(old -> {
+                                violation.setJustification(old.getJustification());
+                                violation.setJustifiedAt(old.getJustifiedAt());
+                            });
+                }
+
+                policyViolationRepository.deleteAll(existing);
+                policyViolationRepository.saveAll(recomputed);
+            }
+        } catch (Exception ex) {
+            log.warn("Policy evaluation failed while submitting report {} - continuing without refreshing policy warnings",
+                    report.getReportId(), ex);
+        }
+    }
+
+    private boolean sameRule(PolicyViolation existing, PolicyViolation recomputed) {
+        if (existing.getRuleType() != recomputed.getRuleType()) {
+            return false;
+        }
+        UUID existingRuleId = existing.getPolicyRule() != null ? existing.getPolicyRule().getPolicyId() : null;
+        UUID recomputedRuleId = recomputed.getPolicyRule() != null ? recomputed.getPolicyRule().getPolicyId() : null;
+        return Objects.equals(existingRuleId, recomputedRuleId);
+    }
 
     private BigDecimal convertToBaseCurrency(ExpenseReport report) {
         Currency baseCurrency = currencyRepository.findByCurrencyCode(baseCurrencyCode)

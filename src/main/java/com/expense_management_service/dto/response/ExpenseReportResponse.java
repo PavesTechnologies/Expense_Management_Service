@@ -25,6 +25,8 @@ public record ExpenseReportResponse(
         LocalDateTime updatedAt,
         int lineItemCount,
         boolean editable,
-        boolean deletable
+        boolean deletable,
+        int policyWarningCount,
+        int policyUnjustifiedCount
 ) {
 }

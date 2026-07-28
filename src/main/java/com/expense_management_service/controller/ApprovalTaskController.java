@@ -6,6 +6,7 @@ import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.ApprovalActionRequest;
 import com.expense_management_service.dto.request.ApprovalTaskRequest;
 import com.expense_management_service.dto.response.ApprovalTaskResponse;
+import com.expense_management_service.dto.response.PolicyWarningResponse;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.ApprovalTaskService;
 import com.expense_management_service.service.ApprovalWorkflowService;
@@ -81,5 +82,12 @@ public class ApprovalTaskController {
     @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','EMPLOYEE')")
     public ApiResponse<List<ApprovalTaskResponse>> myQueue() {
         return ApiResponse.success(approvalWorkflowService.getMyQueue(currentUserService.getEmployeeId()));
+    }
+
+    /** EP05: full policy-warning drill-down (with any employee justification) for the task's report. */
+    @GetMapping("/{taskId}/policy-warnings")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE')")
+    public ApiResponse<List<PolicyWarningResponse>> getPolicyWarnings(@PathVariable UUID taskId) {
+        return ApiResponse.success(approvalWorkflowService.getPolicyWarningsForTask(taskId));
     }
 }

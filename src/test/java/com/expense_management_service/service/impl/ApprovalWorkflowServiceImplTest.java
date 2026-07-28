@@ -8,19 +8,25 @@ import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.enums.ApprovalMode;
 import com.expense_management_service.enums.ApproverType;
+import com.expense_management_service.enums.PolicyRuleType;
+import com.expense_management_service.enums.PolicySeverity;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.enums.TaskStatus;
 import com.expense_management_service.mapper.ApprovalTaskMapper;
 import com.expense_management_service.mapper.ExpenseReportMapper;
+import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.ApprovalMatrixRepository;
 import com.expense_management_service.repository.ApprovalTaskRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.ApproverResolver;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
+import com.expense_management_service.service.PolicyEvaluator;
 import com.expense_management_service.service.SlaPolicyService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -62,6 +68,8 @@ class ApprovalWorkflowServiceImplTest {
     @Mock private ApproverResolver approverResolver;
     @Mock private DelegationService delegationService;
     @Mock private SlaPolicyService slaPolicyService;
+    @Mock private PolicyEvaluator policyEvaluator;
+    @Mock private PolicyViolationRepository policyViolationRepository;
 
     private ApprovalWorkflowServiceImpl service;
 
@@ -75,7 +83,8 @@ class ApprovalWorkflowServiceImplTest {
         service = new ApprovalWorkflowServiceImpl(
                 expenseReportRepository, approvalTaskRepository, approvalMatrixRepository,
                 currencyRepository, exchangeRateService,
-                approverResolver, delegationService, slaPolicyService, new ExpenseReportMapper(), new ApprovalTaskMapper());
+                approverResolver, delegationService, slaPolicyService, new ExpenseReportMapper(), new ApprovalTaskMapper(),
+                policyEvaluator, policyViolationRepository, new PolicyViolationMapper());
 
         reportId = UUID.randomUUID();
         costCenterId = UUID.randomUUID();
@@ -446,5 +455,57 @@ class ApprovalWorkflowServiceImplTest {
 
         assertThat(queue).hasSize(1);
         assertThat(queue.get(0).approverId()).isEqualTo("mgr-jane");
+    }
+
+    @Test
+    void getMyQueue_includesBatchedPolicyWarningCounts() {
+        ApprovalTask pending = ApprovalTask.builder().taskId(UUID.randomUUID()).report(report)
+                .approverId("mgr-jane").taskStatus(TaskStatus.PENDING).build();
+        when(approvalTaskRepository.findByApproverIdAndTaskStatus("mgr-jane", TaskStatus.PENDING))
+                .thenReturn(List.of(pending));
+
+        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(report).build();
+        PolicyViolation justified = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
+                .ruleType(PolicyRuleType.MISSING_DESCRIPTION).severity(PolicySeverity.WARN).justification("explained").build();
+        PolicyViolation unjustified = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
+                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN).build();
+        when(policyViolationRepository.findByLineItem_Report_ReportIdIn(List.of(reportId)))
+                .thenReturn(List.of(justified, unjustified));
+
+        List<ApprovalTaskResponse> queue = service.getMyQueue("mgr-jane");
+
+        assertThat(queue).hasSize(1);
+        assertThat(queue.get(0).policyWarningCount()).isEqualTo(2);
+        assertThat(queue.get(0).policyUnjustifiedCount()).isEqualTo(1);
+    }
+
+    // ---- EP05: policy evaluation at submission is advisory-only and must never block it --------
+
+    @Test
+    void submit_succeeds_whenPolicyEvaluatorThrows() {
+        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
+        when(policyEvaluator.evaluate(any())).thenThrow(new RuntimeException("boom"));
+
+        ExpenseReportResponse response = service.submit(reportId);
+
+        assertThat(response.reportStatus()).isEqualTo("PENDING_APPROVAL");
+        assertThat(savedTasks).hasSize(1);
+    }
+
+    @Test
+    void getPolicyWarningsForTask_returnsFullViolationListForTheTasksReport() {
+        ApprovalTask task = ApprovalTask.builder().taskId(UUID.randomUUID()).report(report)
+                .approverId("mgr-jane").taskStatus(TaskStatus.PENDING).build();
+        savedTasks.add(task);
+
+        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(report).build();
+        PolicyViolation violation = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
+                .ruleType(PolicyRuleType.MISSING_DESCRIPTION).severity(PolicySeverity.WARN).build();
+        when(policyViolationRepository.findByLineItem_Report_ReportId(reportId)).thenReturn(List.of(violation));
+
+        var warnings = service.getPolicyWarningsForTask(task.getTaskId());
+
+        assertThat(warnings).hasSize(1);
+        assertThat(warnings.get(0).ruleType()).isEqualTo(PolicyRuleType.MISSING_DESCRIPTION);
     }
 }

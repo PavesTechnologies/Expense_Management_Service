@@ -16,6 +16,7 @@ import com.expense_management_service.mapper.ExpenseReportMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import org.junit.jupiter.api.BeforeEach;
@@ -53,6 +54,8 @@ class ExpenseReportServiceImplTest {
     private UmsClient umsClient;
     @Mock
     private CurrentUserService currentUserService;
+    @Mock
+    private PolicyViolationRepository policyViolationRepository;
 
     private ExpenseReportServiceImpl expenseReportService;
 
@@ -66,7 +69,7 @@ class ExpenseReportServiceImplTest {
     void setUp() {
         expenseReportService = new ExpenseReportServiceImpl(
                 expenseReportRepository, costCenterRepository, currencyRepository, umsClient,
-                currentUserService, new ExpenseReportMapper());
+                currentUserService, new ExpenseReportMapper(), policyViolationRepository);
         ReflectionTestUtils.setField(expenseReportService, "businessPurposeMinLength", 10);
 
         costCenterId = UUID.randomUUID();
@@ -240,6 +243,26 @@ class ExpenseReportServiceImplTest {
 
         assertThatThrownBy(() -> expenseReportService.getById(reportId))
                 .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void getById_includesPolicyWarningCounts() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+
+        var justified = com.expense_management_service.entity.PolicyViolation.builder()
+                .violationId(UUID.randomUUID()).justification("explained").build();
+        var unjustified = com.expense_management_service.entity.PolicyViolation.builder()
+                .violationId(UUID.randomUUID()).build();
+        when(policyViolationRepository.findByLineItem_Report_ReportId(reportId)).thenReturn(List.of(justified, unjustified));
+
+        ExpenseReportResponse response = expenseReportService.getById(reportId);
+
+        assertThat(response.policyWarningCount()).isEqualTo(2);
+        assertThat(response.policyUnjustifiedCount()).isEqualTo(1);
     }
 
     @Test

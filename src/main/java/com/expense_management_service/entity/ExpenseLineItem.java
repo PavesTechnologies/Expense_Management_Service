@@ -109,4 +109,9 @@ public class ExpenseLineItem {
     @Builder.Default
     @ToString.Exclude
     private List<InvoiceSync> invoiceSyncs = new ArrayList<>();
+
+    @OneToMany(mappedBy = "lineItem", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    @ToString.Exclude
+    private List<PolicyViolation> policyViolations = new ArrayList<>();
 }

@@ -2,8 +2,11 @@ package com.expense_management_service.mapper;
 
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
+import com.expense_management_service.dto.response.PolicyWarningResponse;
 import com.expense_management_service.entity.ExpenseLineItem;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 @Component
 public class ExpenseLineItemMapper {
@@ -28,7 +31,7 @@ public class ExpenseLineItemMapper {
         entity.setClientBillable(request.clientBillable());
     }
 
-    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive) {
+    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive, List<PolicyWarningResponse> policyWarnings) {
         var category = entity.getCategory();
         return new ExpenseLineItemResponse(
                 entity.getLineItemId(),
@@ -57,7 +60,8 @@ public class ExpenseLineItemMapper {
                 entity.getClientBillable(),
                 entity.getLineStatus(),
                 entity.getCreatedAt(),
-                entity.getUpdatedAt()
+                entity.getUpdatedAt(),
+                policyWarnings
         );
     }
 }

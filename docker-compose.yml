@@ -1,0 +1,15 @@
+services:
+  xms-service:
+    image: 743737183908.dkr.ecr.ap-south-1.amazonaws.com/paves/xms-dev:latest1
+    container_name: xms-service
+    platform: linux/arm64
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

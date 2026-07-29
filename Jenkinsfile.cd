@@ -1,0 +1,2 @@
+@Library('paves-shared-lib') _ 
+deployToDev(serviceName: 'xms', serviceType: 'java', ecrRepo: 'paves/xms-dev')

@@ -3,7 +3,11 @@ package com.expense_management_service.repository;
 import com.expense_management_service.entity.Currency;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.Optional;
 import java.util.UUID;
 
 public interface CurrencyRepository extends JpaRepository<Currency, UUID> {
+
+    /** Resolves the organization's base/accounting currency by its configured ISO code (e.g. "INR"). */
+    Optional<Currency> findByCurrencyCodeIgnoreCase(String currencyCode);
 }

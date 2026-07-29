@@ -23,7 +23,10 @@ public record ExpenseLineItemResponse(
         String currencyCode,
         BigDecimal exchangeRate,
         BigDecimal baseAmount,
+        /** ISO code of the currency {@code baseAmount} is denominated in — the Organization Base Currency, not the report's own currency. */
+        String baseCurrencyCode,
         BigDecimal taxAmount,
+        BigDecimal netAmount,
         UUID costCenterId,
         String costCenterName,
         UUID projectId,

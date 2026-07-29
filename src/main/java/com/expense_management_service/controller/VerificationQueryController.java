@@ -30,20 +30,20 @@ public class VerificationQueryController {
     }
 
     @PutMapping("/{queryId}")
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<VerificationQueryResponse> update(@PathVariable UUID queryId,
                                                           @Valid @RequestBody VerificationQueryRequest request) {
         return ApiResponse.success("Verification query updated", verificationQueryService.update(queryId, request));
     }
 
     @GetMapping("/{queryId}")
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<VerificationQueryResponse> getById(@PathVariable UUID queryId) {
         return ApiResponse.success(verificationQueryService.getById(queryId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<List<VerificationQueryResponse>> getAll() {
         return ApiResponse.success(verificationQueryService.getAll());
     }

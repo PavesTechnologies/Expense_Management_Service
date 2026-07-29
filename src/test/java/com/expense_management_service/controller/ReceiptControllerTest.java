@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
-import static com.expense_management_service.security.RoleConstants.ROLE_EMPLOYEE;
+import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
 import static org.mockito.ArgumentMatchers.any;
@@ -67,7 +67,7 @@ class ReceiptControllerTest {
 
         mockMvc.perform(multipart("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId)
                         .file(file)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isCreated())
                 .andExpect(jsonPath("$.data.originalFileName").value("taxi-receipt.pdf"));
     }
@@ -111,7 +111,7 @@ class ReceiptControllerTest {
         when(receiptService.getById(receiptId)).thenReturn(sampleResponse(lineItemId, receiptId));
 
         mockMvc.perform(get("/xms/employee/receipts/{receiptId}", receiptId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.receiptId").value(receiptId.toString()));
     }
@@ -123,7 +123,7 @@ class ReceiptControllerTest {
                 .thenReturn(new ReceiptUrlResponse("https://signed-view-url", LocalDateTime.now().plusMinutes(15)));
 
         mockMvc.perform(get("/xms/employee/receipts/{receiptId}/view", receiptId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.url").value("https://signed-view-url"));
     }
@@ -135,7 +135,7 @@ class ReceiptControllerTest {
                 .thenReturn(new ReceiptUrlResponse("https://signed-download-url", LocalDateTime.now().plusMinutes(15)));
 
         mockMvc.perform(get("/xms/employee/receipts/{receiptId}/download", receiptId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.url").value("https://signed-download-url"));
     }
@@ -145,7 +145,7 @@ class ReceiptControllerTest {
         UUID receiptId = UUID.randomUUID();
 
         mockMvc.perform(delete("/xms/employee/receipts/{receiptId}", receiptId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isNoContent());
     }
 

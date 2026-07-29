@@ -71,7 +71,7 @@ class ReceiptServiceImplTest {
     }
 
     private CurrentUser employeeCaller() {
-        return new CurrentUser(UUID.randomUUID(), employeeId, "jordan@example.com", "Jordan", List.of("EMPLOYEE"), List.of());
+        return new CurrentUser(UUID.randomUUID(), employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
     }
 
     private MockMultipartFile pdfFile() {

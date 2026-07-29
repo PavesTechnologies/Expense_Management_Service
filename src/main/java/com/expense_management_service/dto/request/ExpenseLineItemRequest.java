@@ -2,6 +2,7 @@ package com.expense_management_service.dto.request;
 
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Positive;
+import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
 import java.math.BigDecimal;
@@ -16,6 +17,11 @@ import java.util.UUID;
  * <p>
  * {@code costCenterId} and {@code projectId} are both optional — a line item may inherit
  * the report's default cost center and may not belong to any project.
+ * <p>
+ * {@code amount} is the total amount exactly as printed on the receipt (inclusive of any
+ * VAT/GST); {@code taxAmount} is the VAT/GST portion of it, entered exactly as printed —
+ * the service never derives it from a percentage. A {@code null} taxAmount is treated as
+ * zero. The server derives {@code netAmount = amount - taxAmount}; it is not accepted here.
  */
 public record ExpenseLineItemRequest(
         @NotNull UUID categoryId,
@@ -24,7 +30,7 @@ public record ExpenseLineItemRequest(
         String description,
         @NotNull @Positive BigDecimal amount,
         @NotNull UUID currencyId,
-        BigDecimal taxAmount,
+        @PositiveOrZero BigDecimal taxAmount,
         UUID costCenterId,
         UUID projectId,
         Boolean clientBillable

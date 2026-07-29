@@ -36,13 +36,13 @@ public class InvoiceSyncController {
     }
 
     @GetMapping("/{syncId}")
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<InvoiceSyncResponse> getById(@PathVariable UUID syncId) {
         return ApiResponse.success(invoiceSyncService.getById(syncId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<List<InvoiceSyncResponse>> getAll() {
         return ApiResponse.success(invoiceSyncService.getAll());
     }

@@ -22,7 +22,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
-import static com.expense_management_service.security.RoleConstants.ROLE_EMPLOYEE;
+import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
 import static org.mockito.ArgumentMatchers.any;
@@ -100,7 +100,7 @@ class CostCenterBudgetControllerTest {
     @Test
     void create_returns403_forEmployee() throws Exception {
         mockMvc.perform(post("/xms/admin/cost-center-budgets")
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE)))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(sampleRequest())))
                 .andExpect(status().isForbidden());
@@ -163,7 +163,7 @@ class CostCenterBudgetControllerTest {
         UUID id = UUID.randomUUID();
 
         mockMvc.perform(get("/xms/admin/cost-center-budgets/{id}", id)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isForbidden());
     }
 
@@ -180,7 +180,7 @@ class CostCenterBudgetControllerTest {
     @Test
     void getAll_returns403_forEmployee() throws Exception {
         mockMvc.perform(get("/xms/admin/cost-center-budgets")
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isForbidden());
     }
 

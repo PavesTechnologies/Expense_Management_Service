@@ -42,7 +42,7 @@ public class CurrencyController {
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<List<CurrencyResponse>> getAll() {
         return ApiResponse.success(currencyService.getAll());
     }

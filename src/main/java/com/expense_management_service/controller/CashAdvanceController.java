@@ -24,25 +24,25 @@ public class CashAdvanceController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     public ApiResponse<CashAdvanceResponse> create(@Valid @RequestBody CashAdvanceRequest request) {
         return ApiResponse.success("Cash advance created", cashAdvanceService.create(request));
     }
 
     @PutMapping("/{advanceId}")
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     public ApiResponse<CashAdvanceResponse> update(@PathVariable UUID advanceId, @Valid @RequestBody CashAdvanceRequest request) {
         return ApiResponse.success("Cash advance updated", cashAdvanceService.update(advanceId, request));
     }
 
     @GetMapping("/{advanceId}")
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     public ApiResponse<CashAdvanceResponse> getById(@PathVariable UUID advanceId) {
         return ApiResponse.success(cashAdvanceService.getById(advanceId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     public ApiResponse<List<CashAdvanceResponse>> getAll() {
         return ApiResponse.success(cashAdvanceService.getAll());
     }

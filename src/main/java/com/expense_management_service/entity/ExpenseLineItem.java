@@ -66,6 +66,10 @@ public class ExpenseLineItem {
     @Column(name = "tax_amount", precision = 19, scale = 4)
     private BigDecimal taxAmount;
 
+    /** Derived: {@code amount - taxAmount}, recalculated server-side on every save — never accepted from the client. */
+    @Column(name = "net_amount", precision = 19, scale = 4, nullable = false)
+    private BigDecimal netAmount;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "cost_center_id")
     @ToString.Exclude

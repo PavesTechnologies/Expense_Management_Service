@@ -24,25 +24,25 @@ public class ReceiptOcrController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     public ApiResponse<ReceiptOcrResponse> create(@Valid @RequestBody ReceiptOcrRequest request) {
         return ApiResponse.success("Receipt OCR result created", receiptOcrService.create(request));
     }
 
     @PutMapping("/{ocrId}")
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     public ApiResponse<ReceiptOcrResponse> update(@PathVariable UUID ocrId, @Valid @RequestBody ReceiptOcrRequest request) {
         return ApiResponse.success("Receipt OCR result updated", receiptOcrService.update(ocrId, request));
     }
 
     @GetMapping("/{ocrId}")
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     public ApiResponse<ReceiptOcrResponse> getById(@PathVariable UUID ocrId) {
         return ApiResponse.success(receiptOcrService.getById(ocrId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     public ApiResponse<List<ReceiptOcrResponse>> getAll() {
         return ApiResponse.success(receiptOcrService.getAll());
     }

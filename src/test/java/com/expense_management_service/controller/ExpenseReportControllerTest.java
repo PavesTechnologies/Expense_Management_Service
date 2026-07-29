@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
-import static com.expense_management_service.security.RoleConstants.ROLE_EMPLOYEE;
+import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
 import static org.mockito.ArgumentMatchers.any;
@@ -82,7 +82,7 @@ class ExpenseReportControllerTest {
         when(expenseReportService.create(any())).thenReturn(sampleResponse(id, "DRAFT"));
 
         mockMvc.perform(post("/xms/employee/expense-reports")
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE)))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(sampleRequest())))
                 .andExpect(status().isCreated())
@@ -122,7 +122,7 @@ class ExpenseReportControllerTest {
                 """.formatted(UUID.randomUUID(), UUID.randomUUID());
 
         mockMvc.perform(post("/xms/employee/expense-reports")
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE)))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
                         .contentType("application/json")
                         .content(invalidBody))
                 .andExpect(status().isBadRequest());
@@ -136,7 +136,7 @@ class ExpenseReportControllerTest {
         when(expenseReportService.update(eq(id), any())).thenReturn(sampleResponse(id, "DRAFT"));
 
         mockMvc.perform(put("/xms/employee/expense-reports/{id}", id)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE)))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(sampleRequest())))
                 .andExpect(status().isOk());
@@ -160,7 +160,7 @@ class ExpenseReportControllerTest {
         when(expenseReportService.getAll()).thenReturn(List.of(sampleResponse(UUID.randomUUID(), "DRAFT")));
 
         mockMvc.perform(get("/xms/employee/expense-reports")
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].reportStatus").value("DRAFT"));
     }
@@ -172,7 +172,7 @@ class ExpenseReportControllerTest {
         UUID id = UUID.randomUUID();
 
         mockMvc.perform(delete("/xms/employee/expense-reports/{id}", id)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isNoContent());
     }
 
@@ -202,7 +202,7 @@ class ExpenseReportControllerTest {
         when(approvalWorkflowService.submit(eq(id))).thenReturn(sampleResponse(id, "PENDING_APPROVAL"));
 
         mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/submit", id)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.reportStatus").value("PENDING_APPROVAL"));
     }

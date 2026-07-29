@@ -18,7 +18,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/xms/employee/notifications")
 @RequiredArgsConstructor
-@PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
+@PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
 public class NotificationController {
 
     private final NotificationService notificationService;

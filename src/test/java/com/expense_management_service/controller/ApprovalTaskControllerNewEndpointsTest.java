@@ -22,7 +22,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
-import static com.expense_management_service.security.RoleConstants.ROLE_EMPLOYEE;
+import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -85,7 +85,7 @@ class ApprovalTaskControllerNewEndpointsTest {
         UUID taskId = UUID.randomUUID();
 
         mockMvc.perform(post("/xms/manager/approvals/{taskId}/approve", taskId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isForbidden());
     }
 
@@ -111,7 +111,7 @@ class ApprovalTaskControllerNewEndpointsTest {
                 .thenReturn(List.of(sampleResponse(UUID.randomUUID(), "PENDING")));
 
         mockMvc.perform(get("/xms/manager/approvals/my-queue")
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].taskStatus").value("PENDING"));
     }
@@ -137,7 +137,7 @@ class ApprovalTaskControllerNewEndpointsTest {
         UUID taskId = UUID.randomUUID();
 
         mockMvc.perform(get("/xms/manager/approvals/{taskId}/policy-warnings", taskId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isForbidden());
     }
 }

@@ -221,7 +221,7 @@ class ExchangeRateServiceImplTest {
                 .rate(BigDecimal.valueOf(82)).effectiveDate(LocalDate.of(2026, 3, 1)).build();
 
         when(exchangeRateRepository
-                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
                         usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
                 .thenReturn(Optional.of(historical));
 
@@ -234,7 +234,7 @@ class ExchangeRateServiceImplTest {
     void getHistoricalRate_throwsResourceNotFoundException_whenNoRateExistsOnOrBeforeDate() {
         LocalDate asOfDate = LocalDate.of(2026, 3, 15);
         when(exchangeRateRepository
-                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
                         usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
                 .thenReturn(Optional.empty());
 
@@ -249,7 +249,7 @@ class ExchangeRateServiceImplTest {
 
         assertThat(result).isEqualByComparingTo("100");
         verify(exchangeRateRepository, never())
-                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
                         any(), any(), any());
     }
 
@@ -267,7 +267,7 @@ class ExchangeRateServiceImplTest {
                 .exchangeRateId(UUID.randomUUID()).fromCurrency(usd).toCurrency(inr)
                 .rate(BigDecimal.valueOf(83.256)).effectiveDate(asOfDate).build();
         when(exchangeRateRepository
-                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
                         usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
                 .thenReturn(Optional.of(rate));
         when(currencyRepository.findById(inr.getCurrencyId())).thenReturn(Optional.of(inr));
@@ -283,7 +283,7 @@ class ExchangeRateServiceImplTest {
     void convertAmount_throwsResourceNotFoundException_whenNoRateExistsOnOrBeforeDate() {
         LocalDate asOfDate = LocalDate.of(2026, 3, 15);
         when(exchangeRateRepository
-                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
                         usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
                 .thenReturn(Optional.empty());
 

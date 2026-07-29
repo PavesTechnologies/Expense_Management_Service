@@ -42,13 +42,13 @@ public class ExpenseCategoryController {
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<List<ExpenseCategoryResponse>> getAll() {
         return ApiResponse.success(expenseCategoryService.getAll());
     }
 
     @GetMapping("/active")
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<List<ExpenseCategoryResponse>> getActive() {
         return ApiResponse.success(expenseCategoryService.getActiveCategories());
     }

@@ -9,4 +9,7 @@ import java.util.UUID;
 public interface CurrencyRepository extends JpaRepository<Currency, UUID> {
 
     Optional<Currency> findByCurrencyCode(String currencyCode);
+
+    /** Resolves the organization's base/accounting currency by its configured ISO code (e.g. "INR"). */
+    Optional<Currency> findByCurrencyCodeIgnoreCase(String currencyCode);
 }

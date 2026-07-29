@@ -23,7 +23,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
-import static com.expense_management_service.security.RoleConstants.ROLE_EMPLOYEE;
+import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -61,7 +61,7 @@ class ExpenseLineItemControllerTest {
         return new ExpenseLineItemResponse(lineItemId, reportId, "EXP-2026-ABCD1234", "DRAFT",
                 UUID.randomUUID(), "Travel", true, true, new BigDecimal("500.00"),
                 LocalDate.now().minusDays(1), "Uber", "Client meeting", new BigDecimal("100.00"),
-                UUID.randomUUID(), "USD", BigDecimal.ONE, new BigDecimal("100.00"), null,
+                UUID.randomUUID(), "USD", BigDecimal.ONE, new BigDecimal("100.00"), "INR", null, new BigDecimal("100.00"),
                 null, null, null, null, false, "ACTIVE", LocalDateTime.now(), LocalDateTime.now(), List.of());
     }
 
@@ -77,7 +77,7 @@ class ExpenseLineItemControllerTest {
         when(expenseLineItemService.create(eq(reportId), any())).thenReturn(sampleResponse(reportId, lineItemId));
 
         mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/line-items", reportId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE)))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(sampleRequest())))
                 .andExpect(status().isCreated())
@@ -113,7 +113,7 @@ class ExpenseLineItemControllerTest {
                 .thenReturn(sampleResponse(reportId, lineItemId));
 
         mockMvc.perform(put("/xms/employee/expense-reports/{reportId}/line-items/{lineItemId}", reportId, lineItemId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE)))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(sampleRequest())))
                 .andExpect(status().isOk());
@@ -137,7 +137,7 @@ class ExpenseLineItemControllerTest {
         UUID lineItemId = UUID.randomUUID();
 
         mockMvc.perform(delete("/xms/employee/expense-reports/{reportId}/line-items/{lineItemId}", reportId, lineItemId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isNoContent());
     }
 

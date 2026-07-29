@@ -2,6 +2,8 @@ package com.expense_management_service.repository;
 
 import com.expense_management_service.entity.ExpenseLineItem;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -19,4 +21,8 @@ public interface ExpenseLineItemRepository extends JpaRepository<ExpenseLineItem
     /** Cross-report duplicate detection for {@code PolicyRuleType.DUPLICATE_EXPENSE} — same employee, category, date and amount. */
     List<ExpenseLineItem> findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmount(
             String employeeId, UUID categoryId, LocalDate expenseDate, BigDecimal amount);
+
+    /** Sum of every line item's base-currency amount for a report — the report-level total is always presented in base currency. */
+    @Query("select coalesce(sum(l.baseAmount), 0) from ExpenseLineItem l where l.report.reportId = :reportId")
+    BigDecimal sumBaseAmountByReportId(@Param("reportId") UUID reportId);
 }

@@ -22,7 +22,7 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
-import static com.expense_management_service.security.RoleConstants.ROLE_EMPLOYEE;
+import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -62,7 +62,7 @@ class PolicyViolationControllerTest {
         when(policyViolationService.getForLineItem(reportId, lineItemId)).thenReturn(List.of(sampleWarning()));
 
         mockMvc.perform(get("/xms/employee/expense-reports/{reportId}/line-items/{lineItemId}/policy-warnings", reportId, lineItemId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].message").value("This expense is missing a description"));
     }
@@ -87,7 +87,7 @@ class PolicyViolationControllerTest {
 
         mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/line-items/{lineItemId}/policy-warnings/{violationId}/justify",
                         reportId, lineItemId, violationId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE)))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(new PolicyJustificationRequest("Client requested no itemised memo"))))
                 .andExpect(status().isOk())

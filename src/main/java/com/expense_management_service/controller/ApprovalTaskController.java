@@ -42,13 +42,13 @@ public class ApprovalTaskController {
     }
 
     @GetMapping("/{taskId}")
-    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','GENERAL')")
     public ApiResponse<ApprovalTaskResponse> getById(@PathVariable UUID taskId) {
         return ApiResponse.success(approvalTaskService.getById(taskId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','GENERAL')")
     public ApiResponse<List<ApprovalTaskResponse>> getAll() {
         return ApiResponse.success(approvalTaskService.getAll());
     }
@@ -79,7 +79,7 @@ public class ApprovalTaskController {
     }
 
     @GetMapping("/my-queue")
-    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','GENERAL')")
     public ApiResponse<List<ApprovalTaskResponse>> myQueue() {
         return ApiResponse.success(approvalWorkflowService.getMyQueue(currentUserService.getEmployeeId()));
     }

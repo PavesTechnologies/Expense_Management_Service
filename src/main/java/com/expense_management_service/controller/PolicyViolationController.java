@@ -28,13 +28,13 @@ public class PolicyViolationController {
     private final PolicyViolationService policyViolationService;
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     public ApiResponse<List<PolicyWarningResponse>> getAll(@PathVariable UUID reportId, @PathVariable UUID lineItemId) {
         return ApiResponse.success(policyViolationService.getForLineItem(reportId, lineItemId));
     }
 
     @PostMapping("/{violationId}/justify")
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     public ApiResponse<PolicyWarningResponse> justify(@PathVariable UUID reportId, @PathVariable UUID lineItemId,
                                                        @PathVariable UUID violationId,
                                                        @Valid @RequestBody PolicyJustificationRequest request) {

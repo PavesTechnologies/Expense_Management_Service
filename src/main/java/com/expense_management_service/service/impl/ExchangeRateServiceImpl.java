@@ -120,7 +120,7 @@ public class ExchangeRateServiceImpl implements ExchangeRateService {
     @Transactional(readOnly = true)
     public ExchangeRateResponse getHistoricalRate(UUID fromCurrencyId, UUID toCurrencyId, LocalDate asOfDate) {
         ExchangeRate rate = exchangeRateRepository
-                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
                         fromCurrencyId, toCurrencyId, asOfDate)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "No exchange rate is available for this currency pair effective on or before " + asOfDate));
@@ -138,7 +138,7 @@ public class ExchangeRateServiceImpl implements ExchangeRateService {
         }
 
         ExchangeRate rate = exchangeRateRepository
-                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDesc(
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
                         fromCurrencyId, toCurrencyId, asOfDate)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "No exchange rate is available for this currency pair effective on or before " + asOfDate));

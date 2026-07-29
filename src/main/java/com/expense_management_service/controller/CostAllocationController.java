@@ -37,13 +37,13 @@ public class CostAllocationController {
     }
 
     @GetMapping("/{allocationId}")
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<CostAllocationResponse> getById(@PathVariable UUID allocationId) {
         return ApiResponse.success(costAllocationService.getById(allocationId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<List<CostAllocationResponse>> getAll() {
         return ApiResponse.success(costAllocationService.getAll());
     }

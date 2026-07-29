@@ -78,7 +78,7 @@ class ExpenseReportServiceImplTest {
     }
 
     private CurrentUser employeeCaller() {
-        return new CurrentUser(employeeUuid, employeeId, "jordan@example.com", "Jordan", List.of("EMPLOYEE"), List.of());
+        return new CurrentUser(employeeUuid, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
     }
 
     private CurrentUser adminCaller() {

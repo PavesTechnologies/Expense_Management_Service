@@ -31,7 +31,8 @@ public class ExpenseLineItemMapper {
         entity.setClientBillable(request.clientBillable());
     }
 
-    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive, List<PolicyWarningResponse> policyWarnings) {
+    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive, String baseCurrencyCode,
+                                               List<PolicyWarningResponse> policyWarnings) {
         var category = entity.getCategory();
         return new ExpenseLineItemResponse(
                 entity.getLineItemId(),
@@ -52,7 +53,9 @@ public class ExpenseLineItemMapper {
                 entity.getCurrency() != null ? entity.getCurrency().getCurrencyCode() : null,
                 entity.getExchangeRate(),
                 entity.getBaseAmount(),
+                baseCurrencyCode,
                 entity.getTaxAmount(),
+                entity.getNetAmount(),
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterId() : null,
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterName() : null,
                 entity.getProject() != null ? entity.getProject().getProjectId() : null,

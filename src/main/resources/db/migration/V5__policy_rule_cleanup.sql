@@ -13,6 +13,11 @@
 -- are additive and are left to `hibernate.ddl-auto=update` to create, consistent with how every
 -- other new table/column in this project has been introduced (see V1's note: Flyway here is used
 -- for drops and data changes ddl-auto can't safely perform, not for new schema).
+--
+-- Originally written as V3, before a teammate's V3__add_net_amount_to_expense_line_item.sql landed
+-- via a separate merge — renumbered to V5 (the next free slot after the existing V4) since Flyway
+-- rejects two migrations sharing one version. No ordering dependency exists between them (different
+-- tables entirely), so the renumber is purely a version-number fix, not a behavior change.
 
 UPDATE policy_rule
 SET rule_type = NULL,

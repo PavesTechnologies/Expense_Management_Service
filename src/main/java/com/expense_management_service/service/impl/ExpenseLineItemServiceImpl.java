@@ -32,6 +32,7 @@ import com.expense_management_service.service.ExpenseLineItemService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -54,6 +55,15 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private final CurrentUserService currentUserService;
     private final ExpenseLineItemMapper expenseLineItemMapper;
 
+    /**
+     * The organization's single accounting/base currency (e.g. "INR") — every line item's
+     * {@code baseAmount} is always expressed in this currency, regardless of what currency the
+     * parent report happens to be denominated in. Same property {@code ExchangeRateServiceImpl}
+     * uses for its refresh job, so there is exactly one source of truth for "the base currency."
+     */
+    @Value("${exchange.rate.base-currency}")
+    private String baseCurrencyCode;
+
     @Override
     public ExpenseLineItemResponse create(UUID reportId, ExpenseLineItemRequest request) {
         ExpenseReport report = findReport(reportId);
@@ -66,15 +76,18 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
                     "Expense category " + category.getCategoryName() + " is not Active and cannot be assigned to a new line item");
         }
         assertExpenseDateValid(request.expenseDate());
+        assertTaxAmountValid(request.amount(), request.taxAmount());
 
         ExpenseLineItem entity = expenseLineItemMapper.toEntity(request);
         entity.setReport(report);
         entity.setCategory(category);
         entity.setLineStatus(STATUS_ACTIVE);
         applyRelations(entity, request);
-        applyCurrencyConversion(entity, report);
+        applyCurrencyConversion(entity);
+        applyNetAmount(entity);
 
         ExpenseLineItem saved = expenseLineItemRepository.save(entity);
+        recalculateReportTotal(report);
         log.info("Added line item {} to expense report {}", saved.getLineItemId(), reportId);
         return toResponse(saved);
     }
@@ -94,13 +107,16 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
                     "Expense category " + category.getCategoryName() + " is not Active and cannot be assigned");
         }
         assertExpenseDateValid(request.expenseDate());
+        assertTaxAmountValid(request.amount(), request.taxAmount());
 
         expenseLineItemMapper.updateEntity(entity, request);
         entity.setCategory(category);
         applyRelations(entity, request);
-        applyCurrencyConversion(entity, report);
+        applyCurrencyConversion(entity);
+        applyNetAmount(entity);
 
         ExpenseLineItem saved = expenseLineItemRepository.save(entity);
+        recalculateReportTotal(report);
         log.info("Updated line item {} on expense report {}", lineItemId, reportId);
         return toResponse(saved);
     }
@@ -128,6 +144,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         assertReportEditable(report);
         ExpenseLineItem entity = findLineItem(reportId, lineItemId);
         expenseLineItemRepository.delete(entity);
+        recalculateReportTotal(report);
         log.info("Deleted line item {} from expense report {}", lineItemId, reportId);
     }
 
@@ -147,25 +164,76 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         entity.setProject(projectId == null ? null : findProject(projectId));
     }
 
-    /** Best-effort conversion to the report's currency — a missing FX rate does not block saving the line item. */
-    private void applyCurrencyConversion(ExpenseLineItem entity, ExpenseReport report) {
-        Currency reportCurrency = report.getCurrency();
-        if (reportCurrency == null || entity.getCurrency().getCurrencyId().equals(reportCurrency.getCurrencyId())) {
+    /**
+     * Converts the line item's native amount into the Organization Base Currency — always, and
+     * regardless of what currency the parent report happens to be denominated in (the report's
+     * {@code currency} is a display/reference field only and never affects this conversion).
+     * VAL-09: the exchange-rate availability check applies per line item independently. A missing
+     * rate is not silently tolerated — the line item cannot be priced in base currency without it,
+     * so the save is rejected with a clear, actionable message.
+     */
+    private void applyCurrencyConversion(ExpenseLineItem entity) {
+        Currency baseCurrency = findOrganizationBaseCurrency();
+        if (entity.getCurrency().getCurrencyId().equals(baseCurrency.getCurrencyId())) {
             entity.setExchangeRate(BigDecimal.ONE);
             entity.setBaseAmount(entity.getAmount());
             return;
         }
         try {
             var rate = exchangeRateService.getHistoricalRate(
-                    entity.getCurrency().getCurrencyId(), reportCurrency.getCurrencyId(), entity.getExpenseDate());
+                    entity.getCurrency().getCurrencyId(), baseCurrency.getCurrencyId(), entity.getExpenseDate());
             entity.setExchangeRate(rate.rate());
             entity.setBaseAmount(entity.getAmount().multiply(rate.rate()).setScale(4, RoundingMode.HALF_UP));
         } catch (ResourceNotFoundException ex) {
-            log.warn("No exchange rate available for {} -> {} as of {}; leaving base amount unconverted",
-                    entity.getCurrency().getCurrencyCode(), reportCurrency.getCurrencyCode(), entity.getExpenseDate());
-            entity.setExchangeRate(null);
-            entity.setBaseAmount(null);
+            throw new BusinessRuleViolationException(
+                    "No exchange rate is available to convert " + entity.getCurrency().getCurrencyCode() + " to "
+                            + baseCurrency.getCurrencyCode() + " (the organization base currency) as of " + entity.getExpenseDate()
+                            + ". Ask an Administrator to add this exchange rate before saving this line item.");
         }
+    }
+
+    /**
+     * Resolves the organization's single accounting/base currency from {@link #baseCurrencyCode}.
+     * A missing or inactive configured base currency is a system misconfiguration, not a client
+     * error — every line item conversion depends on it, so it fails loudly rather than silently
+     * falling back to something else.
+     */
+    private Currency findOrganizationBaseCurrency() {
+        Currency baseCurrency = currencyRepository.findByCurrencyCodeIgnoreCase(baseCurrencyCode)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Organization base currency '" + baseCurrencyCode + "' is not configured in the Currency master table"));
+        if (!STATUS_ACTIVE.equalsIgnoreCase(baseCurrency.getStatus())) {
+            throw new IllegalStateException(
+                    "Organization base currency '" + baseCurrencyCode + "' is configured but not Active");
+        }
+        return baseCurrency;
+    }
+
+    /** GST/VAT is captured exactly as printed on the receipt; a missing value is treated as zero. */
+    private void applyNetAmount(ExpenseLineItem entity) {
+        BigDecimal tax = entity.getTaxAmount() != null ? entity.getTaxAmount() : BigDecimal.ZERO;
+        entity.setNetAmount(entity.getAmount().subtract(tax));
+    }
+
+    private void assertTaxAmountValid(BigDecimal amount, BigDecimal taxAmount) {
+        if (taxAmount == null) {
+            return;
+        }
+        if (taxAmount.signum() < 0) {
+            throw new IllegalArgumentException("taxAmount cannot be negative");
+        }
+        if (taxAmount.compareTo(amount) > 0) {
+            throw new IllegalArgumentException("taxAmount cannot exceed the total amount");
+        }
+    }
+
+    /** Report-level totals are always presented in the Organization Base Currency, derived from every line item's converted baseAmount — never in the report's own display currency. */
+    private void recalculateReportTotal(ExpenseReport report) {
+        BigDecimal total = expenseLineItemRepository.sumBaseAmountByReportId(report.getReportId());
+        report.setTotalAmount(total);
+        // TODO: Implement in Policy Management Epic — reimbursableAmount depends on policy rules
+        // (e.g. personal-portion exclusions) that are out of scope for multi-currency/VAT capture.
+        expenseReportRepository.save(report);
     }
 
     private void assertOwnerOrAdmin(ExpenseReport report) {
@@ -206,11 +274,19 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
                 .orElseThrow(() -> new ResourceNotFoundException("ExpenseCategory not found with id: " + categoryId));
     }
 
+    /**
+     * FR-1.4: the transaction currency must be in the organization's supported currency list.
+     * An unsupported/deactivated currency is never silently rejected — the error tells the
+     * employee to ask an Administrator to enable it, rather than leaving them guessing why the
+     * save failed.
+     */
     private Currency findActiveCurrency(UUID currencyId) {
         Currency currency = currencyRepository.findById(currencyId)
                 .orElseThrow(() -> new ResourceNotFoundException("Currency not found with id: " + currencyId));
         if (currency.getStatus() != null && !STATUS_ACTIVE.equalsIgnoreCase(currency.getStatus())) {
-            throw new IllegalArgumentException("Currency " + currency.getCurrencyCode() + " is not Active and cannot be selected");
+            throw new IllegalArgumentException(
+                    "Currency " + currency.getCurrencyCode()
+                            + " is not enabled for your organization. Please ask an Administrator to enable this currency before using it on a line item.");
         }
         return currency;
     }
@@ -243,6 +319,6 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private ExpenseLineItemResponse toResponse(ExpenseLineItem entity) {
         ExpenseCategory category = entity.getCategory();
         boolean categoryActive = category != null && STATUS_ACTIVE.equalsIgnoreCase(category.getStatus());
-        return expenseLineItemMapper.toResponse(entity, categoryActive);
+        return expenseLineItemMapper.toResponse(entity, categoryActive, baseCurrencyCode);
     }
 }

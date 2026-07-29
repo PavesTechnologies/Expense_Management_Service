@@ -42,7 +42,7 @@ public class CostCenterController {
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<List<CostCenterResponse>> getAll() {
         return ApiResponse.success(costCenterService.getAll());
     }

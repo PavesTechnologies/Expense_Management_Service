@@ -22,7 +22,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
-import static com.expense_management_service.security.RoleConstants.ROLE_EMPLOYEE;
+import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
 import static org.mockito.ArgumentMatchers.any;
@@ -108,7 +108,7 @@ class ExpenseCategoryControllerTest {
         UUID id = UUID.randomUUID();
 
         mockMvc.perform(get("/xms/admin/expense-categories/{id}", id)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isForbidden());
     }
 

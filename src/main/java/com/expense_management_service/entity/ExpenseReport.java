@@ -67,6 +67,18 @@ public class ExpenseReport {
     @Column(name = "reimbursable_amount", precision = 19, scale = 4)
     private BigDecimal reimbursableAmount;
 
+    /**
+     * Optimistic-locking column. The {@code version} column already exists in the database
+     * (NOT NULL, no default) but was unmapped, so every INSERT omitted it and MySQL rejected
+     * the row with "Field 'version' doesn't have a default value" — surfaced to callers as a
+     * generic {@code DataIntegrityViolationException}. Restoring this mapping also protects the
+     * report's {@code totalAmount} recalculation (EP02-S3) from lost updates when line items are
+     * saved concurrently.
+     */
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+
     @Column(name = "submitted_at")
     private LocalDateTime submittedAt;
 

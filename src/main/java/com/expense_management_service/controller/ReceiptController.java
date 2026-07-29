@@ -40,7 +40,7 @@ public class ReceiptController {
 
     @PostMapping(value = "/xms/employee/expense-line-items/{lineItemId}/receipts", consumes = "multipart/form-data")
     @ResponseStatus(HttpStatus.CREATED)
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     @Operation(
             summary = "Upload a receipt file for a line item",
             description = "Accepts a single multipart file. Allowed types: PDF, PNG, JPG, JPEG (validated by both "
@@ -69,7 +69,7 @@ public class ReceiptController {
     }
 
     @GetMapping("/xms/employee/expense-line-items/{lineItemId}/receipts")
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     @Operation(
             summary = "List receipts on a line item",
             description = "Returns metadata only — no pre-signed URLs are generated here. Call the /view or "
@@ -80,14 +80,14 @@ public class ReceiptController {
     }
 
     @GetMapping("/xms/employee/receipts/{receiptId}")
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     @Operation(summary = "Get receipt metadata", description = "Returns metadata only — never the S3 object key.")
     public ApiResponse<ReceiptResponse> getById(@PathVariable UUID receiptId) {
         return ApiResponse.success(receiptService.getById(receiptId));
     }
 
     @GetMapping("/xms/employee/receipts/{receiptId}/view")
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     @Operation(
             summary = "Get a time-limited URL to preview the receipt inline in a browser",
             description = "The URL is a pre-signed S3 GET link (default TTL: 15 minutes) — the bucket itself is "
@@ -102,7 +102,7 @@ public class ReceiptController {
     }
 
     @GetMapping("/xms/employee/receipts/{receiptId}/download")
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     @Operation(
             summary = "Get a time-limited URL to download the receipt",
             description = "Same pre-signed mechanism as /view, but forces a \"Save As\" download using the "
@@ -114,7 +114,7 @@ public class ReceiptController {
 
     @DeleteMapping("/xms/employee/receipts/{receiptId}")
     @ResponseStatus(HttpStatus.NO_CONTENT)
-    @PreAuthorize("hasAnyRole('ADMIN','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     @Operation(
             summary = "Delete a receipt",
             description = "Removes the file from S3 and the metadata row. Only the owning employee (or an Admin) "

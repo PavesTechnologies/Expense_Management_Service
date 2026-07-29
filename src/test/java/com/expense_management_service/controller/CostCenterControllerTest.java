@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
-import static com.expense_management_service.security.RoleConstants.ROLE_EMPLOYEE;
+import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
 import static org.mockito.ArgumentMatchers.any;
@@ -101,7 +101,7 @@ class CostCenterControllerTest {
     @Test
     void create_returns403_forEmployee() throws Exception {
         mockMvc.perform(post("/xms/admin/cost-centers")
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE)))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(sampleRequest())))
                 .andExpect(status().isForbidden());
@@ -164,7 +164,7 @@ class CostCenterControllerTest {
         UUID id = UUID.randomUUID();
 
         mockMvc.perform(get("/xms/admin/cost-centers/{id}", id)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isForbidden());
     }
 
@@ -179,10 +179,10 @@ class CostCenterControllerTest {
     }
 
     @Test
-    void getAll_returns403_forEmployee() throws Exception {
+    void getAll_returns200_forGeneral() throws Exception {
         mockMvc.perform(get("/xms/admin/cost-centers")
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_EMPLOYEE))))
-                .andExpect(status().isForbidden());
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isOk());
     }
 
     @Test

@@ -37,13 +37,13 @@ public class ApprovalDelegationController {
     }
 
     @GetMapping("/{delegationId}")
-    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','GENERAL')")
     public ApiResponse<ApprovalDelegationResponse> getById(@PathVariable UUID delegationId) {
         return ApiResponse.success(approvalDelegationService.getById(delegationId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','GENERAL')")
     public ApiResponse<List<ApprovalDelegationResponse>> getAll() {
         return ApiResponse.success(approvalDelegationService.getAll());
     }

@@ -37,13 +37,13 @@ public class CashAdvanceAdjustmentController {
     }
 
     @GetMapping("/{adjustmentId}")
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<CashAdvanceAdjustmentResponse> getById(@PathVariable UUID adjustmentId) {
         return ApiResponse.success(cashAdvanceAdjustmentService.getById(adjustmentId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','EMPLOYEE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER','GENERAL')")
     public ApiResponse<List<CashAdvanceAdjustmentResponse>> getAll() {
         return ApiResponse.success(cashAdvanceAdjustmentService.getAll());
     }

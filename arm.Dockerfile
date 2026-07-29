@@ -44,7 +44,7 @@ RUN chown springuser:springuser app.jar
 USER springuser
 
 # Expose port
-EXPOSE 5000
+EXPOSE 8080
 
 # JVM optimizations (Alpine/musl compatible)
 # UseContainerSupport is enabled by default in Java 17, but keeping it for clarity

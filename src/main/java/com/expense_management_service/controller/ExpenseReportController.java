@@ -5,6 +5,7 @@ import java.util.List;
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ExpenseReportService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,7 @@ import java.util.UUID;
 public class ExpenseReportController {
 
     private final ExpenseReportService expenseReportService;
+    private final ApprovalWorkflowService approvalWorkflowService;
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -61,5 +63,11 @@ public class ExpenseReportController {
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     public void delete(@PathVariable UUID reportId) {
         expenseReportService.delete(reportId);
+    }
+
+    @PostMapping("/{reportId}/submit")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
+    public ApiResponse<ExpenseReportResponse> submit(@PathVariable UUID reportId) {
+        return ApiResponse.success("Expense report submitted for approval", approvalWorkflowService.submit(reportId));
     }
 }

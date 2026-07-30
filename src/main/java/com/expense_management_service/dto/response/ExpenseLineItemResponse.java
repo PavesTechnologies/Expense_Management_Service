@@ -3,6 +3,7 @@ package com.expense_management_service.dto.response;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 public record ExpenseLineItemResponse(
@@ -34,6 +35,7 @@ public record ExpenseLineItemResponse(
         Boolean clientBillable,
         String lineStatus,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        List<PolicyWarningResponse> policyWarnings
 ) {
 }

@@ -10,7 +10,6 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
-import com.expense_management_service.common.ReportStatusConstants;
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.response.ReceiptResponse;
@@ -264,7 +263,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     }
 
     private void assertReportEditable(ExpenseReport report) {
-        if (!ReportStatusConstants.isEditable(report.getReportStatus())) {
+        if (!report.getReportStatus().isEditable()) {
             throw new BusinessRuleViolationException(
                     "Receipts cannot be added or removed while the report is in status " + report.getReportStatus());
         }

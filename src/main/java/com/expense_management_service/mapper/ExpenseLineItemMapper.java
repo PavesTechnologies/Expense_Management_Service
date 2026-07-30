@@ -2,8 +2,11 @@ package com.expense_management_service.mapper;
 
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
+import com.expense_management_service.dto.response.PolicyWarningResponse;
 import com.expense_management_service.entity.ExpenseLineItem;
 import org.springframework.stereotype.Component;
+
+import java.util.List;
 
 @Component
 public class ExpenseLineItemMapper {
@@ -28,13 +31,15 @@ public class ExpenseLineItemMapper {
         entity.setClientBillable(request.clientBillable());
     }
 
-    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive, String baseCurrencyCode) {
+    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive, String baseCurrencyCode,
+                                               List<PolicyWarningResponse> policyWarnings) {
         var category = entity.getCategory();
         return new ExpenseLineItemResponse(
                 entity.getLineItemId(),
                 entity.getReport() != null ? entity.getReport().getReportId() : null,
                 entity.getReport() != null ? entity.getReport().getReportNumber() : null,
-                entity.getReport() != null ? entity.getReport().getReportStatus() : null,
+                entity.getReport() != null && entity.getReport().getReportStatus() != null
+                        ? entity.getReport().getReportStatus().name() : null,
                 category != null ? category.getCategoryId() : null,
                 category != null ? category.getCategoryName() : null,
                 categoryActive,
@@ -58,7 +63,8 @@ public class ExpenseLineItemMapper {
                 entity.getClientBillable(),
                 entity.getLineStatus(),
                 entity.getCreatedAt(),
-                entity.getUpdatedAt()
+                entity.getUpdatedAt(),
+                policyWarnings
         );
     }
 }

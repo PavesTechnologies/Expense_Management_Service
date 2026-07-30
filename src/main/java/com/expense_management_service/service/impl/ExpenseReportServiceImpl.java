@@ -6,7 +6,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
-import com.expense_management_service.common.ReportStatusConstants;
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.DuplicateResourceException;
 import com.expense_management_service.common.exception.EmployeeInactiveException;
@@ -16,12 +15,15 @@ import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.integration.ums.UmsClient;
 import com.expense_management_service.integration.ums.dto.UmsUserResponse;
+import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.mapper.ExpenseReportMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
@@ -48,6 +50,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     private final UmsClient umsClient;
     private final CurrentUserService currentUserService;
     private final ExpenseReportMapper expenseReportMapper;
+    private final PolicyViolationRepository policyViolationRepository;
 
     /** Minimum character length for the business purpose free-text field — configurable per FR: "minimum 10 characters (configurable)". */
     @Value("${expense-report.business-purpose.min-length:10}")
@@ -68,7 +71,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         ExpenseReport entity = expenseReportMapper.toEntity(request);
         entity.setEmployeeId(caller.employeeId());
         entity.setFiscalYear(fiscalYear);
-        entity.setReportStatus(ReportStatusConstants.DRAFT);
+        entity.setReportStatus(ReportStatus.DRAFT);
         entity.setReportNumber(generateReportNumber(fiscalYear));
         entity.setCostCenter(costCenter);
         entity.setCurrency(currency);
@@ -119,7 +122,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     public void delete(UUID reportId) {
         ExpenseReport entity = findEntity(reportId);
         assertOwnerOrAdmin(entity);
-        if (!ReportStatusConstants.isDeletable(entity.getReportStatus())) {
+        if (!entity.getReportStatus().isDeletable()) {
             throw new BusinessRuleViolationException(
                     "Expense report cannot be deleted in status " + entity.getReportStatus() + " — only a Draft report may be deleted");
         }
@@ -178,7 +181,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     }
 
     private void assertEditable(ExpenseReport entity) {
-        if (!ReportStatusConstants.isEditable(entity.getReportStatus())) {
+        if (!entity.getReportStatus().isEditable()) {
             throw new BusinessRuleViolationException(
                     "Expense report cannot be edited in status " + entity.getReportStatus());
         }
@@ -228,8 +231,10 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     }
 
     private ExpenseReportResponse toResponse(ExpenseReport entity) {
-        boolean editable = ReportStatusConstants.isEditable(entity.getReportStatus());
-        boolean deletable = ReportStatusConstants.isDeletable(entity.getReportStatus());
-        return expenseReportMapper.toResponse(entity, editable, deletable);
+        boolean editable = entity.getReportStatus().isEditable();
+        boolean deletable = entity.getReportStatus().isDeletable();
+        List<PolicyViolation> violations = policyViolationRepository.findByLineItem_Report_ReportId(entity.getReportId());
+        int unjustified = (int) violations.stream().filter(v -> v.getJustification() == null).count();
+        return expenseReportMapper.toResponse(entity, editable, deletable, violations.size(), unjustified);
     }
 }

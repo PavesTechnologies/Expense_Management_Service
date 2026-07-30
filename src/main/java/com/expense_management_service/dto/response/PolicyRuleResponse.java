@@ -1,6 +1,10 @@
 package com.expense_management_service.dto.response;
 
+import com.expense_management_service.enums.PolicyRuleType;
+import com.expense_management_service.enums.PolicySeverity;
+
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 public record PolicyRuleResponse(
@@ -8,12 +12,13 @@ public record PolicyRuleResponse(
         UUID categoryId,
         String categoryName,
         String policyName,
-        String ruleType,
+        PolicyRuleType ruleType,
         String ruleValue,
-        String action,
-        String severity,
+        PolicySeverity severity,
         LocalDate effectiveFrom,
         LocalDate effectiveTo,
-        String status
+        String status,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt
 ) {
 }

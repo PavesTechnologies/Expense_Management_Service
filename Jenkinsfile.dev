@@ -1,0 +1,16 @@
+@Library('paves-shared-lib') _
+
+// CD (dev) pipeline — builds the ARM64 image from this repo's Dockerfile, pushes to
+// paves/xms-dev in ECR, syncs secrets on the dev EC2 host, then commits the new image
+// tag into intranet-devops's `dev` branch at k8s/backend/xms/deployment.yaml so ArgoCD
+// picks it up. See jenkins-shared-lib/vars/deployToDev.groovy in intranet-devops.
+//
+// Requires (external coordination, not resolvable from this repo):
+//   - ECR repository "paves/xms-dev" already created
+//   - k8s/backend/xms/deployment.yaml already committed on intranet-devops's dev branch
+//   - ~/k8s/update-secret.sh xms working on the dev EC2 host
+deployToDev(
+    serviceName: 'xms',
+    ecrRepo:     'paves/xms-dev',
+    serviceType: 'java'
+)

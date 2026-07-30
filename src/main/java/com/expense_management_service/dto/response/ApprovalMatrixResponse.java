@@ -14,6 +14,7 @@ public record ApprovalMatrixResponse(
         String approverType,
         String approverReference,
         String status,
+        String approvalMode,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {

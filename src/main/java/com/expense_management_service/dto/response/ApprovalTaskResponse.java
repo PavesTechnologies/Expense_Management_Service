@@ -13,6 +13,12 @@ public record ApprovalTaskResponse(
         String comments,
         LocalDateTime assignedAt,
         LocalDateTime actionedAt,
-        LocalDateTime dueDate
+        LocalDateTime dueDate,
+        UUID groupId,
+        Integer submissionCycle,
+        String actedBy,
+        String approvalMode,
+        int policyWarningCount,
+        int policyUnjustifiedCount
 ) {
 }

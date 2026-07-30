@@ -7,6 +7,7 @@ import com.expense_management_service.dto.response.ReceiptUrlResponse;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.Receipt;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.mapper.ReceiptMapper;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ReceiptRepository;
@@ -66,7 +67,7 @@ class ReceiptServiceImplTest {
 
         lineItemId = UUID.randomUUID();
         reportId = UUID.randomUUID();
-        draftReport = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus("DRAFT").build();
+        draftReport = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus(ReportStatus.DRAFT).build();
         lineItem = ExpenseLineItem.builder().lineItemId(lineItemId).report(draftReport).build();
     }
 
@@ -182,7 +183,7 @@ class ReceiptServiceImplTest {
 
     @Test
     void upload_throwsBusinessRuleViolation_whenReportNotEditable() {
-        draftReport.setReportStatus("SUBMITTED");
+        draftReport.setReportStatus(ReportStatus.SUBMITTED);
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
 
@@ -290,7 +291,7 @@ class ReceiptServiceImplTest {
     @Test
     void delete_throwsBusinessRuleViolation_whenReportNotEditable() {
         UUID receiptId = UUID.randomUUID();
-        draftReport.setReportStatus("SUBMITTED");
+        draftReport.setReportStatus(ReportStatus.SUBMITTED);
         Receipt receipt = Receipt.builder().receiptId(receiptId).lineItem(lineItem).objectKey("receipts/key").build();
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(receiptRepository.findById(receiptId)).thenReturn(Optional.of(receipt));

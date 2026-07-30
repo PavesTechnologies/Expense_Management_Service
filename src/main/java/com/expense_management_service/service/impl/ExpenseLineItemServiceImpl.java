@@ -4,9 +4,9 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
 
-import com.expense_management_service.common.ReportStatusConstants;
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
@@ -16,19 +16,23 @@ import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseCategory;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.entity.ProjectCache;
 import com.expense_management_service.mapper.ExpenseLineItemMapper;
+import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseCategoryRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.repository.ProjectCacheRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
 import com.expense_management_service.service.ExchangeRateService;
 import com.expense_management_service.service.ExpenseLineItemService;
+import com.expense_management_service.service.PolicyEvaluator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -54,6 +58,9 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private final ExchangeRateService exchangeRateService;
     private final CurrentUserService currentUserService;
     private final ExpenseLineItemMapper expenseLineItemMapper;
+    private final PolicyEvaluator policyEvaluator;
+    private final PolicyViolationRepository policyViolationRepository;
+    private final PolicyViolationMapper policyViolationMapper;
 
     /**
      * The organization's single accounting/base currency (e.g. "INR") — every line item's
@@ -87,6 +94,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         applyNetAmount(entity);
 
         ExpenseLineItem saved = expenseLineItemRepository.save(entity);
+        refreshPolicyViolations(saved);
         recalculateReportTotal(report);
         log.info("Added line item {} to expense report {}", saved.getLineItemId(), reportId);
         return toResponse(saved);
@@ -116,6 +124,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         applyNetAmount(entity);
 
         ExpenseLineItem saved = expenseLineItemRepository.save(entity);
+        refreshPolicyViolations(saved);
         recalculateReportTotal(report);
         log.info("Updated line item {} on expense report {}", lineItemId, reportId);
         return toResponse(saved);
@@ -193,6 +202,46 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     }
 
     /**
+     * Re-runs {@link PolicyEvaluator} against the saved line item and replaces its stored
+     * violations, carrying forward any existing justification whose (ruleType, policyRule) still
+     * matches a recomputed violation — so a trivial edit doesn't silently erase an employee's
+     * explanation. Wrapped defensively: {@link PolicyEvaluator} already promises never to throw,
+     * but a policy failure here must never fail the line-item save regardless, mirroring
+     * {@link #applyCurrencyConversion}'s fail-open posture in this same class.
+     */
+    private void refreshPolicyViolations(ExpenseLineItem lineItem) {
+        try {
+            List<PolicyViolation> existing = policyViolationRepository.findByLineItem_LineItemId(lineItem.getLineItemId());
+            List<PolicyViolation> recomputed = policyEvaluator.evaluate(lineItem);
+
+            for (PolicyViolation violation : recomputed) {
+                existing.stream()
+                        .filter(old -> sameRule(old, violation))
+                        .findFirst()
+                        .ifPresent(old -> {
+                            violation.setJustification(old.getJustification());
+                            violation.setJustifiedAt(old.getJustifiedAt());
+                        });
+            }
+
+            policyViolationRepository.deleteAll(existing);
+            policyViolationRepository.saveAll(recomputed);
+        } catch (Exception ex) {
+            log.warn("Policy evaluation failed for line item {} - continuing without policy warnings",
+                    lineItem.getLineItemId(), ex);
+        }
+    }
+
+    private boolean sameRule(PolicyViolation existing, PolicyViolation recomputed) {
+        if (existing.getRuleType() != recomputed.getRuleType()) {
+            return false;
+        }
+        UUID existingRuleId = existing.getPolicyRule() != null ? existing.getPolicyRule().getPolicyId() : null;
+        UUID recomputedRuleId = recomputed.getPolicyRule() != null ? recomputed.getPolicyRule().getPolicyId() : null;
+        return Objects.equals(existingRuleId, recomputedRuleId);
+    }
+
+    /**
      * Resolves the organization's single accounting/base currency from {@link #baseCurrencyCode}.
      * A missing or inactive configured base currency is a system misconfiguration, not a client
      * error — every line item conversion depends on it, so it fails loudly rather than silently
@@ -263,7 +312,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     }
 
     private void assertReportEditable(ExpenseReport report) {
-        if (!ReportStatusConstants.isEditable(report.getReportStatus())) {
+        if (!report.getReportStatus().isEditable()) {
             throw new BusinessRuleViolationException(
                     "Line items cannot be added, edited, or deleted while the report is in status " + report.getReportStatus());
         }
@@ -319,6 +368,9 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private ExpenseLineItemResponse toResponse(ExpenseLineItem entity) {
         ExpenseCategory category = entity.getCategory();
         boolean categoryActive = category != null && STATUS_ACTIVE.equalsIgnoreCase(category.getStatus());
-        return expenseLineItemMapper.toResponse(entity, categoryActive, baseCurrencyCode);
+        var warnings = policyViolationRepository.findByLineItem_LineItemId(entity.getLineItemId()).stream()
+                .map(policyViolationMapper::toResponse)
+                .toList();
+        return expenseLineItemMapper.toResponse(entity, categoryActive, baseCurrencyCode, warnings);
     }
 }

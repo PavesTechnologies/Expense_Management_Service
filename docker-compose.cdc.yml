@@ -1,0 +1,82 @@
+version: '3.8'
+
+# ==============================================================================
+# Local development stack for the Employee CDC pipeline (EP06 Phase 0).
+#
+# Production topology (per the Employee Onboarding System and Leave Management
+# System repos): a Debezium MySQL connector on AWS RDS publishes flattened
+# employee-change events to a Redpanda broker on an external Docker network
+# named `cdc-network`. That network and the connector are owned by
+# infra/whoever deploys EOS - nothing in any repo on this machine currently
+# defines them (see docs/cdc/README.md).
+#
+# This compose file stands up a throwaway, single-node Redpanda + console on a
+# LOCALLY-OWNED `cdc-network`, so EmployeeCdcConsumer can be developed and
+# tested end-to-end (including failure/quarantine paths) without any
+# dependency on RDS, Debezium, or another team's infrastructure.
+#
+# Usage:
+#   docker compose -f docker-compose.cdc.yml up -d
+#   ./mvnw spring-boot:run                     (app connects via localhost:19092)
+#   see docs/cdc/README.md for sample events to hand-publish to the topic
+#
+# Do NOT run this alongside real EOS/LMS containers on the same machine - both
+# of their compose files declare `cdc-network` as `external: true`, so whichever
+# stack starts second will fail unless this one is brought down first.
+# ==============================================================================
+
+services:
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.2.18
+    container_name: xms-cdc-redpanda
+    command:
+      - redpanda
+      - start
+      - --smp=1
+      - --memory=1G
+      - --overprovisioned
+      - --node-id=0
+      - --kafka-addr=internal://0.0.0.0:29092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:29092,external://localhost:19092
+      - --pandaproxy-addr=internal://0.0.0.0:8082,external://0.0.0.0:18082
+      - --advertise-pandaproxy-addr=internal://redpanda:8082,external://localhost:18082
+      - --schema-registry-addr=0.0.0.0:8081
+      - --rpc-addr=0.0.0.0:33145
+      - --advertise-rpc-addr=redpanda:33145
+    ports:
+      - "19092:19092"   # Kafka API - host access (spring.kafka.bootstrap-servers=localhost:19092)
+      - "18082:18082"   # HTTP proxy (unused today)
+      - "8081:8081"     # Schema registry (unused - this contract has schemas.enable=false)
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - cdc-network
+
+  redpanda-console:
+    image: docker.redpanda.com/redpandadata/console:v2.8.2
+    container_name: xms-cdc-console
+    environment:
+      KAFKA_BROKERS: redpanda:29092
+    ports:
+      - "8090:8080"     # Browse topics/messages at http://localhost:8090
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    networks:
+      - cdc-network
+
+networks:
+  cdc-network:
+    name: cdc-network
+    driver: bridge
+    # Production EOS/LMS compose files declare this network `external: true`
+    # (created by whoever owns the real CDC infra). This file CREATES it
+    # instead, making this stack fully self-contained for local development.
+
+volumes:
+  redpanda-data:

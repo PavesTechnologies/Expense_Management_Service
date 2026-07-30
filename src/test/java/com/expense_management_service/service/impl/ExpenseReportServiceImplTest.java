@@ -9,12 +9,14 @@ import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.integration.ums.UmsClient;
 import com.expense_management_service.integration.ums.dto.UmsUserResponse;
 import com.expense_management_service.mapper.ExpenseReportMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,6 +54,8 @@ class ExpenseReportServiceImplTest {
     private UmsClient umsClient;
     @Mock
     private CurrentUserService currentUserService;
+    @Mock
+    private PolicyViolationRepository policyViolationRepository;
 
     private ExpenseReportServiceImpl expenseReportService;
 
@@ -65,7 +69,7 @@ class ExpenseReportServiceImplTest {
     void setUp() {
         expenseReportService = new ExpenseReportServiceImpl(
                 expenseReportRepository, costCenterRepository, currencyRepository, umsClient,
-                currentUserService, new ExpenseReportMapper());
+                currentUserService, new ExpenseReportMapper(), policyViolationRepository);
         ReflectionTestUtils.setField(expenseReportService, "businessPurposeMinLength", 10);
 
         costCenterId = UUID.randomUUID();
@@ -179,7 +183,7 @@ class ExpenseReportServiceImplTest {
     void update_throwsAccessDenied_whenCallerIsNotOwner() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
-                .reportStatus("DRAFT").fiscalYear(fiscalYear).title("Old title").build();
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).title("Old title").build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -193,7 +197,7 @@ class ExpenseReportServiceImplTest {
     void update_allowsAdmin_toEditAnyReport() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
-                .reportStatus("DRAFT").fiscalYear(fiscalYear).title("Old title").build();
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).title("Old title").build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(adminCaller());
         stubActiveCostCenterAndCurrency();
@@ -210,7 +214,7 @@ class ExpenseReportServiceImplTest {
     void update_throwsBusinessRuleViolation_whenReportNotEditable() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
-                .reportStatus("SUBMITTED").fiscalYear(fiscalYear).title("Old title").build();
+                .reportStatus(ReportStatus.SUBMITTED).fiscalYear(fiscalYear).title("Old title").build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -224,7 +228,7 @@ class ExpenseReportServiceImplTest {
     void getById_throwsAccessDenied_whenEmployeeRequestsSomeoneElsesReport() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
-                .reportStatus("DRAFT").fiscalYear(fiscalYear).build();
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -242,10 +246,30 @@ class ExpenseReportServiceImplTest {
     }
 
     @Test
+    void getById_includesPolicyWarningCounts() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+
+        var justified = com.expense_management_service.entity.PolicyViolation.builder()
+                .violationId(UUID.randomUUID()).justification("explained").build();
+        var unjustified = com.expense_management_service.entity.PolicyViolation.builder()
+                .violationId(UUID.randomUUID()).build();
+        when(policyViolationRepository.findByLineItem_Report_ReportId(reportId)).thenReturn(List.of(justified, unjustified));
+
+        ExpenseReportResponse response = expenseReportService.getById(reportId);
+
+        assertThat(response.policyWarningCount()).isEqualTo(2);
+        assertThat(response.policyUnjustifiedCount()).isEqualTo(1);
+    }
+
+    @Test
     void getAll_scopesToOwnReports_forEmployeeRole() {
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         ExpenseReport own = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId(employeeId)
-                .reportStatus("DRAFT").fiscalYear(fiscalYear).build();
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build();
         when(expenseReportRepository.findByEmployeeId(employeeId)).thenReturn(List.of(own));
 
         List<ExpenseReportResponse> result = expenseReportService.getAll();
@@ -259,8 +283,8 @@ class ExpenseReportServiceImplTest {
         CurrentUser finance = new CurrentUser(UUID.randomUUID(), "financeUser", "f@example.com", "Finance", List.of("FINANCE"), List.of());
         when(currentUserService.getCurrentUser()).thenReturn(finance);
         when(expenseReportRepository.findAll()).thenReturn(List.of(
-                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("a").reportStatus("DRAFT").fiscalYear(fiscalYear).build(),
-                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("b").reportStatus("SUBMITTED").fiscalYear(fiscalYear).build()));
+                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("a").reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build(),
+                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("b").reportStatus(ReportStatus.SUBMITTED).fiscalYear(fiscalYear).build()));
 
         List<ExpenseReportResponse> result = expenseReportService.getAll();
 
@@ -271,7 +295,7 @@ class ExpenseReportServiceImplTest {
     @Test
     void delete_removesReport_whenOwnerAndDraft() {
         UUID reportId = UUID.randomUUID();
-        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus("DRAFT").build();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus(ReportStatus.DRAFT).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -283,7 +307,7 @@ class ExpenseReportServiceImplTest {
     @Test
     void delete_throwsBusinessRuleViolation_whenReportAlreadySubmitted() {
         UUID reportId = UUID.randomUUID();
-        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus("SUBMITTED").build();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus(ReportStatus.SUBMITTED).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -296,7 +320,7 @@ class ExpenseReportServiceImplTest {
     @Test
     void delete_throwsAccessDenied_whenCallerIsNotOwnerOrAdmin() {
         UUID reportId = UUID.randomUUID();
-        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else").reportStatus("DRAFT").build();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else").reportStatus(ReportStatus.DRAFT).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 

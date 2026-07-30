@@ -14,6 +14,7 @@ public record ApprovalMatrixRequest(
         Integer approvalLevel,
         @Size(max = 255) String approverType,
         @Size(max = 255) String approverReference,
-        @Size(max = 255) String status
+        @Size(max = 255) String status,
+        @Size(max = 255) String approvalMode
 ) {
 }

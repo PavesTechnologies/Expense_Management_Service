@@ -62,9 +62,8 @@ class ExpenseLineItemControllerTest {
                 UUID.randomUUID(), "Travel", true, true, new BigDecimal("500.00"),
                 LocalDate.now().minusDays(1), "Uber", "Client meeting", new BigDecimal("100.00"),
                 UUID.randomUUID(), "USD", BigDecimal.ONE, new BigDecimal("100.00"), "INR", null, new BigDecimal("100.00"),
-                null, null, null, null, false, "ACTIVE", LocalDateTime.now(), LocalDateTime.now());
+                null, null, null, null, false, "ACTIVE", LocalDateTime.now(), LocalDateTime.now(), List.of());
     }
-
 
     private static ExpenseLineItemRequest sampleRequest() {
         return new ExpenseLineItemRequest(UUID.randomUUID(), LocalDate.now().minusDays(1), "Uber",

@@ -6,6 +6,7 @@ import com.expense_management_service.common.exception.EmployeeInactiveException
 import com.expense_management_service.common.exception.ResourceInUseException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.common.exception.UmsIntegrationException;
+import com.expense_management_service.service.TextractIntegrationException;
 import com.expense_management_service.storage.StorageException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -139,6 +140,13 @@ public class GlobalExceptionHandler {
         log.error("S3 storage operation failed", ex);
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(ApiResponse.error("File storage is temporarily unavailable — please try again"));
+    }
+
+    @ExceptionHandler(TextractIntegrationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTextractFailure(TextractIntegrationException ex) {
+        log.error("AWS Textract operation failed", ex);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(ApiResponse.error("OCR is temporarily unavailable — you can continue with manual entry"));
     }
 
     @ExceptionHandler(Exception.class)

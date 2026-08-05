@@ -18,7 +18,10 @@ import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.Receipt;
 import com.expense_management_service.mapper.ReceiptMapper;
+import com.expense_management_service.enums.OcrStatus;
+import com.expense_management_service.event.ReceiptUploadedEvent;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
+import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.ReceiptRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
@@ -30,37 +33,63 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
 
+/**
+ * {@link ReceiptService} implementation (EP03-S4). A receipt is created directly under its
+ * {@code ExpenseReport} — no line item is required at upload time. OCR runs against the
+ * report-level receipt; an {@code ExpenseLineItem} is only created/linked later, when the
+ * employee confirms (see {@code ReceiptConfirmationService}).
+ */
 @Service
 @RequiredArgsConstructor
 @Transactional
 @Slf4j
 public class ReceiptServiceImpl implements ReceiptService {
 
-    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of("application/pdf", "image/png", "image/jpeg");
-    private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "png", "jpg", "jpeg");
+    /**
+     * WEBP is accepted for upload/storage/viewing like any other receipt image, but AWS Textract
+     * itself does not accept WEBP as an input format for any of its APIs (JPEG, PNG, PDF, and
+     * TIFF only) — a WEBP receipt's OCR attempt will fail with a clear, categorized
+     * {@code TextractIntegrationException} (see {@code TextractServiceImpl}) rather than silently
+     * producing a blank result. Employees can still enter such receipts manually.
+     */
+    private static final Set<String> ALLOWED_CONTENT_TYPES = Set.of(
+            "application/pdf", "image/png", "image/jpeg", "image/webp");
+    private static final Set<String> ALLOWED_EXTENSIONS = Set.of("pdf", "png", "jpg", "jpeg", "webp");
+
+    /** One expected byte run at a given offset within the file — a signature is one or more of these. */
+    private record SignaturePart(int offset, byte[] magic) {
+    }
 
     /**
      * File-signature ("magic bytes") of each allowed extension, checked against the actual
      * uploaded bytes — declared Content-Type and file extension are both attacker-controlled
      * (renaming a file changes both at once), so neither alone proves what the file actually is.
+     * WEBP's signature is two separate runs ("RIFF" at offset 0, "WEBP" at offset 8) rather than
+     * one contiguous prefix, hence a list of parts instead of a single byte array per extension.
      */
-    private static final Map<String, byte[]> SIGNATURES_BY_EXTENSION = Map.of(
-            "pdf", new byte[] {0x25, 0x50, 0x44, 0x46},
-            "png", new byte[] {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A},
-            "jpg", new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF},
-            "jpeg", new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF}
+    private static final Map<String, List<SignaturePart>> SIGNATURES_BY_EXTENSION = Map.of(
+            "pdf", List.of(new SignaturePart(0, new byte[] {0x25, 0x50, 0x44, 0x46})),
+            "png", List.of(new SignaturePart(0, new byte[] {(byte) 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})),
+            "jpg", List.of(new SignaturePart(0, new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF})),
+            "jpeg", List.of(new SignaturePart(0, new byte[] {(byte) 0xFF, (byte) 0xD8, (byte) 0xFF})),
+            "webp", List.of(
+                    new SignaturePart(0, new byte[] {0x52, 0x49, 0x46, 0x46}),
+                    new SignaturePart(8, new byte[] {0x57, 0x45, 0x42, 0x50}))
     );
 
     private final ReceiptRepository receiptRepository;
+    private final ExpenseReportRepository expenseReportRepository;
     private final ExpenseLineItemRepository expenseLineItemRepository;
     private final StorageService storageService;
     private final CurrentUserService currentUserService;
     private final ReceiptMapper receiptMapper;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     @Value("${receipt.max-file-size-bytes:10485760}")
     private long maxFileSizeBytes;
@@ -69,21 +98,21 @@ public class ReceiptServiceImpl implements ReceiptService {
     private long presignedUrlTtlMinutes;
 
     @Override
-    public ReceiptResponse upload(UUID lineItemId, MultipartFile file) {
-        ExpenseLineItem lineItem = findLineItem(lineItemId);
-        ExpenseReport report = lineItem.getReport();
+    public ReceiptResponse upload(UUID reportId, MultipartFile file) {
+        ExpenseReport report = findReport(reportId);
         assertOwnerOrAdmin(report);
         assertReportEditable(report);
         assertFileValid(file);
 
         String originalFileName = extractBaseFileName(file.getOriginalFilename());
         String storedFileName = UUID.randomUUID() + "-" + sanitizeForKey(originalFileName);
-        String objectKey = "receipts/" + report.getEmployeeId() + "/" + report.getReportId() + "/" + lineItemId + "/" + storedFileName;
+        String objectKey = "receipts/" + report.getEmployeeId() + "/" + report.getReportId() + "/" + storedFileName;
 
         storageService.upload(objectKey, file);
 
         Receipt entity = Receipt.builder()
-                .lineItem(lineItem)
+                .report(report)
+                .employeeId(report.getEmployeeId())
                 .originalFileName(originalFileName)
                 .storedFileName(storedFileName)
                 .objectKey(objectKey)
@@ -91,6 +120,7 @@ public class ReceiptServiceImpl implements ReceiptService {
                 .fileSize((int) file.getSize())
                 .uploadedBy(currentUserService.getCurrentUser().employeeId())
                 .uploadedAt(LocalDateTime.now())
+                .ocrStatus(OcrStatus.UPLOADED.name())
                 .build();
 
         try {
@@ -98,13 +128,23 @@ public class ReceiptServiceImpl implements ReceiptService {
             // try/catch, rather than later at transaction-commit time — a deferred flush
             // failure would otherwise skip the compensating S3 delete below entirely.
             Receipt saved = receiptRepository.saveAndFlush(entity);
-            log.info("Uploaded receipt {} for line item {}", saved.getReceiptId(), lineItemId);
+            log.info("[OCR] Receipt {} saved for report {} — publishing ReceiptUploadedEvent", saved.getReceiptId(), reportId);
+            applicationEventPublisher.publishEvent(new ReceiptUploadedEvent(saved.getReceiptId()));
+            log.info("[OCR] ReceiptUploadedEvent published for receipt {}", saved.getReceiptId());
             return receiptMapper.toResponse(saved);
         } catch (RuntimeException ex) {
-            log.error("Metadata save failed after storage upload succeeded for line item {} — deleting the now-orphaned file", lineItemId, ex);
+            log.error("Metadata save failed after storage upload succeeded for report {} — deleting the now-orphaned file", reportId, ex);
             safeDeleteFromStorage(objectKey);
             throw ex;
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ReceiptResponse> getAllForReport(UUID reportId) {
+        ExpenseReport report = findReport(reportId);
+        assertViewable(report);
+        return receiptRepository.findByReport_ReportId(reportId).stream().map(receiptMapper::toResponse).toList();
     }
 
     @Override
@@ -119,7 +159,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     @Transactional(readOnly = true)
     public ReceiptResponse getById(UUID receiptId) {
         Receipt entity = findReceipt(receiptId);
-        assertViewable(entity.getLineItem().getReport());
+        assertViewable(entity.getReport());
         return receiptMapper.toResponse(entity);
     }
 
@@ -127,7 +167,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     @Transactional(readOnly = true)
     public ReceiptUrlResponse getViewUrl(UUID receiptId) {
         Receipt entity = findReceipt(receiptId);
-        assertViewable(entity.getLineItem().getReport());
+        assertViewable(entity.getReport());
         Duration ttl = Duration.ofMinutes(presignedUrlTtlMinutes);
         String url = storageService.generateViewUrl(entity.getObjectKey(), ttl);
         log.info("Generated view URL for receipt {}", receiptId);
@@ -138,7 +178,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     @Transactional(readOnly = true)
     public ReceiptUrlResponse getDownloadUrl(UUID receiptId) {
         Receipt entity = findReceipt(receiptId);
-        assertViewable(entity.getLineItem().getReport());
+        assertViewable(entity.getReport());
         Duration ttl = Duration.ofMinutes(presignedUrlTtlMinutes);
         String url = storageService.generateDownloadUrl(entity.getObjectKey(), entity.getOriginalFileName(), ttl);
         log.info("Generated download URL for receipt {}", receiptId);
@@ -148,7 +188,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     @Override
     public void delete(UUID receiptId) {
         Receipt entity = findReceipt(receiptId);
-        ExpenseReport report = entity.getLineItem().getReport();
+        ExpenseReport report = entity.getReport();
         assertOwnerOrAdmin(report);
         assertReportEditable(report);
 
@@ -183,34 +223,44 @@ public class ReceiptServiceImpl implements ReceiptService {
         String contentType = file.getContentType() == null ? "" : file.getContentType().toLowerCase(Locale.ROOT);
         if (!ALLOWED_CONTENT_TYPES.contains(contentType)) {
             throw new IllegalArgumentException(
-                    "Unsupported file type: " + file.getContentType() + ". Allowed types: PDF, PNG, JPG, JPEG");
+                    "Unsupported file type: " + file.getContentType() + ". Allowed types: PDF, PNG, JPG, JPEG, WEBP");
         }
         String extension = extractExtension(file.getOriginalFilename());
         if (!ALLOWED_EXTENSIONS.contains(extension)) {
             throw new IllegalArgumentException(
-                    "Unsupported file extension: ." + extension + ". Allowed: pdf, png, jpg, jpeg");
+                    "Unsupported file extension: ." + extension + ". Allowed: pdf, png, jpg, jpeg, webp");
         }
         assertContentMatchesDeclaredType(file, extension);
     }
 
     /**
-     * Verifies the file's actual bytes start with the signature expected for its extension.
+     * Verifies the file's actual bytes match every signature part expected for its extension.
      * Both the declared Content-Type and the file extension are attacker-controlled (renaming
      * a file changes both at once), so passing those two checks alone does not prove the file
-     * actually is a PDF/PNG/JPEG — only its content can.
+     * actually is a PDF/PNG/JPEG/WEBP — only its content can.
      */
     private void assertContentMatchesDeclaredType(MultipartFile file, String extension) {
-        byte[] signature = SIGNATURES_BY_EXTENSION.get(extension);
+        List<SignaturePart> signatureParts = SIGNATURES_BY_EXTENSION.get(extension);
         byte[] header;
         try {
             header = file.getBytes();
         } catch (IOException e) {
             throw new IllegalArgumentException("Could not read the uploaded file to verify its type");
         }
-        if (header.length < signature.length || !Arrays.equals(signature, 0, signature.length, header, 0, signature.length)) {
+        boolean matches = signatureParts.stream().allMatch(part -> matchesAt(header, part));
+        if (!matches) {
             throw new IllegalArgumentException(
                     "File content does not match its declared type (." + extension + ") — the file may be corrupted or mislabeled");
         }
+    }
+
+    private boolean matchesAt(byte[] header, SignaturePart part) {
+        byte[] magic = part.magic();
+        int offset = part.offset();
+        if (header.length < offset + magic.length) {
+            return false;
+        }
+        return Arrays.equals(magic, 0, magic.length, header, offset, offset + magic.length);
     }
 
     /** Strips any client-supplied path prefix (e.g. "C:\\fakepath\\x.pdf") down to the bare file name. */
@@ -267,6 +317,11 @@ public class ReceiptServiceImpl implements ReceiptService {
             throw new BusinessRuleViolationException(
                     "Receipts cannot be added or removed while the report is in status " + report.getReportStatus());
         }
+    }
+
+    private ExpenseReport findReport(UUID reportId) {
+        return expenseReportRepository.findById(reportId)
+                .orElseThrow(() -> new ResourceNotFoundException("ExpenseReport not found with id: " + reportId));
     }
 
     private ExpenseLineItem findLineItem(UUID lineItemId) {

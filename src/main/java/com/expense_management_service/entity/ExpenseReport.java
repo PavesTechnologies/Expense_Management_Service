@@ -113,4 +113,9 @@ public class ExpenseReport {
     @Builder.Default
     @ToString.Exclude
     private List<CashAdvanceAdjustment> cashAdvanceAdjustments = new ArrayList<>();
+
+    @OneToMany(mappedBy = "report", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    @ToString.Exclude
+    private List<Receipt> receipts = new ArrayList<>();
 }

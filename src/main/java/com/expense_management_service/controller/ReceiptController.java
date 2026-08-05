@@ -4,6 +4,7 @@ import java.util.List;
 
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.response.ReceiptResponse;
+import com.expense_management_service.dto.response.ReceiptUploadResponse;
 import com.expense_management_service.dto.response.ReceiptUrlResponse;
 import com.expense_management_service.service.ReceiptService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -23,13 +24,14 @@ import org.springframework.web.multipart.MultipartFile;
 import java.util.UUID;
 
 /**
- * Receipt upload/retrieval/delete endpoints (Amazon S3-backed, V1).
+ * Receipt upload/retrieval/delete endpoints (Amazon S3-backed, EP03-S4).
  * <p>
- * Two resource roots share this controller: receipts are created/listed underneath their
- * parent line item ({@code /expense-line-items/{lineItemId}/receipts}), but read/deleted
- * directly by their own id ({@code /receipts/{receiptId}}) — mirroring how a receipt is
- * conceptually owned by a line item but is its own addressable resource once it exists.
- * Ownership and status-gating are enforced inside {@link ReceiptService}.
+ * A receipt is created directly under its {@code ExpenseReport}
+ * ({@code /expense-reports/{reportId}/receipts}) — no line item is required, since OCR/employee
+ * review is what determines the line item's fields. The legacy line-item-scoped listing endpoint
+ * is retained for receipts that have since been linked to one. Read/delete are always by the
+ * receipt's own id ({@code /receipts/{receiptId}}). Ownership and status-gating are enforced
+ * inside {@link ReceiptService}.
  */
 @RestController
 @RequiredArgsConstructor
@@ -38,42 +40,57 @@ public class ReceiptController {
 
     private final ReceiptService receiptService;
 
-    @PostMapping(value = "/xms/employee/expense-line-items/{lineItemId}/receipts", consumes = "multipart/form-data")
+    @PostMapping(value = "/xms/employee/expense-reports/{reportId}/receipts", consumes = "multipart/form-data")
     @ResponseStatus(HttpStatus.CREATED)
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     @Operation(
-            summary = "Upload a receipt file for a line item",
+            summary = "Upload a receipt for an expense report",
             description = "Accepts a single multipart file. Allowed types: PDF, PNG, JPG, JPEG (validated by both "
-                    + "declared content-type and actual file signature). Maximum size: 10MB. The line item's parent "
-                    + "report must be Draft, Policy Rejected, or Query Raised, and must belong to the caller "
-                    + "(Admins may act on any report)."
+                    + "declared content-type and actual file signature). Maximum size: 10MB. The report must be "
+                    + "Draft, Policy Rejected, or Query Raised, and must belong to the caller (Admins may act on "
+                    + "any report). No line item is required. Returns immediately — OCR is queued via an event and "
+                    + "runs asynchronously in the background; poll GET /receipts/{receiptId}/ocr/status for progress. "
+                    + "A line item is only created/linked once the employee confirms via POST /receipts/{receiptId}/confirm."
     )
     @ApiResponses({
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "Receipt uploaded",
-                    content = @Content(schema = @Schema(implementation = ReceiptResponse.class), examples = @ExampleObject(
-                            value = "{\"success\":true,\"message\":\"Receipt uploaded\",\"data\":{\"receiptId\":"
-                                    + "\"6f1a1e2e-1111-4a2b-9c3d-abc123456789\",\"lineItemId\":\"3c2b1a0e-2222-4a2b-9c3d-abc123456789\","
-                                    + "\"originalFileName\":\"taxi-receipt.pdf\",\"contentType\":\"application/pdf\",\"fileSize\":184320,"
-                                    + "\"uploadedBy\":\"5100014\",\"uploadedAt\":\"2026-07-27T10:15:30\"}}"))),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "Receipt uploaded, OCR processing started",
+                    content = @Content(schema = @Schema(implementation = ReceiptUploadResponse.class), examples = @ExampleObject(
+                            value = "{\"success\":true,\"message\":\"Receipt uploaded successfully. OCR processing started.\","
+                                    + "\"data\":{\"receiptId\":\"6f1a1e2e-1111-4a2b-9c3d-abc123456789\",\"processingStatus\":\"UPLOADED\"}}"))),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "Empty file, oversized file, disallowed type, or content that doesn't match its declared type"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403", description = "Caller does not own the parent report"),
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Line item not found"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Report not found"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "413", description = "File exceeds the maximum allowed size"),
-            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "Parent report is not in an editable status"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "Report is not in an editable status"),
             @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "502", description = "Storage (S3) temporarily unavailable")
     })
-    public ApiResponse<ReceiptResponse> upload(@PathVariable UUID lineItemId,
-                                                @Parameter(description = "The receipt file (PDF/PNG/JPG/JPEG, max 10MB)")
-                                                @RequestParam("file") MultipartFile file) {
-        return ApiResponse.success("Receipt uploaded", receiptService.upload(lineItemId, file));
+    public ApiResponse<ReceiptUploadResponse> upload(@PathVariable UUID reportId,
+                                                      @Parameter(description = "The receipt file (PDF/PNG/JPG/JPEG, max 10MB)")
+                                                      @RequestParam("file") MultipartFile file) {
+        ReceiptResponse saved = receiptService.upload(reportId, file);
+        ReceiptUploadResponse response = new ReceiptUploadResponse(saved.receiptId(), saved.ocrStatus());
+        return ApiResponse.success("Receipt uploaded successfully. OCR processing started.", response);
+    }
+
+    @GetMapping("/xms/employee/expense-reports/{reportId}/receipts")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @Operation(
+            summary = "List every receipt on a report",
+            description = "Includes receipts not yet linked to any line item. Returns metadata only — no "
+                    + "pre-signed URLs are generated here. Call the /view or /download endpoint for a specific "
+                    + "receipt when a URL is actually needed."
+    )
+    public ApiResponse<List<ReceiptResponse>> getAllForReport(@PathVariable UUID reportId) {
+        return ApiResponse.success(receiptService.getAllForReport(reportId));
     }
 
     @GetMapping("/xms/employee/expense-line-items/{lineItemId}/receipts")
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     @Operation(
-            summary = "List receipts on a line item",
-            description = "Returns metadata only — no pre-signed URLs are generated here. Call the /view or "
-                    + "/download endpoint for a specific receipt when a URL is actually needed."
+            summary = "List receipts linked to a line item",
+            description = "Legacy, line-item-scoped view — only returns receipts that have already been "
+                    + "confirmed/linked to this specific line item. Prefer the report-scoped listing endpoint for "
+                    + "receipts still awaiting review."
     )
     public ApiResponse<List<ReceiptResponse>> getAllForLineItem(@PathVariable UUID lineItemId) {
         return ApiResponse.success(receiptService.getAllForLineItem(lineItemId));

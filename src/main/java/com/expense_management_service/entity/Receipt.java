@@ -25,8 +25,27 @@ public class Receipt {
     @EqualsAndHashCode.Include
     private UUID receiptId;
 
+    /** The report this receipt belongs to from the moment it's uploaded — set before any line item exists. */
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "line_item_id", nullable = false)
+    @JoinColumn(name = "report_id", nullable = false)
+    @ToString.Exclude
+    private ExpenseReport report;
+
+    /**
+     * Whose expense this is — the report owner's employee id, not necessarily the caller who
+     * performed the upload (an Admin may upload on an employee's behalf). Stored directly rather
+     * than only reachable via {@code report.getEmployeeId()} so ownership/duplicate-detection
+     * checks never depend on a lazy association walk.
+     */
+    @Column(name = "employee_id", length = 255, nullable = false)
+    private String employeeId;
+
+    /**
+     * Nullable: a receipt can exist, and OCR can run, before any line item does. Populated once
+     * the employee confirms/links a line item (see {@code ReceiptConfirmationService}).
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "line_item_id", nullable = true)
     @ToString.Exclude
     private ExpenseLineItem lineItem;
 

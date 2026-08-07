@@ -107,7 +107,7 @@ public class ExpenseReport {
     @OneToMany(mappedBy = "report", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     @ToString.Exclude
-    private List<ApprovalTask> approvalTasks = new ArrayList<>();
+    private List<ApprovalLevelInstance> approvalLevelInstances = new ArrayList<>();
 
     @OneToMany(mappedBy = "report")
     @Builder.Default

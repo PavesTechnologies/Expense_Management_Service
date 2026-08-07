@@ -214,7 +214,7 @@ class ExpenseReportServiceImplTest {
     void update_throwsBusinessRuleViolation_whenReportNotEditable() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
-                .reportStatus(ReportStatus.SUBMITTED).fiscalYear(fiscalYear).title("Old title").build();
+                .reportStatus(ReportStatus.PENDING_APPROVAL).fiscalYear(fiscalYear).title("Old title").build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -284,7 +284,7 @@ class ExpenseReportServiceImplTest {
         when(currentUserService.getCurrentUser()).thenReturn(finance);
         when(expenseReportRepository.findAll()).thenReturn(List.of(
                 ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("a").reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build(),
-                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("b").reportStatus(ReportStatus.SUBMITTED).fiscalYear(fiscalYear).build()));
+                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("b").reportStatus(ReportStatus.PENDING_APPROVAL).fiscalYear(fiscalYear).build()));
 
         List<ExpenseReportResponse> result = expenseReportService.getAll();
 
@@ -307,7 +307,7 @@ class ExpenseReportServiceImplTest {
     @Test
     void delete_throwsBusinessRuleViolation_whenReportAlreadySubmitted() {
         UUID reportId = UUID.randomUUID();
-        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus(ReportStatus.SUBMITTED).build();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus(ReportStatus.PENDING_APPROVAL).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 

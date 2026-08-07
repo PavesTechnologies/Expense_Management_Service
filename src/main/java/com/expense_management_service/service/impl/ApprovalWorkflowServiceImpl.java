@@ -1,379 +1,568 @@
 package com.expense_management_service.service.impl;
 
-import com.expense_management_service.common.BusinessDayCalculator;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
-import com.expense_management_service.dto.response.ApprovalTaskResponse;
+import com.expense_management_service.dto.request.LineItemReviewRequest;
+import com.expense_management_service.dto.request.RejectReportRequest;
+import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
-import com.expense_management_service.dto.response.PolicyWarningResponse;
-import com.expense_management_service.entity.ApprovalMatrix;
-import com.expense_management_service.entity.ApprovalTask;
-import com.expense_management_service.entity.Currency;
+import com.expense_management_service.dto.response.PendingLineItemResponse;
+import com.expense_management_service.entity.ApprovalAssignment;
+import com.expense_management_service.entity.ApprovalFlow;
+import com.expense_management_service.entity.ApprovalLevel;
+import com.expense_management_service.entity.ApprovalLevelApprover;
+import com.expense_management_service.entity.ApprovalLevelInstance;
+import com.expense_management_service.entity.ApprovalLineItemReview;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
-import com.expense_management_service.entity.PolicyViolation;
-import com.expense_management_service.enums.ApprovalMode;
+import com.expense_management_service.enums.AssignmentStatus;
+import com.expense_management_service.enums.LevelInstanceStatus;
+import com.expense_management_service.enums.LevelQuorum;
+import com.expense_management_service.enums.LineItemReviewStatus;
 import com.expense_management_service.enums.ReportStatus;
-import com.expense_management_service.enums.TaskStatus;
-import com.expense_management_service.mapper.ApprovalTaskMapper;
 import com.expense_management_service.mapper.ExpenseReportMapper;
-import com.expense_management_service.mapper.PolicyViolationMapper;
-import com.expense_management_service.repository.ApprovalMatrixRepository;
-import com.expense_management_service.repository.ApprovalTaskRepository;
-import com.expense_management_service.repository.CurrencyRepository;
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
+import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
+import com.expense_management_service.repository.ApprovalLineItemReviewRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
+import com.expense_management_service.service.ApprovalEventPublisher;
+import com.expense_management_service.service.ApprovalFlowResolutionService;
 import com.expense_management_service.service.ApprovalWorkflowService;
-import com.expense_management_service.service.ApproverResolver;
+import com.expense_management_service.service.ApproverSourceResolver;
+import com.expense_management_service.service.ChainCorrectnessService;
 import com.expense_management_service.service.DelegationService;
-import com.expense_management_service.service.ExchangeRateService;
-import com.expense_management_service.service.PolicyEvaluator;
+import com.expense_management_service.service.PolicyDecision;
+import com.expense_management_service.service.PolicyEvaluationGateway;
 import com.expense_management_service.service.SlaPolicyService;
+import com.expense_management_service.common.BusinessDayCalculator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
+/**
+ * The new Approval Flow Engine orchestrator. Replaces EP06's {@code ApprovalWorkflowServiceImpl}
+ * (cost-center + amount-range matrix) entirely.
+ * <p>
+ * <b>Documented simplification on quorum + line-item granularity:</b> {@code ApprovalLineItemReview}
+ * is keyed by (lineItem, levelInstance) - one shared review per line item per level, regardless of
+ * how many approver entries that level has. This models SEQUENTIAL cleanly (each entryOrder gets its
+ * own fresh pass over the line items - reviews reset to PENDING when their turn starts). ANY_OF is
+ * exact ("first to complete a full pass wins"). ALL_OF is, for now, treated identically to ANY_OF -
+ * true "every approver independently agrees on every line item" would need a review keyed by
+ * (lineItem, levelInstance, assignment) instead of just (lineItem, levelInstance), which is a real
+ * data-model change left for a future enhancement if strict ALL_OF-at-line-item-granularity is
+ * actually needed.
+ */
 @Service
 @RequiredArgsConstructor
 @Transactional
 @Slf4j
 public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
-    private static final String MATRIX_STATUS_ACTIVE = "ACTIVE";
-
     private final ExpenseReportRepository expenseReportRepository;
-    private final ApprovalTaskRepository approvalTaskRepository;
-    private final ApprovalMatrixRepository approvalMatrixRepository;
-    private final CurrencyRepository currencyRepository;
-    private final ExchangeRateService exchangeRateService;
-    private final ApproverResolver approverResolver;
-    private final DelegationService delegationService;
-    private final SlaPolicyService slaPolicyService;
-    private final ExpenseReportMapper expenseReportMapper;
-    private final ApprovalTaskMapper approvalTaskMapper;
-    private final PolicyEvaluator policyEvaluator;
+    private final ApprovalLevelInstanceRepository approvalLevelInstanceRepository;
+    private final ApprovalAssignmentRepository approvalAssignmentRepository;
+    private final ApprovalLineItemReviewRepository approvalLineItemReviewRepository;
     private final PolicyViolationRepository policyViolationRepository;
-    private final PolicyViolationMapper policyViolationMapper;
+    private final ApprovalFlowResolutionService approvalFlowResolutionService;
+    private final ApproverSourceResolver approverSourceResolver;
+    private final ChainCorrectnessService chainCorrectnessService;
+    private final DelegationService delegationService;
+    private final PolicyEvaluationGateway policyEvaluationGateway;
+    private final ApprovalEventPublisher approvalEventPublisher;
+    private final ExpenseReportMapper expenseReportMapper;
+    private final SlaPolicyService slaPolicyService;
 
-    @Value("${exchange.rate.base-currency}")
-    private String baseCurrencyCode;
+    // ---------------------------------------------------------------------
+    // Submission / resubmission
+    // ---------------------------------------------------------------------
 
     @Override
     public ExpenseReportResponse submit(UUID reportId) {
         ExpenseReport report = findReport(reportId);
+
+        if (report.getReportStatus() == ReportStatus.AWAITING_CORRECTION) {
+            return resubmitCorrection(report);
+        }
+
         assertDraft(report);
         assertHasLineItems(report);
         if (report.getCostCenter() == null) {
             throw new IllegalArgumentException("Expense report has no cost center assigned");
         }
 
-        refreshPolicyViolationsForReport(report);
-
-        BigDecimal convertedAmount = convertToBaseCurrency(report);
-        List<ApprovalMatrix> applicable = resolveApplicableMatrixRows(report.getCostCenter().getCostCenterId(), convertedAmount);
-
-        List<Integer> levels = applicable.stream()
-                .map(ApprovalMatrix::getApprovalLevel)
-                .distinct()
-                .sorted()
-                .toList();
-
-        if (levels.isEmpty() || !levels.get(0).equals(1)) {
-            throw new IllegalArgumentException(
-                    "No active Level 1 approver is configured for cost center "
-                            + report.getCostCenter().getCostCenterId() + " at this amount (VAL-08)");
+        PolicyDecision decision = policyEvaluationGateway.evaluate(report);
+        if (!decision.allowed()) {
+            throw new IllegalArgumentException("Submission blocked by Policy Engine: " + decision.violations());
         }
 
-        Map<Integer, List<ApprovalMatrix>> byLevel = applicable.stream()
-                .collect(Collectors.groupingBy(ApprovalMatrix::getApprovalLevel));
-
+        ApprovalFlow flow = approvalFlowResolutionService.resolveMatchingFlow(report);
         int cycle = nextSubmissionCycle(reportId);
-        materializeChain(report, byLevel, levels, cycle);
+
+        materializeChain(report, flow, cycle);
+        chainCorrectnessService.applyCorrectnessPasses(report, cycle);
 
         report.setReportStatus(ReportStatus.PENDING_APPROVAL);
         report.setSubmittedAt(LocalDateTime.now());
         expenseReportRepository.save(report);
 
-        activateNextEligibleLevel(report, null, cycle);
+        activateNextEligibleLevel(report, cycle, null);
+        approvalEventPublisher.publish("REPORT_SUBMITTED", reportId, "flow=" + flow.getFlowId() + " cycle=" + cycle);
 
-        log.info("Submitted expense report {} for approval (cycle {}), {} level(s) resolved", reportId, cycle, levels.size());
-        ExpenseReport updated = findReport(reportId);
-        return expenseReportMapper.toResponse(updated, updated.getReportStatus().isEditable(), updated.getReportStatus().isDeletable());
+        log.info("Submitted expense report {} for approval (cycle {}, flow {})", reportId, cycle, flow.getFlowId());
+        return toResponse(findReport(reportId));
     }
 
-    @Override
-    public ApprovalTaskResponse approve(UUID taskId, String actingEmployeeId, String comments) {
-        ApprovalTask task = findTask(taskId);
-        assertPendingAndAuthorized(task, actingEmployeeId);
-
-        task.setTaskStatus(TaskStatus.APPROVED);
-        task.setActionedAt(LocalDateTime.now());
-        task.setComments(comments);
-        stampActedByIfDelegate(task, actingEmployeeId);
-        approvalTaskRepository.save(task);
-
-        if (isLevelComplete(task)) {
-            cancelRemainingPendingSiblings(task);
-            activateNextEligibleLevel(task.getReport(), task.getApprovalLevel(), task.getSubmissionCycle());
+    /** Employee resubmits after Needs Correction (§2.8/§4.3): resume in place if the same flow still matches, else full restart. */
+    private ExpenseReportResponse resubmitCorrection(ExpenseReport report) {
+        PolicyDecision decision = policyEvaluationGateway.evaluate(report);
+        if (!decision.allowed()) {
+            throw new IllegalArgumentException("Resubmission blocked by Policy Engine: " + decision.violations());
         }
 
-        return approvalTaskMapper.toResponse(findTask(taskId));
+        int currentCycle = currentSubmissionCycle(report.getReportId());
+        var currentInstances = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), currentCycle);
+        UUID currentFlowId = currentInstances.isEmpty() ? null : currentInstances.get(0).getFlowId();
+
+        ApprovalFlow rematchedFlow = approvalFlowResolutionService.resolveMatchingFlow(report);
+
+        if (rematchedFlow.getFlowId().equals(currentFlowId)) {
+            return resumeInPlace(report, currentCycle);
+        }
+        return fullRestart(report, rematchedFlow);
     }
 
+    private ExpenseReportResponse resumeInPlace(ExpenseReport report, int cycle) {
+        var activeInstance = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleAndStatus(report.getReportId(), cycle, LevelInstanceStatus.ACTIVE)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Report " + report.getReportId() + " is AWAITING_CORRECTION but has no ACTIVE level instance"));
+
+        approvalLineItemReviewRepository.findByLevelInstance_InstanceIdAndStatus(
+                        activeInstance.getInstanceId(), LineItemReviewStatus.NEEDS_CORRECTION)
+                .forEach(review -> {
+                    review.setStatus(LineItemReviewStatus.PENDING);
+                    approvalLineItemReviewRepository.save(review);
+                });
+
+        report.setReportStatus(ReportStatus.PENDING_APPROVAL);
+        expenseReportRepository.save(report);
+        approvalEventPublisher.publish("REPORT_RESUMED", report.getReportId(), "level=" + activeInstance.getLevelOrder());
+
+        log.info("Report {} resumed in place at level {} (same flow still matches)", report.getReportId(), activeInstance.getLevelOrder());
+        return toResponse(findReport(report.getReportId()));
+    }
+
+    private ExpenseReportResponse fullRestart(ExpenseReport report, ApprovalFlow newFlow) {
+        int oldCycle = currentSubmissionCycle(report.getReportId());
+        approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), oldCycle)
+                .forEach(instance -> {
+                    if (instance.getStatus() != LevelInstanceStatus.COMPLETED) {
+                        instance.setStatus(LevelInstanceStatus.CANCELLED);
+                        approvalLevelInstanceRepository.save(instance);
+                    }
+                });
+
+        int newCycle = oldCycle + 1;
+        materializeChain(report, newFlow, newCycle);
+        chainCorrectnessService.applyCorrectnessPasses(report, newCycle);
+
+        report.setReportStatus(ReportStatus.PENDING_APPROVAL);
+        expenseReportRepository.save(report);
+        activateNextEligibleLevel(report, newCycle, null);
+        approvalEventPublisher.publish("REPORT_RESTARTED", report.getReportId(), "newFlow=" + newFlow.getFlowId() + " cycle=" + newCycle);
+
+        log.info("Report {} full-restarted (a corrected line changed the matched flow): cycle {} -> {}, flow -> {}",
+                report.getReportId(), oldCycle, newCycle, newFlow.getFlowId());
+        return toResponse(findReport(report.getReportId()));
+    }
+
+    // ---------------------------------------------------------------------
+    // Recall / Cancel (§6) - one unified restriction: blocked once any level has approved
+    // ---------------------------------------------------------------------
+
     @Override
-    public ApprovalTaskResponse reject(UUID taskId, String actingEmployeeId, String comments) {
-        ApprovalTask task = findTask(taskId);
-        assertPendingAndAuthorized(task, actingEmployeeId);
+    public ExpenseReportResponse recall(UUID reportId, String actingEmployeeId) {
+        ExpenseReport report = findReport(reportId);
+        assertOwner(report, actingEmployeeId);
+        if (report.getReportStatus() != ReportStatus.PENDING_APPROVAL && report.getReportStatus() != ReportStatus.AWAITING_CORRECTION) {
+            throw new IllegalArgumentException("Only a report Pending Approval or Awaiting Correction may be recalled");
+        }
+        assertNoLevelApprovedYet(report);
 
-        task.setTaskStatus(TaskStatus.REJECTED);
-        task.setActionedAt(LocalDateTime.now());
-        task.setComments(comments);
-        stampActedByIfDelegate(task, actingEmployeeId);
-        approvalTaskRepository.save(task);
-
-        // Rejection wins immediately: every other sibling in this level - including an already
-        // APPROVED one, in an ALL-required group - and every later-level task still QUEUED is cancelled.
-        approvalTaskRepository.findByGroupId(task.getGroupId()).stream()
-                .filter(sibling -> !sibling.getTaskId().equals(task.getTaskId()))
-                .filter(sibling -> sibling.getTaskStatus() == TaskStatus.PENDING
-                        || sibling.getTaskStatus() == TaskStatus.QUEUED
-                        || sibling.getTaskStatus() == TaskStatus.APPROVED)
-                .forEach(this::cancel);
-
-        approvalTaskRepository.findByReport_ReportIdOrderByApprovalLevelAsc(task.getReport().getReportId()).stream()
-                .filter(t -> Objects.equals(t.getSubmissionCycle(), task.getSubmissionCycle()))
-                .filter(t -> t.getApprovalLevel() > task.getApprovalLevel())
-                .filter(t -> t.getTaskStatus() == TaskStatus.QUEUED)
-                .forEach(this::cancel);
-
-        ExpenseReport report = task.getReport();
+        cancelAllOpenInstances(report, currentSubmissionCycle(reportId));
         report.setReportStatus(ReportStatus.DRAFT);
         expenseReportRepository.save(report);
+        approvalEventPublisher.publish("REPORT_RECALLED", reportId, "by=" + actingEmployeeId);
 
-        return approvalTaskMapper.toResponse(findTask(taskId));
+        log.info("Report {} recalled to DRAFT by {}", reportId, actingEmployeeId);
+        return toResponse(findReport(reportId));
     }
 
     @Override
+    public ExpenseReportResponse cancel(UUID reportId, String actingEmployeeId) {
+        ExpenseReport report = findReport(reportId);
+        assertOwner(report, actingEmployeeId);
+        if (report.getReportStatus() == ReportStatus.APPROVED || report.getReportStatus() == ReportStatus.REJECTED
+                || report.getReportStatus() == ReportStatus.CANCELLED) {
+            throw new IllegalArgumentException("Cannot cancel a report that already reached a final outcome");
+        }
+        assertNoLevelApprovedYet(report);
+
+        if (report.getReportStatus() != ReportStatus.DRAFT) {
+            cancelAllOpenInstances(report, currentSubmissionCycle(reportId));
+        }
+        report.setReportStatus(ReportStatus.CANCELLED);
+        expenseReportRepository.save(report);
+        approvalEventPublisher.publish("REPORT_CANCELLED", reportId, "by=" + actingEmployeeId);
+
+        log.info("Report {} cancelled by {}", reportId, actingEmployeeId);
+        return toResponse(findReport(reportId));
+    }
+
+    // ---------------------------------------------------------------------
+    // Line-item review (§4.7) - the real unit of approver action
+    // ---------------------------------------------------------------------
+
+    @Override
+    public ExpenseReportResponse reviewLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, LineItemReviewRequest request) {
+        if (request.decision() == LineItemReviewStatus.PENDING) {
+            throw new IllegalArgumentException("decision must be APPROVED or NEEDS_CORRECTION");
+        }
+        if (request.decision() == LineItemReviewStatus.NEEDS_CORRECTION
+                && (request.comment() == null || request.comment().isBlank())) {
+            throw new IllegalArgumentException("A comment is required when flagging a line item as Needs Correction");
+        }
+
+        ExpenseReport report = findReport(reportId);
+        int cycle = currentSubmissionCycle(reportId);
+        ApprovalLevelInstance activeInstance = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, cycle, LevelInstanceStatus.ACTIVE)
+                .orElseThrow(() -> new IllegalArgumentException("Report " + reportId + " has no level currently active for review"));
+
+        ApprovalAssignment authorizing = approvalAssignmentRepository.findByLevelInstance_InstanceId(activeInstance.getInstanceId())
+                .stream()
+                .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
+                .filter(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()))
+                .findFirst()
+                .orElseThrow(() -> new AccessDeniedException(
+                        "You are not an active approver (or delegate) for this report's current level"));
+
+        ApprovalLineItemReview review = approvalLineItemReviewRepository
+                .findByLineItem_LineItemIdAndLevelInstance_InstanceId(lineItemId, activeInstance.getInstanceId())
+                .orElseThrow(() -> new ResourceNotFoundException("No pending review for line item " + lineItemId + " at this level"));
+        if (review.getStatus() != LineItemReviewStatus.PENDING) {
+            throw new IllegalArgumentException("This line item has already been reviewed at this level: " + review.getStatus());
+        }
+
+        review.setStatus(request.decision());
+        review.setComment(request.comment());
+        review.setActedBy(actingEmployeeId.equals(authorizing.getApproverId()) ? null : actingEmployeeId);
+        review.setActionedAt(LocalDateTime.now());
+        approvalLineItemReviewRepository.save(review);
+        approvalEventPublisher.publish("LINE_ITEM_REVIEWED", reportId,
+                "lineItem=" + lineItemId + " decision=" + request.decision() + " by=" + actingEmployeeId);
+
+        if (request.decision() == LineItemReviewStatus.NEEDS_CORRECTION) {
+            report.setReportStatus(ReportStatus.AWAITING_CORRECTION);
+            expenseReportRepository.save(report);
+            approvalEventPublisher.publish("REPORT_AWAITING_CORRECTION", reportId, "lineItem=" + lineItemId);
+            return toResponse(findReport(reportId));
+        }
+
+        if (isInstanceFullyApproved(activeInstance)) {
+            completeLevelOrAdvanceSequential(report, activeInstance, authorizing, cycle);
+        }
+        return toResponse(findReport(reportId));
+    }
+
+    // ---------------------------------------------------------------------
+    // Whole-report Reject (§6) - terminal, distinct from Needs Correction
+    // ---------------------------------------------------------------------
+
+    @Override
+    public ExpenseReportResponse rejectReport(UUID reportId, String actingEmployeeId, RejectReportRequest request) {
+        ExpenseReport report = findReport(reportId);
+        int cycle = currentSubmissionCycle(reportId);
+        ApprovalLevelInstance activeInstance = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, cycle, LevelInstanceStatus.ACTIVE)
+                .orElseThrow(() -> new IllegalArgumentException("Report " + reportId + " has no level currently active"));
+
+        boolean authorized = approvalAssignmentRepository.findByLevelInstance_InstanceId(activeInstance.getInstanceId())
+                .stream()
+                .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
+                .anyMatch(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()));
+        if (!authorized) {
+            throw new AccessDeniedException("You are not an active approver (or delegate) for this report's current level");
+        }
+
+        cancelAllOpenInstances(report, cycle);
+        report.setReportStatus(ReportStatus.REJECTED);
+        expenseReportRepository.save(report);
+        approvalEventPublisher.publish("REPORT_REJECTED", reportId, "by=" + actingEmployeeId + " comment=" + request.comment());
+
+        log.info("Report {} rejected (terminal) by {} - comment: {}", reportId, actingEmployeeId, request.comment());
+        return toResponse(findReport(reportId));
+    }
+
+    // ---------------------------------------------------------------------
+    // My Queue (§1.5/§9.1) - presence-based
+    // ---------------------------------------------------------------------
+
+    @Override
     @Transactional(readOnly = true)
-    public List<ApprovalTaskResponse> getMyQueue(String employeeId) {
-        List<ApprovalTask> tasks = approvalTaskRepository.findByApproverIdAndTaskStatus(employeeId, TaskStatus.PENDING);
-
-        // Batched once for the whole queue rather than per task, to avoid an N+1 lookup.
-        List<UUID> reportIds = tasks.stream()
-                .map(t -> t.getReport() != null ? t.getReport().getReportId() : null)
-                .filter(Objects::nonNull)
-                .distinct()
+    public List<ApprovalQueueItemResponse> getMyQueue(String actingEmployeeId) {
+        var actionableAssignments = approvalAssignmentRepository.findByStatus(AssignmentStatus.ACTIVE).stream()
+                .filter(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()))
                 .toList();
-        Map<UUID, List<PolicyViolation>> violationsByReport = policyViolationRepository
-                .findByLineItem_Report_ReportIdIn(reportIds).stream()
-                .collect(Collectors.groupingBy(v -> v.getLineItem().getReport().getReportId()));
 
-        return tasks.stream()
-                .map(task -> {
-                    UUID reportId = task.getReport() != null ? task.getReport().getReportId() : null;
-                    List<PolicyViolation> violations = violationsByReport.getOrDefault(reportId, List.of());
-                    int unjustified = (int) violations.stream().filter(v -> v.getJustification() == null).count();
-                    return approvalTaskMapper.toResponse(task, violations.size(), unjustified);
+        Map<UUID, ApprovalAssignment> byReport = new java.util.LinkedHashMap<>();
+        for (ApprovalAssignment assignment : actionableAssignments) {
+            UUID reportId = assignment.getLevelInstance().getReport().getReportId();
+            byReport.putIfAbsent(reportId, assignment);
+        }
+
+        return byReport.values().stream().map(this::toQueueItem).toList();
+    }
+
+    private ApprovalQueueItemResponse toQueueItem(ApprovalAssignment assignment) {
+        ApprovalLevelInstance instance = assignment.getLevelInstance();
+        ExpenseReport report = instance.getReport();
+
+        var pendingReviews = approvalLineItemReviewRepository
+                .findByLevelInstance_InstanceIdAndStatus(instance.getInstanceId(), LineItemReviewStatus.PENDING);
+
+        List<PendingLineItemResponse> pendingLineItems = pendingReviews.stream()
+                .map(review -> {
+                    ExpenseLineItem lineItem = review.getLineItem();
+                    int violationCount = policyViolationRepository.findByLineItem_LineItemId(lineItem.getLineItemId()).size();
+                    return new PendingLineItemResponse(
+                            lineItem.getLineItemId(), review.getReviewId(),
+                            lineItem.getCategory() != null ? lineItem.getCategory().getCategoryName() : null,
+                            lineItem.getAmount(), violationCount);
                 })
                 .toList();
+
+        boolean eligibleForBulkApprove = policyViolationRepository.findByLineItem_Report_ReportId(report.getReportId()).isEmpty();
+
+        return new ApprovalQueueItemResponse(
+                report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTotalAmount(),
+                report.getCurrency() != null ? report.getCurrency().getCurrencyCode() : null,
+                instance.getLevelOrder(), pendingLineItems, eligibleForBulkApprove);
     }
+
+    // ---------------------------------------------------------------------
+    // Bulk approve (§4.4/§10.3) - only for reports with zero pending flags
+    // ---------------------------------------------------------------------
 
     @Override
-    @Transactional(readOnly = true)
-    public List<PolicyWarningResponse> getPolicyWarningsForTask(UUID taskId) {
-        ApprovalTask task = findTask(taskId);
-        return policyViolationRepository.findByLineItem_Report_ReportId(task.getReport().getReportId()).stream()
-                .map(policyViolationMapper::toResponse)
-                .toList();
+    public ExpenseReportResponse bulkApprove(UUID reportId, String actingEmployeeId) {
+        if (!policyViolationRepository.findByLineItem_Report_ReportId(reportId).isEmpty()) {
+            throw new IllegalArgumentException("Report " + reportId + " has policy violations and is not eligible for bulk approval");
+        }
+
+        ExpenseReport report = findReport(reportId);
+        int cycle = currentSubmissionCycle(reportId);
+        ApprovalLevelInstance activeInstance = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, cycle, LevelInstanceStatus.ACTIVE)
+                .orElseThrow(() -> new IllegalArgumentException("Report " + reportId + " has no level currently active for review"));
+
+        var pendingReviews = approvalLineItemReviewRepository
+                .findByLevelInstance_InstanceIdAndStatus(activeInstance.getInstanceId(), LineItemReviewStatus.PENDING);
+        if (pendingReviews.stream().anyMatch(r -> !policyViolationRepository.findByLineItem_LineItemId(r.getLineItem().getLineItemId()).isEmpty())) {
+            throw new IllegalArgumentException("Report " + reportId + " has flagged line items and is not eligible for bulk approval");
+        }
+
+        for (ApprovalLineItemReview review : pendingReviews) {
+            reviewLineItem(reportId, review.getLineItem().getLineItemId(), actingEmployeeId,
+                    new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        }
+
+        log.info("Bulk-approved {} line item(s) on report {} by {}", pendingReviews.size(), reportId, actingEmployeeId);
+        return toResponse(findReport(reportId));
     }
 
     // ---------------------------------------------------------------------
-    // Submission helpers
+    // Chain materialisation & activation
     // ---------------------------------------------------------------------
 
-    /**
-     * EP05: re-runs {@link PolicyEvaluator} across every line item on the report so the snapshot
-     * an approver reviews reflects current rules, since rules may have changed since a line item
-     * was last saved. Mirrors {@code ExpenseLineItemServiceImpl.refreshPolicyViolations} (including
-     * justification carry-over), duplicated here rather than shared because this method must never
-     * alter submit()'s control flow — wrapped defensively so a policy failure can never block a
-     * submission, on top of PolicyEvaluator's own never-throw contract.
-     */
-    private void refreshPolicyViolationsForReport(ExpenseReport report) {
-        try {
-            for (ExpenseLineItem lineItem : report.getExpenseLineItems()) {
-                List<PolicyViolation> existing = policyViolationRepository.findByLineItem_LineItemId(lineItem.getLineItemId());
-                List<PolicyViolation> recomputed = policyEvaluator.evaluate(lineItem);
-
-                for (PolicyViolation violation : recomputed) {
-                    existing.stream()
-                            .filter(old -> sameRule(old, violation))
-                            .findFirst()
-                            .ifPresent(old -> {
-                                violation.setJustification(old.getJustification());
-                                violation.setJustifiedAt(old.getJustifiedAt());
-                            });
-                }
-
-                policyViolationRepository.deleteAll(existing);
-                policyViolationRepository.saveAll(recomputed);
-            }
-        } catch (Exception ex) {
-            log.warn("Policy evaluation failed while submitting report {} - continuing without refreshing policy warnings",
-                    report.getReportId(), ex);
-        }
-    }
-
-    private boolean sameRule(PolicyViolation existing, PolicyViolation recomputed) {
-        if (existing.getRuleType() != recomputed.getRuleType()) {
-            return false;
-        }
-        UUID existingRuleId = existing.getPolicyRule() != null ? existing.getPolicyRule().getPolicyId() : null;
-        UUID recomputedRuleId = recomputed.getPolicyRule() != null ? recomputed.getPolicyRule().getPolicyId() : null;
-        return Objects.equals(existingRuleId, recomputedRuleId);
-    }
-
-    private BigDecimal convertToBaseCurrency(ExpenseReport report) {
-        Currency baseCurrency = currencyRepository.findByCurrencyCode(baseCurrencyCode)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Configured base currency '" + baseCurrencyCode + "' does not exist in the Currency master table"));
-        return exchangeRateService.convertAmount(
-                report.getTotalAmount(), report.getCurrency().getCurrencyId(), baseCurrency.getCurrencyId(), LocalDate.now());
-    }
-
-    private List<ApprovalMatrix> resolveApplicableMatrixRows(UUID costCenterId, BigDecimal convertedAmount) {
-        return approvalMatrixRepository
-                .findByCostCenter_CostCenterIdAndStatusOrderByApprovalLevelAsc(costCenterId, MATRIX_STATUS_ACTIVE)
-                .stream()
-                .filter(m -> m.getMinimumAmount() == null || convertedAmount.compareTo(m.getMinimumAmount()) >= 0)
-                .filter(m -> m.getMaximumAmount() == null || convertedAmount.compareTo(m.getMaximumAmount()) <= 0)
-                .toList();
-    }
-
-    private int nextSubmissionCycle(UUID reportId) {
-        return approvalTaskRepository.findByReport_ReportIdOrderByApprovalLevelAsc(reportId).stream()
-                .map(ApprovalTask::getSubmissionCycle)
-                .filter(Objects::nonNull)
-                .max(Integer::compareTo)
-                .map(cycle -> cycle + 1)
-                .orElse(1);
-    }
-
-    /**
-     * Materialises every resolved level as ApprovalTask rows in QUEUED status (duplicate
-     * approvers as SKIPPED) - this one pass IS the "snapshot at submission": the whole chain is
-     * frozen as rows immediately, immune to later ApprovalMatrix edits. Nothing is PENDING yet;
-     * {@link #activateNextEligibleLevel} does that in a second pass.
-     */
-    private void materializeChain(ExpenseReport report, Map<Integer, List<ApprovalMatrix>> byLevel,
-                                  List<Integer> levels, int cycle) {
-        java.util.Set<String> resolvedApproverIds = new java.util.HashSet<>();
-
-        for (Integer level : levels) {
-            UUID groupId = UUID.randomUUID();
-            for (ApprovalMatrix matrixRow : byLevel.get(level)) {
-                String approverId = approverResolver.resolve(matrixRow, report.getEmployeeId())
-                        .orElseThrow(() -> new IllegalArgumentException(
-                                "Unable to resolve an approver for level " + level + " (" + matrixRow.getApproverType()
-                                        + " " + matrixRow.getApproverReference() + ") and no default approver is configured"));
-
-                ApprovalTask.ApprovalTaskBuilder builder = ApprovalTask.builder()
-                        .report(report)
-                        .approverId(approverId)
-                        .approvalLevel(level)
-                        .groupId(groupId)
-                        .approvalMode(matrixRow.getApprovalMode())
-                        .submissionCycle(cycle);
-
-                if (resolvedApproverIds.contains(approverId)) {
-                    builder.taskStatus(TaskStatus.SKIPPED)
-                            .comments("Auto-skipped: " + approverId + " already appears earlier in this approval chain");
-                } else {
-                    builder.taskStatus(TaskStatus.QUEUED);
-                    resolvedApproverIds.add(approverId);
-                }
-
-                approvalTaskRepository.save(builder.build());
-            }
-        }
-    }
-
-    /**
-     * Advances from {@code afterLevel} (exclusive; {@code null} means "from the beginning") to
-     * the first level with at least one QUEUED task, activating it (QUEUED -> PENDING, stamping
-     * assignedAt/dueDate - the SLA clock starts only now). A level that is fully SKIPPED is
-     * itself skipped over. If every remaining level is fully skipped, the report is approved outright.
-     */
-    private void activateNextEligibleLevel(ExpenseReport report, Integer afterLevel, int cycle) {
-        List<ApprovalTask> tasks = approvalTaskRepository
-                .findByReport_ReportIdOrderByApprovalLevelAsc(report.getReportId()).stream()
-                .filter(t -> t.getSubmissionCycle() != null && t.getSubmissionCycle() == cycle)
-                .filter(t -> afterLevel == null || t.getApprovalLevel() > afterLevel)
+    /** Snapshot-at-submission (§3.1): materialises every level as a QUEUED instance up front; nothing is ACTIVE yet. */
+    private void materializeChain(ExpenseReport report, ApprovalFlow flow, int cycle) {
+        List<ApprovalLevel> levels = flow.getLevels().stream()
+                .sorted(Comparator.comparing(ApprovalLevel::getLevelOrder))
                 .toList();
 
-        Map<Integer, List<ApprovalTask>> byLevel = tasks.stream()
-                .collect(Collectors.groupingBy(ApprovalTask::getApprovalLevel));
+        for (ApprovalLevel level : levels) {
+            ApprovalLevelInstance instance = ApprovalLevelInstance.builder()
+                    .report(report)
+                    .flowId(flow.getFlowId())
+                    .levelOrder(level.getLevelOrder())
+                    .quorum(level.getQuorum())
+                    .submissionCycle(cycle)
+                    .status(LevelInstanceStatus.QUEUED)
+                    .build();
+            ApprovalLevelInstance savedInstance = approvalLevelInstanceRepository.save(instance);
 
-        for (Integer level : byLevel.keySet().stream().sorted().toList()) {
-            List<ApprovalTask> queuedAtLevel = byLevel.get(level).stream()
-                    .filter(t -> t.getTaskStatus() == TaskStatus.QUEUED)
+            List<ApprovalLevelApprover> entries = level.getApprovers().stream()
+                    .sorted(Comparator.comparing(ApprovalLevelApprover::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
                     .toList();
-            if (queuedAtLevel.isEmpty()) {
-                continue; // fully resolved via auto-skip, nothing to activate at this level
+
+            for (ApprovalLevelApprover entry : entries) {
+                approverSourceResolver.resolve(entry, report).ifPresent(approverId ->
+                        approvalAssignmentRepository.save(ApprovalAssignment.builder()
+                                .levelInstance(savedInstance)
+                                .approverId(approverId)
+                                .sourceType(entry.getSourceType())
+                                .entryOrder(entry.getEntryOrder())
+                                .status(AssignmentStatus.PENDING)
+                                .build()));
             }
 
-            LocalDateTime now = LocalDateTime.now();
-            int slaDays = slaPolicyService.resolveSlaBusinessDays();
-            for (ApprovalTask task : queuedAtLevel) {
-                task.setTaskStatus(TaskStatus.PENDING);
-                task.setAssignedAt(now);
-                task.setDueDate(BusinessDayCalculator.addBusinessDays(now, slaDays));
-                approvalTaskRepository.save(task);
+            if (approvalAssignmentRepository.findByLevelInstance_InstanceId(savedInstance.getInstanceId()).isEmpty()) {
+                throw new IllegalStateException("Level " + level.getLevelOrder() + " of flow " + flow.getFlowId()
+                        + " resolved zero approvers - check its approver-source configuration (e.g. a DEPARTMENT_OWNER "
+                        + "with no DepartmentApprover mapping, or a COST_CENTER_OWNER with no owner set)");
             }
+        }
+    }
+
+    /** Activates the next QUEUED level after {@code afterLevelOrder} (null = from the start). Report reaches APPROVED if none remain. */
+    private void activateNextEligibleLevel(ExpenseReport report, int cycle, Integer afterLevelOrder) {
+        var instances = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), cycle);
+
+        var nextQueued = instances.stream()
+                .filter(i -> i.getStatus() == LevelInstanceStatus.QUEUED)
+                .filter(i -> afterLevelOrder == null || i.getLevelOrder() > afterLevelOrder)
+                .findFirst();
+
+        if (nextQueued.isEmpty()) {
+            completeReport(report);
             return;
         }
+        activateLevelInstance(nextQueued.get(), report);
+    }
 
-        // No remaining level had anything to activate - every one auto-resolved via skip.
+    private void activateLevelInstance(ApprovalLevelInstance instance, ExpenseReport report) {
+        instance.setStatus(LevelInstanceStatus.ACTIVE);
+        approvalLevelInstanceRepository.save(instance);
+
+        var assignments = approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                .filter(a -> a.getStatus() != AssignmentStatus.SKIPPED)
+                .sorted(Comparator.comparing(ApprovalAssignment::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
+
+        if (instance.getQuorum() == LevelQuorum.SEQUENTIAL) {
+            assignments.stream().findFirst().ifPresent(this::activateAssignment);
+        } else {
+            assignments.forEach(this::activateAssignment);
+        }
+
+        for (ExpenseLineItem lineItem : report.getExpenseLineItems()) {
+            approvalLineItemReviewRepository.save(ApprovalLineItemReview.builder()
+                    .lineItem(lineItem)
+                    .levelInstance(instance)
+                    .status(LineItemReviewStatus.PENDING)
+                    .build());
+        }
+        approvalEventPublisher.publish("LEVEL_ACTIVATED", report.getReportId(), "level=" + instance.getLevelOrder());
+    }
+
+    /** SLA clock starts only now, not at materialisation (§5.4/§7.3) - mirrors EP06's exact same rule. */
+    private void activateAssignment(ApprovalAssignment assignment) {
+        LocalDateTime now = LocalDateTime.now();
+        assignment.setStatus(AssignmentStatus.ACTIVE);
+        assignment.setAssignedAt(now);
+        assignment.setDueDate(BusinessDayCalculator.addBusinessDays(now, slaPolicyService.resolveSlaBusinessDays()));
+        approvalAssignmentRepository.save(assignment);
+    }
+
+    private boolean isInstanceFullyApproved(ApprovalLevelInstance instance) {
+        return approvalLineItemReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                .allMatch(r -> r.getStatus() == LineItemReviewStatus.APPROVED);
+    }
+
+    /**
+     * SEQUENTIAL: the completing assignment's entryOrder finishes; if another entry remains, it
+     * becomes ACTIVE with a fresh pass (reviews reset to PENDING). ANY_OF/ALL_OF (documented
+     * simplification, see class Javadoc): the level completes as soon as one pass finishes.
+     */
+    private void completeLevelOrAdvanceSequential(ExpenseReport report, ApprovalLevelInstance instance,
+                                                   ApprovalAssignment completingAssignment, int cycle) {
+        completingAssignment.setStatus(AssignmentStatus.COMPLETED);
+        approvalAssignmentRepository.save(completingAssignment);
+
+        if (instance.getQuorum() == LevelQuorum.SEQUENTIAL) {
+            var remaining = approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                    .filter(a -> a.getStatus() == AssignmentStatus.PENDING)
+                    .sorted(Comparator.comparing(ApprovalAssignment::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
+                    .findFirst();
+
+            if (remaining.isPresent()) {
+                ApprovalAssignment next = remaining.get();
+                activateAssignment(next);
+
+                approvalLineItemReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId())
+                        .forEach(review -> {
+                            review.setStatus(LineItemReviewStatus.PENDING);
+                            approvalLineItemReviewRepository.save(review);
+                        });
+                approvalEventPublisher.publish("SEQUENTIAL_ENTRY_ADVANCED", report.getReportId(),
+                        "level=" + instance.getLevelOrder() + " nextApprover=" + next.getApproverId());
+                return;
+            }
+        } else {
+            approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                    .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE || a.getStatus() == AssignmentStatus.PENDING)
+                    .forEach(a -> {
+                        a.setStatus(AssignmentStatus.COMPLETED);
+                        approvalAssignmentRepository.save(a);
+                    });
+        }
+
+        instance.setStatus(LevelInstanceStatus.COMPLETED);
+        approvalLevelInstanceRepository.save(instance);
+        approvalEventPublisher.publish("LEVEL_COMPLETED", report.getReportId(), "level=" + instance.getLevelOrder());
+
+        activateNextEligibleLevel(report, cycle, instance.getLevelOrder());
+    }
+
+    /** §11.1: Reimbursement Tracking only ever receives one, single, fully-approved whole report. */
+    private void completeReport(ExpenseReport report) {
         report.setReportStatus(ReportStatus.APPROVED);
         report.setApprovedAt(LocalDateTime.now());
         expenseReportRepository.save(report);
+        approvalEventPublisher.publish("REPORT_APPROVED", report.getReportId(), "handoff=reimbursement-tracking");
+        log.info("Report {} fully approved - handed off to Reimbursement Tracking", report.getReportId());
     }
 
-    private boolean isLevelComplete(ApprovalTask task) {
-        if (task.getApprovalMode() != ApprovalMode.PARALLEL_ALL) {
-            return true; // SEQUENTIAL and PARALLEL_ANY: one approval always completes the level
-        }
-        // SKIPPED (a same-level duplicate approver) and ESCALATED (superseded by a replacement
-        // task sharing this groupId - see EscalationService) never needed a real approval of
-        // their own; only genuine votes (APPROVED) or their absence should block completion.
-        return approvalTaskRepository.findByGroupId(task.getGroupId()).stream()
-                .allMatch(sibling -> sibling.getTaskStatus() == TaskStatus.APPROVED
-                        || sibling.getTaskStatus() == TaskStatus.SKIPPED
-                        || sibling.getTaskStatus() == TaskStatus.ESCALATED);
+    private void cancelAllOpenInstances(ExpenseReport report, int cycle) {
+        approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), cycle)
+                .forEach(instance -> {
+                    if (instance.getStatus() != LevelInstanceStatus.COMPLETED) {
+                        instance.setStatus(LevelInstanceStatus.CANCELLED);
+                        approvalLevelInstanceRepository.save(instance);
+                    }
+                });
     }
 
-    private void cancelRemainingPendingSiblings(ApprovalTask task) {
-        approvalTaskRepository.findByGroupId(task.getGroupId()).stream()
-                .filter(sibling -> sibling.getTaskStatus() == TaskStatus.PENDING)
-                .forEach(this::cancel);
-    }
-
-    private void cancel(ApprovalTask task) {
-        task.setTaskStatus(TaskStatus.CANCELLED);
-        approvalTaskRepository.save(task);
-    }
+    // ---------------------------------------------------------------------
+    // Guards & helpers
+    // ---------------------------------------------------------------------
 
     private void assertDraft(ExpenseReport report) {
         if (report.getReportStatus() != ReportStatus.DRAFT) {
@@ -388,21 +577,33 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
     }
 
-    private void assertPendingAndAuthorized(ApprovalTask task, String actingEmployeeId) {
-        if (task.getTaskStatus() != TaskStatus.PENDING) {
-            throw new IllegalArgumentException("Approval task is not pending, current status: " + task.getTaskStatus());
-        }
-        if (!delegationService.canAct(actingEmployeeId, task.getApproverId())) {
-            throw new AccessDeniedException("You are not the assigned approver for this task, nor an active delegate");
+    private void assertOwner(ExpenseReport report, String actingEmployeeId) {
+        if (!Objects.equals(report.getEmployeeId(), actingEmployeeId)) {
+            throw new AccessDeniedException("Only the report's owner may recall or cancel it");
         }
     }
 
-    /**
-     * approverId is never rewritten (see DelegationService) - when a delegate acted, actedBy
-     * records who actually did, preserving an accurate "X approved on behalf of Y" audit trail.
-     */
-    private void stampActedByIfDelegate(ApprovalTask task, String actingEmployeeId) {
-        task.setActedBy(actingEmployeeId.equals(task.getApproverId()) ? null : actingEmployeeId);
+    /** Recall/Cancel's one unified restriction (§6): blocked once any level has already approved. */
+    private void assertNoLevelApprovedYet(ExpenseReport report) {
+        if (report.getReportStatus() == ReportStatus.DRAFT) {
+            return;
+        }
+        int cycle = currentSubmissionCycle(report.getReportId());
+        boolean anyCompleted = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), cycle)
+                .stream().anyMatch(i -> i.getStatus() == LevelInstanceStatus.COMPLETED);
+        if (anyCompleted) {
+            throw new IllegalArgumentException("Cannot recall or cancel - at least one approval level has already completed");
+        }
+    }
+
+    private int nextSubmissionCycle(UUID reportId) {
+        return currentSubmissionCycle(reportId) + 1;
+    }
+
+    /** 0 if the report has never been through the approval engine yet. */
+    private int currentSubmissionCycle(UUID reportId) {
+        return approvalLevelInstanceRepository.findMaxSubmissionCycle(reportId);
     }
 
     private ExpenseReport findReport(UUID reportId) {
@@ -410,8 +611,11 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 .orElseThrow(() -> new ResourceNotFoundException("ExpenseReport not found with id: " + reportId));
     }
 
-    private ApprovalTask findTask(UUID taskId) {
-        return approvalTaskRepository.findById(taskId)
-                .orElseThrow(() -> new ResourceNotFoundException("ApprovalTask not found with id: " + taskId));
+    private ExpenseReportResponse toResponse(ExpenseReport report) {
+        int violations = policyViolationRepository.findByLineItem_Report_ReportId(report.getReportId()).size();
+        int unjustified = (int) policyViolationRepository.findByLineItem_Report_ReportId(report.getReportId()).stream()
+                .filter(v -> v.getJustification() == null).count();
+        return expenseReportMapper.toResponse(report, report.getReportStatus().isEditable(), report.getReportStatus().isDeletable(),
+                violations, unjustified);
     }
 }

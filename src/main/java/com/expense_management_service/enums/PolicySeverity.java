@@ -1,9 +1,9 @@
 package com.expense_management_service.enums;
 
 /**
- * EP05 is deliberately a 2-tier, advisory-only severity model — there is no blocking tier. A
- * violation of either severity is surfaced to the employee and the approver; neither ever prevents
- * a save or a submission (see {@code PolicyEvaluator}).
+ * A 2-tier signal-strength model, independent of enforcement. Whether a violation of either tier
+ * ever prevents a submission is decided per rule by {@link PolicyEnforcementType}, not by this
+ * enum — a rule's severity never changes whether it can block, only how it reads to a human.
  */
 public enum PolicySeverity {
     /** A notable compliance concern (e.g. over the category limit, missing a required receipt). */

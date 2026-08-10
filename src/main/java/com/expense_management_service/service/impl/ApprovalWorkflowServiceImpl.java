@@ -1,6 +1,7 @@
 package com.expense_management_service.service.impl;
 
 import com.expense_management_service.common.BusinessDayCalculator;
+import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.response.ApprovalTaskResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
@@ -12,6 +13,7 @@ import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.enums.ApprovalMode;
+import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.enums.TaskStatus;
 import com.expense_management_service.mapper.ApprovalTaskMapper;
@@ -80,6 +82,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
 
         refreshPolicyViolationsForReport(report);
+        assertNoBlockingViolations(reportId);
 
         BigDecimal convertedAmount = convertToBaseCurrency(report);
         List<ApprovalMatrix> applicable = resolveApplicableMatrixRows(report.getCostCenter().getCostCenterId(), convertedAmount);
@@ -208,8 +211,17 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
      * an approver reviews reflects current rules, since rules may have changed since a line item
      * was last saved. Mirrors {@code ExpenseLineItemServiceImpl.refreshPolicyViolations} (including
      * justification carry-over), duplicated here rather than shared because this method must never
-     * alter submit()'s control flow — wrapped defensively so a policy failure can never block a
-     * submission, on top of PolicyEvaluator's own never-throw contract.
+     * alter submit()'s control flow for a Warn violation — wrapped defensively so a policy
+     * <em>evaluation</em> failure can never block a submission, on top of PolicyEvaluator's own
+     * never-throw contract. (A Block <em>violation</em>, once correctly recorded here, is a
+     * different matter — see {@link #assertNoBlockingViolations}, the only method allowed to act on
+     * one.)
+     * <p>
+     * The explicit {@link PolicyViolationRepository#flush() flush} at the end is deliberate, not
+     * defensive: {@link #assertNoBlockingViolations} runs immediately after this method returns, in
+     * the same transaction, and must see every row written here. Hibernate's default auto-flush
+     * would very likely cover this anyway (the next query targets the same entity type these writes
+     * touched), but that's an implicit framework behavior this invariant should never depend on.
      */
     private void refreshPolicyViolationsForReport(ExpenseReport report) {
         try {
@@ -230,10 +242,34 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 policyViolationRepository.deleteAll(existing);
                 policyViolationRepository.saveAll(recomputed);
             }
+            policyViolationRepository.flush();
         } catch (Exception ex) {
             log.warn("Policy evaluation failed while submitting report {} - continuing without refreshing policy warnings",
                     report.getReportId(), ex);
         }
+    }
+
+    /**
+     * The one place {@code enforcementType == BLOCK} actually gates anything in this system. Runs
+     * immediately after {@link #refreshPolicyViolationsForReport}, against the freshest possible
+     * data, and only after that: a Warn violation, however severe, never reaches this check's true
+     * branch. Throws {@link BusinessRuleViolationException} (mapped to HTTP 422) rather than the
+     * {@code IllegalArgumentException} (400) this method's sibling guards use — deliberately, since
+     * this is a well-formed request blocked by a business rule, not a malformed one, matching the
+     * convention already established by {@code PolicyViolationServiceImpl.assertReportEditable} and
+     * every other policy-adjacent guard in this codebase. The report's status is untouched: this
+     * throws before {@code submit()} ever calls {@code report.setReportStatus(...)}, so the report
+     * simply stays exactly where it was (DRAFT) — no explicit revert needed.
+     */
+    private void assertNoBlockingViolations(UUID reportId) {
+        if (!policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK)) {
+            return;
+        }
+        List<PolicyViolation> blocking = policyViolationRepository
+                .findByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK);
+        String detail = blocking.stream().map(PolicyViolation::getMessage).collect(Collectors.joining("; "));
+        throw new BusinessRuleViolationException(
+                "Submission blocked - " + blocking.size() + " policy violation(s) must be resolved first: " + detail);
     }
 
     private boolean sameRule(PolicyViolation existing, PolicyViolation recomputed) {

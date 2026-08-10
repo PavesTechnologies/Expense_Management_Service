@@ -41,9 +41,13 @@ import org.springframework.web.multipart.MultipartFile;
 
 /**
  * {@link ReceiptService} implementation (EP03-S4). A receipt is created directly under its
- * {@code ExpenseReport} — no line item is required at upload time. OCR runs against the
- * report-level receipt; an {@code ExpenseLineItem} is only created/linked later, when the
- * employee confirms (see {@code ReceiptConfirmationService}).
+ * {@code ExpenseReport} — no line item is required at upload time for the OCR flow ({@link #upload}).
+ * There, OCR runs against the report-level receipt, and an {@code ExpenseLineItem} is only
+ * created/linked later, when the employee confirms (see {@code ReceiptConfirmationService}).
+ * <p>
+ * For Manual Expense Entry, where the line item already exists before its receipt is attached,
+ * {@link #uploadForLineItem} populates {@code Receipt.lineItem} immediately. Both paths share
+ * {@link #uploadInternal} for validation, storage, and metadata persistence.
  */
 @Service
 @RequiredArgsConstructor
@@ -100,18 +104,36 @@ public class ReceiptServiceImpl implements ReceiptService {
     @Override
     public ReceiptResponse upload(UUID reportId, MultipartFile file) {
         ExpenseReport report = findReport(reportId);
+        return uploadInternal(report, null, file);
+    }
+
+    @Override
+    public ReceiptResponse uploadForLineItem(UUID lineItemId, MultipartFile file) {
+        ExpenseLineItem lineItem = findLineItem(lineItemId);
+        return uploadInternal(lineItem.getReport(), lineItem, file);
+    }
+
+    /**
+     * Shared upload path for both the report-level OCR flow ({@code lineItem == null}) and the
+     * Manual Expense Entry line-item flow ({@code lineItem} already exists). Ownership/status
+     * gating is always checked against the parent {@code report}, since a line item always
+     * belongs to exactly one report.
+     */
+    private ReceiptResponse uploadInternal(ExpenseReport report, ExpenseLineItem lineItem, MultipartFile file) {
         assertOwnerOrAdmin(report);
         assertReportEditable(report);
         assertFileValid(file);
 
         String originalFileName = extractBaseFileName(file.getOriginalFilename());
         String storedFileName = UUID.randomUUID() + "-" + sanitizeForKey(originalFileName);
-        String objectKey = "receipts/" + report.getEmployeeId() + "/" + report.getReportId() + "/" + storedFileName;
+        String objectKey = "receipts/" + report.getEmployeeId() + "/" + report.getReportId()
+                + (lineItem != null ? "/" + lineItem.getLineItemId() : "") + "/" + storedFileName;
 
         storageService.upload(objectKey, file);
 
         Receipt entity = Receipt.builder()
                 .report(report)
+                .lineItem(lineItem)
                 .employeeId(report.getEmployeeId())
                 .originalFileName(originalFileName)
                 .storedFileName(storedFileName)
@@ -128,12 +150,12 @@ public class ReceiptServiceImpl implements ReceiptService {
             // try/catch, rather than later at transaction-commit time — a deferred flush
             // failure would otherwise skip the compensating S3 delete below entirely.
             Receipt saved = receiptRepository.saveAndFlush(entity);
-            log.info("[OCR] Receipt {} saved for report {} — publishing ReceiptUploadedEvent", saved.getReceiptId(), reportId);
+            log.info("[OCR] Receipt {} saved for report {} — publishing ReceiptUploadedEvent", saved.getReceiptId(), report.getReportId());
             applicationEventPublisher.publishEvent(new ReceiptUploadedEvent(saved.getReceiptId()));
             log.info("[OCR] ReceiptUploadedEvent published for receipt {}", saved.getReceiptId());
             return receiptMapper.toResponse(saved);
         } catch (RuntimeException ex) {
-            log.error("Metadata save failed after storage upload succeeded for report {} — deleting the now-orphaned file", reportId, ex);
+            log.error("Metadata save failed after storage upload succeeded for report {} — deleting the now-orphaned file", report.getReportId(), ex);
             safeDeleteFromStorage(objectKey);
             throw ex;
         }

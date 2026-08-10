@@ -21,6 +21,14 @@ public interface ReceiptService {
 
     ReceiptResponse upload(UUID reportId, MultipartFile file);
 
+    /**
+     * Uploads a receipt directly against an already-existing {@code ExpenseLineItem} — the Manual
+     * Expense Entry flow, where the employee has already entered the line item's fields by hand
+     * and is now attaching its receipt. Ownership/status-gating is enforced against the line
+     * item's parent report, same as {@link #upload}.
+     */
+    ReceiptResponse uploadForLineItem(UUID lineItemId, MultipartFile file);
+
     List<ReceiptResponse> getAllForReport(UUID reportId);
 
     /** Retained for the (still-supported) line-item-scoped listing endpoint. */

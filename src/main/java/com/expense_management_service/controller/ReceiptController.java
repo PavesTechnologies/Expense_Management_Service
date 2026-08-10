@@ -72,6 +72,37 @@ public class ReceiptController {
         return ApiResponse.success("Receipt uploaded successfully. OCR processing started.", response);
     }
 
+    @PostMapping(value = "/xms/employee/expense-line-items/{lineItemId}/receipts", consumes = "multipart/form-data")
+    @ResponseStatus(HttpStatus.CREATED)
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
+    @Operation(
+            summary = "Upload a receipt for a manually created expense line item",
+            description = "For Manual Expense Entry, where the line item already exists before a receipt is "
+                    + "attached to it. Same validation as the report-level upload: allowed types PDF, PNG, JPG, "
+                    + "JPEG, WEBP (validated by both declared content-type and actual file signature), max size "
+                    + "per receipt.max-file-size-bytes. The line item's parent report must be Draft, Policy "
+                    + "Rejected, or Query Raised, and must belong to the caller (Admins may act on any report)."
+    )
+    @ApiResponses({
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "201", description = "Receipt uploaded and linked to the line item",
+                    content = @Content(schema = @Schema(implementation = ReceiptUploadResponse.class), examples = @ExampleObject(
+                            value = "{\"success\":true,\"message\":\"Receipt uploaded successfully to the line item.\","
+                                    + "\"data\":{\"receiptId\":\"6f1a1e2e-1111-4a2b-9c3d-abc123456789\",\"processingStatus\":\"UPLOADED\"}}"))),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "400", description = "Empty file, oversized file, disallowed type, or content that doesn't match its declared type"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "403", description = "Caller does not own the line item's parent report"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "404", description = "Line item not found"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "413", description = "File exceeds the maximum allowed size"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "422", description = "Report is not in an editable status"),
+            @io.swagger.v3.oas.annotations.responses.ApiResponse(responseCode = "502", description = "Storage (S3) temporarily unavailable")
+    })
+    public ApiResponse<ReceiptUploadResponse> uploadForLineItem(@PathVariable UUID lineItemId,
+                                                      @Parameter(description = "The receipt file (PDF/PNG/JPG/JPEG/WEBP, max size per receipt.max-file-size-bytes)")
+                                                      @RequestParam("file") MultipartFile file) {
+        ReceiptResponse saved = receiptService.uploadForLineItem(lineItemId, file);
+        ReceiptUploadResponse response = new ReceiptUploadResponse(saved.receiptId(), saved.ocrStatus());
+        return ApiResponse.success("Receipt uploaded successfully to the line item.", response);
+    }
+
     @GetMapping("/xms/employee/expense-reports/{reportId}/receipts")
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
     @Operation(

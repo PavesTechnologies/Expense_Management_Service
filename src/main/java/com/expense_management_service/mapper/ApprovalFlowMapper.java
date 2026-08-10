@@ -77,6 +77,7 @@ public class ApprovalFlowMapper {
             ApprovalLevel level = ApprovalLevel.builder()
                     .flow(flow)
                     .levelOrder(levelRequest.levelOrder())
+                    .levelName(levelRequest.levelName())
                     .quorum(levelRequest.quorum())
                     .build();
             for (var approverRequest : levelRequest.approvers()) {
@@ -113,10 +114,17 @@ public class ApprovalFlowMapper {
         return new ApprovalLevelResponse(
                 level.getLevelId(),
                 level.getLevelOrder(),
+                level.getLevelName(),
+                resolveDisplayName(level.getLevelName(), level.getLevelOrder()),
                 level.getQuorum(),
                 level.getApprovers().stream()
                         .map(a -> new ApprovalLevelApproverResponse(a.getEntryId(), a.getEntryOrder(), a.getSourceType(), a.getSourceReference()))
                         .toList()
         );
+    }
+
+    /** Shared fallback so every read path (flow config, approval status, line-item reviews) renders the same label for an unnamed level. */
+    public static String resolveDisplayName(String levelName, Integer levelOrder) {
+        return (levelName != null && !levelName.isBlank()) ? levelName : "Level " + levelOrder;
     }
 }

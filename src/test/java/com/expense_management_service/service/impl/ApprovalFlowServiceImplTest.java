@@ -42,7 +42,7 @@ class ApprovalFlowServiceImplTest {
     }
 
     private ApprovalLevelRequest oneManagerLevel(int order) {
-        return new ApprovalLevelRequest(order, LevelQuorum.SEQUENTIAL,
+        return new ApprovalLevelRequest(order, "Manager Review", LevelQuorum.SEQUENTIAL,
                 List.of(new ApprovalLevelApproverRequest(1, ApproverSourceType.REPORTING_MANAGER, null)));
     }
 
@@ -94,7 +94,7 @@ class ApprovalFlowServiceImplTest {
 
     @Test
     void create_throws_whenNamedUserHasNoSourceReference() {
-        ApprovalLevelRequest level = new ApprovalLevelRequest(1, LevelQuorum.SEQUENTIAL,
+        ApprovalLevelRequest level = new ApprovalLevelRequest(1, null, LevelQuorum.SEQUENTIAL,
                 List.of(new ApprovalLevelApproverRequest(1, ApproverSourceType.NAMED_USER, null)));
         ApprovalFlowRequest request = new ApprovalFlowRequest("Bad named user", 1, "1",
                 List.of(new ApprovalFlowCriterionRequest(1, CriterionField.AMOUNT, CriterionOperator.GREATER_THAN, "1")),

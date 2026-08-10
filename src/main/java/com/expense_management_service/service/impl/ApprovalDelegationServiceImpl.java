@@ -9,16 +9,25 @@ import com.expense_management_service.entity.ApprovalDelegation;
 import com.expense_management_service.enums.DelegationStatus;
 import com.expense_management_service.mapper.ApprovalDelegationMapper;
 import com.expense_management_service.repository.ApprovalDelegationRepository;
+import com.expense_management_service.security.CurrentUser;
+import com.expense_management_service.security.CurrentUserService;
+import com.expense_management_service.security.RoleConstants;
 import com.expense_management_service.service.ApprovalDelegationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.UUID;
 
+/**
+ * Create/update/delete carry no role restriction at the controller level (§1.5 - any employee can
+ * be a resolved approver) - authorization is the ownership check below: a non-ADMIN caller may only
+ * act on their own delegation (where they are the delegator); ADMIN may act on anyone's.
+ */
 @Service
 @RequiredArgsConstructor
 @Transactional
@@ -27,6 +36,7 @@ public class ApprovalDelegationServiceImpl implements ApprovalDelegationService 
 
     private final ApprovalDelegationRepository approvalDelegationRepository;
     private final ApprovalDelegationMapper approvalDelegationMapper;
+    private final CurrentUserService currentUserService;
 
     /**
      * Gates the "delegate must hold equal or greater approval authority than the delegator" rule.
@@ -39,6 +49,7 @@ public class ApprovalDelegationServiceImpl implements ApprovalDelegationService 
 
     @Override
     public ApprovalDelegationResponse create(ApprovalDelegationRequest request) {
+        assertSelfServiceOrAdmin(request.delegatorId());
         ApprovalDelegation entity = approvalDelegationMapper.toEntity(request);
         assertAuthorityIfEnabled(entity);
         warnOnOverlap(entity);
@@ -47,7 +58,9 @@ public class ApprovalDelegationServiceImpl implements ApprovalDelegationService 
 
     @Override
     public ApprovalDelegationResponse update(UUID delegationId, ApprovalDelegationRequest request) {
+        assertSelfServiceOrAdmin(request.delegatorId());
         ApprovalDelegation entity = findEntity(delegationId);
+        assertSelfServiceOrAdmin(entity.getDelegatorId());
         approvalDelegationMapper.updateEntity(entity, request);
         return approvalDelegationMapper.toResponse(approvalDelegationRepository.save(entity));
     }
@@ -66,7 +79,24 @@ public class ApprovalDelegationServiceImpl implements ApprovalDelegationService 
 
     @Override
     public void delete(UUID delegationId) {
-        approvalDelegationRepository.delete(findEntity(delegationId));
+        ApprovalDelegation entity = findEntity(delegationId);
+        assertSelfServiceOrAdmin(entity.getDelegatorId());
+        approvalDelegationRepository.delete(entity);
+    }
+
+    /** Non-ADMIN callers may only act on their own delegation (self-service); ADMIN may act on anyone's. */
+    private void assertSelfServiceOrAdmin(String delegatorId) {
+        CurrentUser caller = currentUserService.getCurrentUser();
+        if (hasRole(caller, RoleConstants.ADMIN)) {
+            return;
+        }
+        if (!delegatorId.equals(caller.employeeId())) {
+            throw new AccessDeniedException("You may only manage your own delegation");
+        }
+    }
+
+    private boolean hasRole(CurrentUser caller, String role) {
+        return caller.roles() != null && caller.roles().stream().anyMatch(r -> r.equalsIgnoreCase(role));
     }
 
     private ApprovalDelegation findEntity(UUID delegationId) {

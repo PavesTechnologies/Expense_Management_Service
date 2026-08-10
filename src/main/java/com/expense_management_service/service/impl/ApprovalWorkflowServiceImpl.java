@@ -4,7 +4,9 @@ import com.expense_management_service.common.exception.ResourceNotFoundException
 import com.expense_management_service.dto.request.LineItemReviewRequest;
 import com.expense_management_service.dto.request.RejectReportRequest;
 import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
+import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.LineItemReviewResponse;
 import com.expense_management_service.dto.response.PendingLineItemResponse;
 import com.expense_management_service.entity.ApprovalAssignment;
 import com.expense_management_service.entity.ApprovalFlow;
@@ -19,7 +21,9 @@ import com.expense_management_service.enums.LevelInstanceStatus;
 import com.expense_management_service.enums.LevelQuorum;
 import com.expense_management_service.enums.LineItemReviewStatus;
 import com.expense_management_service.enums.ReportStatus;
+import com.expense_management_service.mapper.ApprovalFlowMapper;
 import com.expense_management_service.mapper.ExpenseReportMapper;
+import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
 import com.expense_management_service.repository.ApprovalLineItemReviewRepository;
@@ -83,6 +87,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private final ApprovalEventPublisher approvalEventPublisher;
     private final ExpenseReportMapper expenseReportMapper;
     private final SlaPolicyService slaPolicyService;
+    private final PolicyViolationMapper policyViolationMapper;
 
     // ---------------------------------------------------------------------
     // Submission / resubmission
@@ -201,7 +206,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         if (report.getReportStatus() != ReportStatus.PENDING_APPROVAL && report.getReportStatus() != ReportStatus.AWAITING_CORRECTION) {
             throw new IllegalArgumentException("Only a report Pending Approval or Awaiting Correction may be recalled");
         }
-        assertNoLevelApprovedYet(report);
+        if (hasAnyLevelApproved(report)) {
+            throw new IllegalArgumentException("Cannot recall or cancel - at least one approval level has already completed");
+        }
 
         cancelAllOpenInstances(report, currentSubmissionCycle(reportId));
         report.setReportStatus(ReportStatus.DRAFT);
@@ -220,7 +227,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 || report.getReportStatus() == ReportStatus.CANCELLED) {
             throw new IllegalArgumentException("Cannot cancel a report that already reached a final outcome");
         }
-        assertNoLevelApprovedYet(report);
+        if (hasAnyLevelApproved(report)) {
+            throw new IllegalArgumentException("Cannot recall or cancel - at least one approval level has already completed");
+        }
 
         if (report.getReportStatus() != ReportStatus.DRAFT) {
             cancelAllOpenInstances(report, currentSubmissionCycle(reportId));
@@ -311,6 +320,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
         cancelAllOpenInstances(report, cycle);
         report.setReportStatus(ReportStatus.REJECTED);
+        report.setRejectedBy(actingEmployeeId);
+        report.setRejectionComment(request.comment());
+        report.setRejectedAt(LocalDateTime.now());
         expenseReportRepository.save(report);
         approvalEventPublisher.publish("REPORT_REJECTED", reportId, "by=" + actingEmployeeId + " comment=" + request.comment());
 
@@ -348,11 +360,15 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         List<PendingLineItemResponse> pendingLineItems = pendingReviews.stream()
                 .map(review -> {
                     ExpenseLineItem lineItem = review.getLineItem();
-                    int violationCount = policyViolationRepository.findByLineItem_LineItemId(lineItem.getLineItemId()).size();
+                    var violations = policyViolationRepository.findByLineItem_LineItemId(lineItem.getLineItemId()).stream()
+                            .map(policyViolationMapper::toResponse)
+                            .toList();
                     return new PendingLineItemResponse(
                             lineItem.getLineItemId(), review.getReviewId(),
                             lineItem.getCategory() != null ? lineItem.getCategory().getCategoryName() : null,
-                            lineItem.getAmount(), violationCount);
+                            lineItem.getMerchantName(), lineItem.getDescription(), lineItem.getExpenseDate(),
+                            lineItem.getAmount(), lineItem.getCurrency() != null ? lineItem.getCurrency().getCurrencyCode() : null,
+                            violations);
                 })
                 .toList();
 
@@ -396,6 +412,84 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     }
 
     // ---------------------------------------------------------------------
+    // Read models: correction visibility, status pill, history (§14 backend gaps)
+    // ---------------------------------------------------------------------
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<LineItemReviewResponse> getLineItemReviews(UUID reportId, String actingEmployeeId) {
+        ExpenseReport report = findReport(reportId);
+        assertCanViewLineItemReviews(report, actingEmployeeId);
+
+        int cycle = currentSubmissionCycle(reportId);
+        var instances = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(reportId, cycle);
+
+        List<LineItemReviewResponse> result = new java.util.ArrayList<>();
+        for (ApprovalLevelInstance instance : instances) {
+            for (ApprovalLineItemReview review : approvalLineItemReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId())) {
+                result.add(new LineItemReviewResponse(
+                        review.getLineItem().getLineItemId(),
+                        review.getReviewId(),
+                        review.getStatus(),
+                        review.getComment(),
+                        review.getActedBy(),
+                        review.getActionedAt(),
+                        instance.getLevelOrder(),
+                        instance.getLevelName(),
+                        ApprovalFlowMapper.resolveDisplayName(instance.getLevelName(), instance.getLevelOrder())));
+            }
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public ApprovalStatusResponse getApprovalStatus(UUID reportId) {
+        ExpenseReport report = findReport(reportId);
+        int cycle = currentSubmissionCycle(reportId);
+        var instances = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(reportId, cycle);
+
+        ApprovalLevelInstance active = instances.stream()
+                .filter(i -> i.getStatus() == LevelInstanceStatus.ACTIVE)
+                .findFirst().orElse(null);
+
+        Integer currentLevelOrder = active != null ? active.getLevelOrder() : null;
+        String currentLevelName = active != null ? active.getLevelName() : null;
+        String displayName = active != null
+                ? ApprovalFlowMapper.resolveDisplayName(active.getLevelName(), active.getLevelOrder())
+                : null;
+
+        return new ApprovalStatusResponse(currentLevelOrder, currentLevelName, displayName, instances.size(),
+                isRecallEligible(report), isCancelEligible(report));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<ExpenseReportResponse> getMyHistory(String actingEmployeeId, String outcome) {
+        boolean includeApproved = outcome == null || outcome.equalsIgnoreCase("APPROVED");
+        boolean includeRejected = outcome == null || outcome.equalsIgnoreCase("REJECTED");
+
+        java.util.Set<UUID> seen = new java.util.LinkedHashSet<>();
+        List<ExpenseReport> reports = new java.util.ArrayList<>();
+
+        if (includeApproved) {
+            approvalAssignmentRepository.findByApproverIdAndStatus(actingEmployeeId, AssignmentStatus.COMPLETED).stream()
+                    .map(a -> a.getLevelInstance().getReport())
+                    .filter(r -> r.getReportStatus() == ReportStatus.APPROVED)
+                    .filter(r -> seen.add(r.getReportId()))
+                    .forEach(reports::add);
+        }
+        if (includeRejected) {
+            expenseReportRepository.findByRejectedBy(actingEmployeeId).stream()
+                    .filter(r -> seen.add(r.getReportId()))
+                    .forEach(reports::add);
+        }
+        return reports.stream().map(this::toResponse).toList();
+    }
+
+    // ---------------------------------------------------------------------
     // Chain materialisation & activation
     // ---------------------------------------------------------------------
 
@@ -410,6 +504,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                     .report(report)
                     .flowId(flow.getFlowId())
                     .levelOrder(level.getLevelOrder())
+                    .levelName(level.getLevelName())
                     .quorum(level.getQuorum())
                     .submissionCycle(cycle)
                     .status(LevelInstanceStatus.QUEUED)
@@ -583,17 +678,37 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
     }
 
-    /** Recall/Cancel's one unified restriction (§6): blocked once any level has already approved. */
-    private void assertNoLevelApprovedYet(ExpenseReport report) {
+    /** Recall/Cancel's one unified restriction (§6): blocked once any level has already approved. Shared with §status's canRecall/canCancel so the two never drift apart. */
+    private boolean hasAnyLevelApproved(ExpenseReport report) {
         if (report.getReportStatus() == ReportStatus.DRAFT) {
-            return;
+            return false;
         }
         int cycle = currentSubmissionCycle(report.getReportId());
-        boolean anyCompleted = approvalLevelInstanceRepository
+        return approvalLevelInstanceRepository
                 .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), cycle)
                 .stream().anyMatch(i -> i.getStatus() == LevelInstanceStatus.COMPLETED);
-        if (anyCompleted) {
-            throw new IllegalArgumentException("Cannot recall or cancel - at least one approval level has already completed");
+    }
+
+    private boolean isRecallEligible(ExpenseReport report) {
+        boolean statusOk = report.getReportStatus() == ReportStatus.PENDING_APPROVAL || report.getReportStatus() == ReportStatus.AWAITING_CORRECTION;
+        return statusOk && !hasAnyLevelApproved(report);
+    }
+
+    private boolean isCancelEligible(ExpenseReport report) {
+        boolean statusOk = report.getReportStatus() != ReportStatus.APPROVED && report.getReportStatus() != ReportStatus.REJECTED
+                && report.getReportStatus() != ReportStatus.CANCELLED;
+        return statusOk && !hasAnyLevelApproved(report);
+    }
+
+    private void assertCanViewLineItemReviews(ExpenseReport report, String actingEmployeeId) {
+        if (Objects.equals(report.getEmployeeId(), actingEmployeeId)) {
+            return;
+        }
+        boolean everAssigned = approvalAssignmentRepository.findByLevelInstance_Report_ReportId(report.getReportId())
+                .stream()
+                .anyMatch(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()));
+        if (!everAssigned) {
+            throw new AccessDeniedException("You may not view this report's approval history");
         }
     }
 

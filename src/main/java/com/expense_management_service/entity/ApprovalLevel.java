@@ -38,6 +38,10 @@ public class ApprovalLevel {
     @Column(name = "level_order", nullable = false)
     private Integer levelOrder;
 
+    /** Optional display label (e.g. "Manager Review"). Falls back to "Level " + levelOrder wherever shown when blank - that fallback is computed at the DTO layer, never stored. */
+    @Column(name = "level_name", length = 255)
+    private String levelName;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "quorum", length = 255, nullable = false)
     private LevelQuorum quorum;

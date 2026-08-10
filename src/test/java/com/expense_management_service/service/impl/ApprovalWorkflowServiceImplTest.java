@@ -92,7 +92,8 @@ class ApprovalWorkflowServiceImplTest {
         service = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, policyViolationRepository,
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, delegationService,
-                policyEvaluationGateway, approvalEventPublisher, new ExpenseReportMapper(), slaPolicyService);
+                policyEvaluationGateway, approvalEventPublisher, new ExpenseReportMapper(), slaPolicyService,
+                new com.expense_management_service.mapper.PolicyViolationMapper());
 
         when(policyEvaluationGateway.evaluate(any())).thenReturn(new PolicyDecision(true, List.of()));
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
@@ -131,6 +132,21 @@ class ApprovalWorkflowServiceImplTest {
         when(approvalAssignmentRepository.findByLevelInstance_InstanceId(any()))
                 .thenAnswer(inv -> savedAssignments.stream()
                         .filter(a -> a.getLevelInstance().getInstanceId().equals(inv.getArgument(0))).toList());
+        when(approvalAssignmentRepository.findByLevelInstance_Report_ReportId(any()))
+                .thenAnswer(inv -> savedAssignments.stream()
+                        .filter(a -> a.getLevelInstance().getReport().getReportId().equals(inv.getArgument(0))).toList());
+        when(approvalAssignmentRepository.findByApproverIdAndStatus(any(), any()))
+                .thenAnswer(inv -> savedAssignments.stream()
+                        .filter(a -> a.getApproverId().equals(inv.getArgument(0)))
+                        .filter(a -> a.getStatus() == inv.getArgument(1)).toList());
+        when(expenseReportRepository.findByRejectedBy(any())).thenAnswer(inv -> {
+            String rejectedBy = inv.getArgument(0);
+            // Reuses whatever findById(reportId) currently returns - this test only ever models one report.
+            return expenseReportRepository.findById(reportId)
+                    .filter(r -> rejectedBy.equals(r.getRejectedBy()))
+                    .map(List::of)
+                    .orElse(List.of());
+        });
         when(approvalLineItemReviewRepository.findByLevelInstance_InstanceId(any()))
                 .thenAnswer(inv -> savedReviews.stream()
                         .filter(r -> r.getLevelInstance().getInstanceId().equals(inv.getArgument(0))).toList());
@@ -355,5 +371,117 @@ class ApprovalWorkflowServiceImplTest {
         ExpenseReportResponse response = service.bulkApprove(reportId, approverId);
 
         assertThat(response.reportStatus()).isEqualTo(ReportStatus.APPROVED.name());
+    }
+
+    // ---------------------------------------------------------------------
+    // §14 backend gaps: line-item-reviews, status, my-history
+    // ---------------------------------------------------------------------
+
+    @Test
+    void getApprovalStatus_returnsCurrentLevelAndEligibility_forPendingReport() {
+        submittedReport();
+
+        var status = service.getApprovalStatus(reportId);
+
+        assertThat(status.currentLevelOrder()).isEqualTo(1);
+        assertThat(status.currentLevelDisplayName()).isEqualTo("Level 1"); // no levelName set on the test's singleLevelFlow()
+        assertThat(status.totalLevels()).isEqualTo(1);
+        assertThat(status.canRecall()).isTrue();
+        assertThat(status.canCancel()).isTrue();
+    }
+
+    @Test
+    void getApprovalStatus_disallowsRecallAndCancel_onceALevelHasApproved() {
+        ExpenseReport report = submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        // Simulate a later level still pending on a multi-level flow, so status isn't yet a final outcome.
+        report.setReportStatus(ReportStatus.PENDING_APPROVAL);
+
+        var status = service.getApprovalStatus(reportId);
+
+        assertThat(status.canRecall()).isFalse();
+        assertThat(status.canCancel()).isFalse();
+    }
+
+    @Test
+    void getLineItemReviews_visibleToOwner() {
+        submittedReport();
+
+        var reviews = service.getLineItemReviews(reportId, submitterId);
+
+        assertThat(reviews).hasSize(1);
+        assertThat(reviews.get(0).status()).isEqualTo(LineItemReviewStatus.PENDING);
+        assertThat(reviews.get(0).levelOrder()).isEqualTo(1);
+        assertThat(reviews.get(0).displayName()).isEqualTo("Level 1");
+    }
+
+    @Test
+    void getLineItemReviews_visibleToCurrentApprover() {
+        submittedReport();
+
+        var reviews = service.getLineItemReviews(reportId, approverId);
+
+        assertThat(reviews).hasSize(1);
+    }
+
+    @Test
+    void getLineItemReviews_throwsAccessDenied_forUnrelatedEmployee() {
+        submittedReport();
+
+        assertThatThrownBy(() -> service.getLineItemReviews(reportId, "someone-unrelated"))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    }
+
+    @Test
+    void getLineItemReviews_showsCommentAfterNeedsCorrection() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "Missing receipt"));
+
+        var reviews = service.getLineItemReviews(reportId, submitterId);
+
+        assertThat(reviews.get(0).status()).isEqualTo(LineItemReviewStatus.NEEDS_CORRECTION);
+        assertThat(reviews.get(0).comment()).isEqualTo("Missing receipt");
+    }
+
+    @Test
+    void getMyHistory_returnsApprovedReports_whereCallerHasACompletedAssignment() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        var history = service.getMyHistory(approverId, "APPROVED");
+
+        assertThat(history).hasSize(1);
+        assertThat(history.get(0).reportStatus()).isEqualTo(ReportStatus.APPROVED.name());
+    }
+
+    @Test
+    void getMyHistory_returnsRejectedReports_whereCallerRejected() {
+        submittedReport();
+        service.rejectReport(reportId, approverId, new RejectReportRequest("Duplicate submission"));
+
+        var history = service.getMyHistory(approverId, "REJECTED");
+
+        assertThat(history).hasSize(1);
+        assertThat(history.get(0).reportStatus()).isEqualTo(ReportStatus.REJECTED.name());
+    }
+
+    @Test
+    void getMyHistory_excludesRejected_whenFilteredToApprovedOnly() {
+        submittedReport();
+        service.rejectReport(reportId, approverId, new RejectReportRequest("Duplicate submission"));
+
+        var history = service.getMyHistory(approverId, "APPROVED");
+
+        assertThat(history).isEmpty();
+    }
+
+    @Test
+    void getMyHistory_returnsBoth_whenOutcomeOmitted() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        var history = service.getMyHistory(approverId, null);
+
+        assertThat(history).hasSize(1);
     }
 }

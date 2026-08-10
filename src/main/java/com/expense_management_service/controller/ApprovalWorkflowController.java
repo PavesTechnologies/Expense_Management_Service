@@ -8,7 +8,9 @@ import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.dto.request.LineItemReviewRequest;
 import com.expense_management_service.dto.request.RejectReportRequest;
 import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
+import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.LineItemReviewResponse;
 import com.expense_management_service.service.ApprovalWorkflowService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -66,5 +68,20 @@ public class ApprovalWorkflowController {
     @GetMapping("/my-queue")
     public ApiResponse<List<ApprovalQueueItemResponse>> getMyQueue() {
         return ApiResponse.success(approvalWorkflowService.getMyQueue(currentUserService.getEmployeeId()));
+    }
+
+    @GetMapping("/{reportId}/line-item-reviews")
+    public ApiResponse<List<LineItemReviewResponse>> getLineItemReviews(@PathVariable UUID reportId) {
+        return ApiResponse.success(approvalWorkflowService.getLineItemReviews(reportId, currentUserService.getEmployeeId()));
+    }
+
+    @GetMapping("/{reportId}/status")
+    public ApiResponse<ApprovalStatusResponse> getApprovalStatus(@PathVariable UUID reportId) {
+        return ApiResponse.success(approvalWorkflowService.getApprovalStatus(reportId));
+    }
+
+    @GetMapping("/my-history")
+    public ApiResponse<List<ExpenseReportResponse>> getMyHistory(@RequestParam(required = false) String outcome) {
+        return ApiResponse.success(approvalWorkflowService.getMyHistory(currentUserService.getEmployeeId(), outcome));
     }
 }

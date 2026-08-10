@@ -19,4 +19,8 @@ public interface ApprovalAssignmentRepository extends JpaRepository<ApprovalAssi
 
     /** Backs the SLA reminder sweep (§5.4/§7.3) - reminders-only, never auto-reassigned. */
     List<ApprovalAssignment> findByStatusAndDueDateBefore(AssignmentStatus status, java.time.LocalDateTime dueDate);
+
+    /** Every assignment ever created for a report, across all submission cycles - backs ownership checks and "my history" queries. */
+    List<ApprovalAssignment> findByLevelInstance_Report_ReportId(UUID reportId);
+
 }

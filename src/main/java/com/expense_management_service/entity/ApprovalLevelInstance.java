@@ -54,6 +54,10 @@ public class ApprovalLevelInstance {
     @Column(name = "level_order", nullable = false)
     private Integer levelOrder;
 
+    /** Snapshot copy from the matched {@code ApprovalLevel.levelName} at resolution time - nullable, same fallback rule as the config side ({@code ApprovalFlowMapper.resolveDisplayName}). */
+    @Column(name = "level_name", length = 255)
+    private String levelName;
+
     /** Snapshot copy from the matched {@code ApprovalLevel.quorum} at resolution time. */
     @Enumerated(EnumType.STRING)
     @Column(name = "quorum", length = 255, nullable = false)

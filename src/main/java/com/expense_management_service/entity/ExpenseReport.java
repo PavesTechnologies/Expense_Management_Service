@@ -91,6 +91,17 @@ public class ExpenseReport {
     @Column(name = "closed_at")
     private LocalDateTime closedAt;
 
+    /** Set only on a terminal whole-report Reject (never on a line-level Needs Correction) - backs "my rejection history" (§14 backend gaps). */
+    @Column(name = "rejected_by", length = 255)
+    private String rejectedBy;
+
+    @Lob
+    @Column(name = "rejection_comment")
+    private String rejectionComment;
+
+    @Column(name = "rejected_at")
+    private LocalDateTime rejectedAt;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

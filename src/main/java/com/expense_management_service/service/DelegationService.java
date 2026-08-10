@@ -1,6 +1,7 @@
 package com.expense_management_service.service;
 
 import java.util.Optional;
+import java.util.Set;
 
 /**
  * Dynamic approval-authority check, carried over from EP06 unchanged and source-agnostic (§5.2/§5.3
@@ -35,4 +36,14 @@ public interface DelegationService {
      * {@link #canAct}: if multiple delegations cover today, the most recently created one wins.
      */
     Optional<String> resolveActiveDelegate(String approverId);
+
+    /**
+     * The inverse direction of {@link #canAct}: every approverId {@code actingEmployeeId} may
+     * currently act for, including themselves - {@code actingEmployeeId} plus every delegator for
+     * whom {@code actingEmployeeId} is today's winning active delegate (same overlap rule as
+     * {@link #canAct}/{@link #resolveActiveDelegate}: most-recently-created delegation wins).
+     * Lets a paginated query resolve "assignments this caller can act on" with a single
+     * {@code approverId IN (...)} clause instead of filtering every candidate row in memory.
+     */
+    Set<String> resolveApproverIdsActingFor(String actingEmployeeId);
 }

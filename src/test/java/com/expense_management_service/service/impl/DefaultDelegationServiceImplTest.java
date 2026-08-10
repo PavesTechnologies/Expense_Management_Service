@@ -140,4 +140,53 @@ class DefaultDelegationServiceImplTest {
 
         assertThat(delegationService.resolveActiveDelegate("mgr-jane")).isEmpty();
     }
+
+    // ---- resolveApproverIdsActingFor() - backs paginated "My Queue" (§14) ----
+
+    private ApprovalDelegation delegationFrom(String delegatorId, String delegateId, LocalDate start, LocalDate end, LocalDateTime createdAt) {
+        return ApprovalDelegation.builder()
+                .delegatorId(delegatorId).delegateId(delegateId)
+                .startDate(start).endDate(end).status(DelegationStatus.ACTIVE).createdAt(createdAt).build();
+    }
+
+    @Test
+    void resolveApproverIdsActingFor_alwaysIncludesTheCallerThemselves() {
+        when(approvalDelegationRepository.findByDelegateIdAndStatusNot("mgr-alex", DelegationStatus.CANCELLED))
+                .thenReturn(List.of());
+
+        assertThat(delegationService.resolveApproverIdsActingFor("mgr-alex")).containsExactly("mgr-alex");
+    }
+
+    @Test
+    void resolveApproverIdsActingFor_includesEveryDelegatorCurrentlyDelegatingToTheCaller() {
+        LocalDate today = LocalDate.now();
+        when(approvalDelegationRepository.findByDelegateIdAndStatusNot("mgr-alex", DelegationStatus.CANCELLED))
+                .thenReturn(List.of(
+                        delegationFrom("mgr-jane", "mgr-alex", today.minusDays(1), today.plusDays(5), LocalDateTime.now()),
+                        delegationFrom("mgr-sam", "mgr-alex", today.minusDays(1), today.plusDays(5), LocalDateTime.now())));
+        // Each delegator's own delegation set (queried inside resolveActiveDelegate) must also show mgr-alex winning.
+        when(approvalDelegationRepository.findByDelegatorIdAndStatusNot("mgr-jane", DelegationStatus.CANCELLED))
+                .thenReturn(List.of(delegationFrom("mgr-jane", "mgr-alex", today.minusDays(1), today.plusDays(5), LocalDateTime.now())));
+        when(approvalDelegationRepository.findByDelegatorIdAndStatusNot("mgr-sam", DelegationStatus.CANCELLED))
+                .thenReturn(List.of(delegationFrom("mgr-sam", "mgr-alex", today.minusDays(1), today.plusDays(5), LocalDateTime.now())));
+
+        assertThat(delegationService.resolveApproverIdsActingFor("mgr-alex"))
+                .containsExactlyInAnyOrder("mgr-alex", "mgr-jane", "mgr-sam");
+    }
+
+    @Test
+    void resolveApproverIdsActingFor_excludesADelegator_whoseNewerDelegationNamesSomeoneElse() {
+        LocalDate today = LocalDate.now();
+        // mgr-alex's own delegation from mgr-jane is real and in-window, but mgr-jane later
+        // created a newer delegation naming mgr-sam instead - mgr-sam wins per the overlap rule,
+        // so mgr-alex must NOT see mgr-jane's reports in their queue.
+        when(approvalDelegationRepository.findByDelegateIdAndStatusNot("mgr-alex", DelegationStatus.CANCELLED))
+                .thenReturn(List.of(delegationFrom("mgr-jane", "mgr-alex", today.minusDays(10), today.plusDays(10), LocalDateTime.now().minusDays(5))));
+        when(approvalDelegationRepository.findByDelegatorIdAndStatusNot("mgr-jane", DelegationStatus.CANCELLED))
+                .thenReturn(List.of(
+                        delegationFrom("mgr-jane", "mgr-alex", today.minusDays(10), today.plusDays(10), LocalDateTime.now().minusDays(5)),
+                        delegationFrom("mgr-jane", "mgr-sam", today.minusDays(1), today.plusDays(1), LocalDateTime.now())));
+
+        assertThat(delegationService.resolveApproverIdsActingFor("mgr-alex")).containsExactly("mgr-alex");
+    }
 }

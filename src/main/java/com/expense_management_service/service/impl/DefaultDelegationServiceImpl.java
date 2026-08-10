@@ -11,7 +11,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDate;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -42,6 +44,24 @@ public class DefaultDelegationServiceImpl implements DelegationService {
                 .filter(d -> isInEffect(d, today))
                 .max(Comparator.comparing(ApprovalDelegation::getCreatedAt, Comparator.nullsFirst(Comparator.naturalOrder())))
                 .map(ApprovalDelegation::getDelegateId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public Set<String> resolveApproverIdsActingFor(String actingEmployeeId) {
+        Set<String> approverIds = new HashSet<>();
+        approverIds.add(actingEmployeeId);
+
+        LocalDate today = LocalDate.now();
+        approvalDelegationRepository.findByDelegateIdAndStatusNot(actingEmployeeId, DelegationStatus.CANCELLED).stream()
+                .filter(d -> isInEffect(d, today))
+                .map(ApprovalDelegation::getDelegatorId)
+                // resolveActiveDelegate re-applies the "most recently created wins" precedence rule,
+                // so a delegator with a newer delegation naming someone else is correctly excluded here.
+                .filter(delegatorId -> resolveActiveDelegate(delegatorId).map(actingEmployeeId::equals).orElse(false))
+                .forEach(approverIds::add);
+
+        return approverIds;
     }
 
     private boolean isInEffect(ApprovalDelegation delegation, LocalDate today) {

@@ -38,15 +38,20 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -135,17 +140,35 @@ class ApprovalWorkflowServiceImplTest {
         when(approvalAssignmentRepository.findByLevelInstance_Report_ReportId(any()))
                 .thenAnswer(inv -> savedAssignments.stream()
                         .filter(a -> a.getLevelInstance().getReport().getReportId().equals(inv.getArgument(0))).toList());
-        when(approvalAssignmentRepository.findByApproverIdAndStatus(any(), any()))
-                .thenAnswer(inv -> savedAssignments.stream()
-                        .filter(a -> a.getApproverId().equals(inv.getArgument(0)))
-                        .filter(a -> a.getStatus() == inv.getArgument(1)).toList());
-        when(expenseReportRepository.findByRejectedBy(any())).thenAnswer(inv -> {
-            String rejectedBy = inv.getArgument(0);
+        when(delegationService.resolveApproverIdsActingFor(any()))
+                .thenAnswer(inv -> Set.of((String) inv.getArgument(0)));
+        when(approvalAssignmentRepository.findDistinctReportIdsByStatusAndApproverIdIn(any(), any(), any()))
+                .thenAnswer(inv -> {
+                    AssignmentStatus status = inv.getArgument(0);
+                    @SuppressWarnings("unchecked")
+                    java.util.Collection<String> approverIds = inv.getArgument(1);
+                    Pageable pageable = inv.getArgument(2);
+                    List<UUID> reportIds = savedAssignments.stream()
+                            .filter(a -> a.getStatus() == status)
+                            .filter(a -> approverIds.contains(a.getApproverId()))
+                            .map(a -> a.getLevelInstance().getReport().getReportId())
+                            .distinct()
+                            .toList();
+                    return new PageImpl<>(reportIds, pageable, reportIds.size());
+                });
+        when(expenseReportRepository.findHistoryForApprover(any(), anyBoolean(), anyBoolean(), any())).thenAnswer(inv -> {
+            String employeeId = inv.getArgument(0);
+            boolean includeApproved = inv.getArgument(1);
+            boolean includeRejected = inv.getArgument(2);
+            Pageable pageable = inv.getArgument(3);
             // Reuses whatever findById(reportId) currently returns - this test only ever models one report.
-            return expenseReportRepository.findById(reportId)
-                    .filter(r -> rejectedBy.equals(r.getRejectedBy()))
+            List<ExpenseReport> content = expenseReportRepository.findById(reportId)
+                    .filter(r -> (includeApproved && r.getReportStatus() == ReportStatus.APPROVED
+                                    && savedAssignments.stream().anyMatch(a -> a.getApproverId().equals(employeeId) && a.getStatus() == AssignmentStatus.COMPLETED))
+                            || (includeRejected && employeeId.equals(r.getRejectedBy())))
                     .map(List::of)
                     .orElse(List.of());
+            return new PageImpl<>(content, pageable, content.size());
         });
         when(approvalLineItemReviewRepository.findByLevelInstance_InstanceId(any()))
                 .thenAnswer(inv -> savedReviews.stream()
@@ -448,10 +471,11 @@ class ApprovalWorkflowServiceImplTest {
         submittedReport();
         service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
 
-        var history = service.getMyHistory(approverId, "APPROVED");
+        var history = service.getMyHistory(approverId, "APPROVED", PageRequest.of(0, 20));
 
-        assertThat(history).hasSize(1);
-        assertThat(history.get(0).reportStatus()).isEqualTo(ReportStatus.APPROVED.name());
+        assertThat(history.content()).hasSize(1);
+        assertThat(history.content().get(0).reportStatus()).isEqualTo(ReportStatus.APPROVED.name());
+        assertThat(history.totalElements()).isEqualTo(1);
     }
 
     @Test
@@ -459,10 +483,10 @@ class ApprovalWorkflowServiceImplTest {
         submittedReport();
         service.rejectReport(reportId, approverId, new RejectReportRequest("Duplicate submission"));
 
-        var history = service.getMyHistory(approverId, "REJECTED");
+        var history = service.getMyHistory(approverId, "REJECTED", PageRequest.of(0, 20));
 
-        assertThat(history).hasSize(1);
-        assertThat(history.get(0).reportStatus()).isEqualTo(ReportStatus.REJECTED.name());
+        assertThat(history.content()).hasSize(1);
+        assertThat(history.content().get(0).reportStatus()).isEqualTo(ReportStatus.REJECTED.name());
     }
 
     @Test
@@ -470,9 +494,9 @@ class ApprovalWorkflowServiceImplTest {
         submittedReport();
         service.rejectReport(reportId, approverId, new RejectReportRequest("Duplicate submission"));
 
-        var history = service.getMyHistory(approverId, "APPROVED");
+        var history = service.getMyHistory(approverId, "APPROVED", PageRequest.of(0, 20));
 
-        assertThat(history).isEmpty();
+        assertThat(history.content()).isEmpty();
     }
 
     @Test
@@ -480,8 +504,42 @@ class ApprovalWorkflowServiceImplTest {
         submittedReport();
         service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
 
-        var history = service.getMyHistory(approverId, null);
+        var history = service.getMyHistory(approverId, null, PageRequest.of(0, 20));
 
-        assertThat(history).hasSize(1);
+        assertThat(history.content()).hasSize(1);
+    }
+
+    // ---- getMyQueue() - paginated (§14) ----
+
+    @Test
+    void getMyQueue_returnsReportWithActiveAssignment_forTheResolvedApprover() {
+        submittedReport();
+
+        var queue = service.getMyQueue(approverId, PageRequest.of(0, 20));
+
+        assertThat(queue.content()).hasSize(1);
+        assertThat(queue.content().get(0).reportId()).isEqualTo(reportId);
+        assertThat(queue.totalElements()).isEqualTo(1);
+    }
+
+    @Test
+    void getMyQueue_isEmpty_forAnEmployeeWithNoActiveAssignment() {
+        submittedReport();
+
+        var queue = service.getMyQueue("someone-unrelated", PageRequest.of(0, 20));
+
+        assertThat(queue.content()).isEmpty();
+    }
+
+    @Test
+    void getMyQueue_resolvesReportsForEveryApproverIdTheCallerActsFor() {
+        submittedReport();
+        // A delegate acting for the resolved approver must see the same report in their own queue.
+        when(delegationService.resolveApproverIdsActingFor("delegate-of-approver"))
+                .thenReturn(Set.of("delegate-of-approver", approverId));
+
+        var queue = service.getMyQueue("delegate-of-approver", PageRequest.of(0, 20));
+
+        assertThat(queue.content()).hasSize(1);
     }
 }

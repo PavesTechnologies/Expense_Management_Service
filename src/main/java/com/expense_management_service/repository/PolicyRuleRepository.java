@@ -10,5 +10,9 @@ public interface PolicyRuleRepository extends JpaRepository<PolicyRule, UUID> {
 
     List<PolicyRule> findByCategory_CategoryId(UUID categoryId);
 
-    List<PolicyRule> findByCategory_CategoryIdAndStatus(UUID categoryId, String status);
+    /** Scopes rule lookup to the employee's one resolved policy - see {@code DefaultPolicyEvaluator}. */
+    List<PolicyRule> findByPolicy_PolicyIdAndCategory_CategoryIdAndStatus(UUID policyId, UUID categoryId, String status);
+
+    /** Delete guard for a policy bundle - see {@code PolicyServiceImpl#delete}. */
+    boolean existsByPolicy_PolicyId(UUID policyId);
 }

@@ -1,6 +1,7 @@
 package com.expense_management_service.repository;
 
 import com.expense_management_service.entity.PolicyViolation;
+import com.expense_management_service.enums.PolicyEnforcementType;
 import org.springframework.data.jpa.repository.JpaRepository;
 
 import java.util.Collection;
@@ -19,4 +20,10 @@ public interface PolicyViolationRepository extends JpaRepository<PolicyViolation
 
     /** Path-scoped lookup — guarantees a violation is only ever addressed through its own parent line item. */
     Optional<PolicyViolation> findByViolationIdAndLineItem_LineItemId(UUID violationId, UUID lineItemId);
+
+    /** The Block gate's fast path — a single lightweight existence check, not a fetch, since most reports have no BLOCK violations. */
+    boolean existsByLineItem_Report_ReportIdAndEnforcementType(UUID reportId, PolicyEnforcementType enforcementType);
+
+    /** Only called when the exists-check above is true, to build an itemized rejection message. */
+    List<PolicyViolation> findByLineItem_Report_ReportIdAndEnforcementType(UUID reportId, PolicyEnforcementType enforcementType);
 }

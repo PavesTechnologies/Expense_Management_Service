@@ -1,5 +1,6 @@
 package com.expense_management_service.service.impl;
 
+import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.dto.response.ApprovalTaskResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.entity.ApprovalMatrix;
@@ -11,6 +12,7 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.enums.ApprovalMode;
 import com.expense_management_service.enums.ApproverType;
+import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.enums.PolicyRuleType;
 import com.expense_management_service.enums.PolicySeverity;
 import com.expense_management_service.enums.ReportStatus;
@@ -48,6 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.when;
 
 // LENIENT: the shared setUp() below stubs the full set of collaborators needed by submit()'s
@@ -479,7 +482,9 @@ class ApprovalWorkflowServiceImplTest {
         assertThat(queue.get(0).policyUnjustifiedCount()).isEqualTo(1);
     }
 
-    // ---- EP05: policy evaluation at submission is advisory-only and must never block it --------
+    // ---- EP05: a policy evaluation *failure* is always advisory-only and must never block
+    // submission - separate from Phase 3's Block *enforcement*, which is a deliberate exception
+    // to that fail-open posture and is covered in its own section below. ----------------------
 
     @Test
     void submit_succeeds_whenPolicyEvaluatorThrows() {
@@ -490,6 +495,51 @@ class ApprovalWorkflowServiceImplTest {
 
         assertThat(response.reportStatus()).isEqualTo("PENDING_APPROVAL");
         assertThat(savedTasks).hasSize(1);
+    }
+
+    // ---- Phase 3: Warn vs. Block enforcement ---------------------------------------------
+
+    @Test
+    void submit_succeeds_whenOnlyWarnViolationsExist() {
+        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
+        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
+                .thenReturn(false);
+
+        ExpenseReportResponse response = service.submit(reportId);
+
+        assertThat(response.reportStatus()).isEqualTo("PENDING_APPROVAL");
+        assertThat(savedTasks).hasSize(1);
+    }
+
+    @Test
+    void submit_throwsBusinessRuleViolation_whenABlockingViolationExists() {
+        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
+        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(report).build();
+        PolicyViolation blocking = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
+                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN)
+                .enforcementType(PolicyEnforcementType.BLOCK).message("Amount 12000 exceeds the configured limit of 10000").build();
+        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
+                .thenReturn(true);
+        when(policyViolationRepository.findByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
+                .thenReturn(List.of(blocking));
+
+        assertThatThrownBy(() -> service.submit(reportId))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("12000 exceeds the configured limit of 10000");
+
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.DRAFT);
+        assertThat(savedTasks).isEmpty();
+    }
+
+    @Test
+    void submit_flushesPolicyViolationsBeforeCheckingForBlockingOnes() {
+        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
+
+        service.submit(reportId);
+
+        var callOrder = inOrder(policyViolationRepository);
+        callOrder.verify(policyViolationRepository).flush();
+        callOrder.verify(policyViolationRepository).existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK);
     }
 
     @Test

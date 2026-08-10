@@ -3,6 +3,7 @@ package com.expense_management_service.controller;
 import com.expense_management_service.config.SecurityConfig;
 import com.expense_management_service.dto.request.PolicyJustificationRequest;
 import com.expense_management_service.dto.response.PolicyWarningResponse;
+import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.enums.PolicyRuleType;
 import com.expense_management_service.enums.PolicySeverity;
 import com.expense_management_service.security.JwtAuthConverter;
@@ -52,7 +53,7 @@ class PolicyViolationControllerTest {
 
     private static PolicyWarningResponse sampleWarning() {
         return new PolicyWarningResponse(UUID.randomUUID(), PolicyRuleType.MISSING_DESCRIPTION, PolicySeverity.WARN,
-                "This expense is missing a description", null, null);
+                PolicyEnforcementType.WARN, "This expense is missing a description", null, null, null, null, null, null, null, null);
     }
 
     @Test
@@ -82,7 +83,8 @@ class PolicyViolationControllerTest {
         UUID lineItemId = UUID.randomUUID();
         UUID violationId = UUID.randomUUID();
         PolicyWarningResponse justified = new PolicyWarningResponse(violationId, PolicyRuleType.MISSING_DESCRIPTION,
-                PolicySeverity.WARN, "This expense is missing a description", "Client requested no memo", LocalDateTime.now());
+                PolicySeverity.WARN, PolicyEnforcementType.WARN, "This expense is missing a description",
+                null, null, null, null, null, "Client requested no memo", LocalDateTime.now(), null);
         when(policyViolationService.justify(eq(reportId), eq(lineItemId), eq(violationId), any())).thenReturn(justified);
 
         mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/line-items/{lineItemId}/policy-warnings/{violationId}/justify",

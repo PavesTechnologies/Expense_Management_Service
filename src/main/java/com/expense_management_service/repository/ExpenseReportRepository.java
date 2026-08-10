@@ -15,4 +15,7 @@ public interface ExpenseReportRepository extends JpaRepository<ExpenseReport, UU
 
     /** Scopes the report list to the requesting Employee's own reports. */
     List<ExpenseReport> findByEmployeeId(String employeeId);
+
+    /** Backs "my rejection history" (§14 backend gaps) - only ever set on a terminal whole-report Reject. */
+    List<ExpenseReport> findByRejectedBy(String rejectedBy);
 }

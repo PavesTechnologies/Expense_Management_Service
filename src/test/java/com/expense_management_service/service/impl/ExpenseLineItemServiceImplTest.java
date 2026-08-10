@@ -79,10 +79,10 @@ class ExpenseLineItemServiceImplTest {
     private final String employeeId = "5100014";
     private UUID reportId;
     private UUID categoryId;
-    /** The organization base currency's id — same UUID as {@link #currency}. Named for what it means to conversion, not for its role on the report. */
+    /** The organization base currency's id â€” same UUID as {@link #currency}. Named for what it means to conversion, not for its role on the report. */
     private UUID currencyId;
     private ExpenseReport draftReport;
-    /** The Organization Base Currency (INR) — every line item converts INTO this, regardless of the report's own currency. */
+    /** The Organization Base Currency (INR) â€” every line item converts INTO this, regardless of the report's own currency. */
     private Currency currency;
 
     @BeforeEach
@@ -101,7 +101,7 @@ class ExpenseLineItemServiceImplTest {
                 .reportStatus(ReportStatus.DRAFT).currency(currency).build();
 
         // Not every test reaches currency conversion (some fail earlier on ownership/status/category
-        // checks) — lenient() so those don't trip MockitoExtension's unnecessary-stubbing check.
+        // checks) â€” lenient() so those don't trip MockitoExtension's unnecessary-stubbing check.
         lenient().when(currencyRepository.findByCurrencyCodeIgnoreCase("INR")).thenReturn(Optional.of(currency));
     }
 
@@ -182,7 +182,7 @@ class ExpenseLineItemServiceImplTest {
 
     @Test
     void create_throwsBusinessRuleViolation_whenReportNotEditable() {
-        draftReport.setReportStatus(ReportStatus.SUBMITTED);
+        draftReport.setReportStatus(ReportStatus.PENDING_APPROVAL);
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
 
@@ -248,7 +248,7 @@ class ExpenseLineItemServiceImplTest {
     @Test
     void delete_throwsBusinessRuleViolation_whenReportSubmitted() {
         UUID lineItemId = UUID.randomUUID();
-        draftReport.setReportStatus(ReportStatus.SUBMITTED);
+        draftReport.setReportStatus(ReportStatus.PENDING_APPROVAL);
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
 
@@ -414,7 +414,7 @@ class ExpenseLineItemServiceImplTest {
         verify(expenseLineItemRepository, never()).save(any());
     }
 
-    // ---- EP02-S3: multi-currency — every line item converts into the Organization Base Currency
+    // ---- EP02-S3: multi-currency â€” every line item converts into the Organization Base Currency
     // (INR, per setUp()'s shared `currency`), regardless of what currency the report itself is in.
     // Each test below deliberately sets the report's currency to something else (GBP) to prove the
     // report currency never influences the conversion target.
@@ -475,7 +475,7 @@ class ExpenseLineItemServiceImplTest {
         assertThat(response.baseCurrencyCode()).isEqualTo("INR");
     }
 
-    /** exchangeRate = 1 only because the line item's own currency equals the Organization Base Currency — never because it happens to equal the report's (GBP) currency. */
+    /** exchangeRate = 1 only because the line item's own currency equals the Organization Base Currency â€” never because it happens to equal the report's (GBP) currency. */
     @Test
     void create_keepsExchangeRateAtOne_whenLineItemCurrencyEqualsOrgBaseCurrency() {
         reportDisplayCurrencyDifferentFromBase();
@@ -494,7 +494,7 @@ class ExpenseLineItemServiceImplTest {
         verify(exchangeRateService, never()).getHistoricalRate(any(), any(), any());
     }
 
-    /** Two line items in different transaction currencies on the same (GBP-denominated) report both land in INR — proving report totals sum correctly across multiple currencies. */
+    /** Two line items in different transaction currencies on the same (GBP-denominated) report both land in INR â€” proving report totals sum correctly across multiple currencies. */
     @Test
     void create_multipleCurrenciesOnSameReport_allConvertToOrgBaseCurrency() {
         reportDisplayCurrencyDifferentFromBase();
@@ -527,7 +527,7 @@ class ExpenseLineItemServiceImplTest {
 
         assertThat(usdResponse.baseAmount()).isEqualByComparingTo("9596.9290");
         assertThat(eurResponse.baseAmount()).isEqualByComparingTo("5500.0000");
-        // Report total is a repository-computed SUM(baseAmount) — asserted against the stubbed value here;
+        // Report total is a repository-computed SUM(baseAmount) â€” asserted against the stubbed value here;
         // the DB-level correctness of "SUM(baseAmount) in INR" is exercised structurally by the query itself
         // only ever summing the baseAmount column, never amount.
         assertThat(draftReport.getTotalAmount()).isEqualByComparingTo("15096.9290");

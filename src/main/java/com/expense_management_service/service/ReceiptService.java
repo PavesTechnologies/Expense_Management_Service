@@ -8,17 +8,22 @@ import java.util.List;
 import java.util.UUID;
 
 /**
- * Receipt upload/retrieval/delete business logic (Amazon S3-backed, V1).
+ * Receipt upload/retrieval/delete business logic (Amazon S3-backed).
  * <p>
- * Ownership (an Employee may only touch receipts on their own line items) and status-gating
+ * A receipt belongs to its {@code ExpenseReport} from the moment it's uploaded (EP03-S4) — no
+ * line item is required, since OCR/employee review is what determines a line item's fields.
+ * Ownership (an Employee may only touch receipts on their own reports) and status-gating
  * (upload/delete only while the parent report is Draft/Policy Rejected/Query Raised) are
- * enforced inside the implementation — the caller is always taken from the security
- * context, never a request argument.
+ * enforced inside the implementation — the caller is always taken from the security context,
+ * never a request argument.
  */
 public interface ReceiptService {
 
-    ReceiptResponse upload(UUID lineItemId, MultipartFile file);
+    ReceiptResponse upload(UUID reportId, MultipartFile file);
 
+    List<ReceiptResponse> getAllForReport(UUID reportId);
+
+    /** Retained for the (still-supported) line-item-scoped listing endpoint. */
     List<ReceiptResponse> getAllForLineItem(UUID lineItemId);
 
     ReceiptResponse getById(UUID receiptId);

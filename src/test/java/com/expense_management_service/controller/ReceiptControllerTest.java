@@ -3,6 +3,7 @@ package com.expense_management_service.controller;
 import com.expense_management_service.config.SecurityConfig;
 import com.expense_management_service.dto.response.ReceiptResponse;
 import com.expense_management_service.dto.response.ReceiptUrlResponse;
+import com.expense_management_service.enums.OcrStatus;
 import com.expense_management_service.security.JwtAuthConverter;
 import com.expense_management_service.service.ReceiptService;
 import org.junit.jupiter.api.Test;
@@ -53,31 +54,36 @@ class ReceiptControllerTest {
     @MockitoBean
     private JwtDecoder jwtDecoder;
 
-    private static ReceiptResponse sampleResponse(UUID lineItemId, UUID receiptId) {
-        return new ReceiptResponse(receiptId, lineItemId, "taxi-receipt.pdf", "application/pdf",
-                12345, "5100014", LocalDateTime.now());
+    private static ReceiptResponse sampleResponse(UUID reportId, UUID lineItemId, UUID receiptId) {
+        return new ReceiptResponse(receiptId, reportId, lineItemId, "taxi-receipt.pdf", "application/pdf",
+                12345, "5100014", LocalDateTime.now(), OcrStatus.UPLOADED);
     }
 
     @Test
-    void upload_returns201_forEmployee() throws Exception {
-        UUID lineItemId = UUID.randomUUID();
+    void upload_returns201_forEmployee_withNarrowUploadResponse() throws Exception {
+        // Requirement 2: upload returns immediately with just receiptId + processingStatus —
+        // full metadata is available via GET, live progress via /ocr/status.
+        UUID reportId = UUID.randomUUID();
         UUID receiptId = UUID.randomUUID();
         MockMultipartFile file = new MockMultipartFile("file", "taxi-receipt.pdf", "application/pdf", "content".getBytes());
-        when(receiptService.upload(eq(lineItemId), any())).thenReturn(sampleResponse(lineItemId, receiptId));
+        when(receiptService.upload(eq(reportId), any())).thenReturn(sampleResponse(reportId, null, receiptId));
 
-        mockMvc.perform(multipart("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId)
+        mockMvc.perform(multipart("/xms/employee/expense-reports/{reportId}/receipts", reportId)
                         .file(file)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.data.originalFileName").value("taxi-receipt.pdf"));
+                .andExpect(jsonPath("$.message").value("Receipt uploaded successfully. OCR processing started."))
+                .andExpect(jsonPath("$.data.receiptId").value(receiptId.toString()))
+                .andExpect(jsonPath("$.data.processingStatus").value("UPLOADED"))
+                .andExpect(jsonPath("$.data.originalFileName").doesNotExist());
     }
 
     @Test
     void upload_returns403_forFinance() throws Exception {
-        UUID lineItemId = UUID.randomUUID();
+        UUID reportId = UUID.randomUUID();
         MockMultipartFile file = new MockMultipartFile("file", "taxi-receipt.pdf", "application/pdf", "content".getBytes());
 
-        mockMvc.perform(multipart("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId)
+        mockMvc.perform(multipart("/xms/employee/expense-reports/{reportId}/receipts", reportId)
                         .file(file)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
                 .andExpect(status().isForbidden());
@@ -85,18 +91,31 @@ class ReceiptControllerTest {
 
     @Test
     void upload_returns401_whenUnauthenticated() throws Exception {
-        UUID lineItemId = UUID.randomUUID();
+        UUID reportId = UUID.randomUUID();
         MockMultipartFile file = new MockMultipartFile("file", "taxi-receipt.pdf", "application/pdf", "content".getBytes());
 
-        mockMvc.perform(multipart("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId).file(file))
+        mockMvc.perform(multipart("/xms/employee/expense-reports/{reportId}/receipts", reportId).file(file))
                 .andExpect(status().isUnauthorized());
     }
 
     @Test
+    void getAllForReport_returns200_forManager() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        when(receiptService.getAllForReport(reportId))
+                .thenReturn(List.of(sampleResponse(reportId, null, UUID.randomUUID())));
+
+        mockMvc.perform(get("/xms/employee/expense-reports/{reportId}/receipts", reportId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_MANAGER))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].reportId").value(reportId.toString()));
+    }
+
+    @Test
     void getAllForLineItem_returns200_forManager() throws Exception {
+        UUID reportId = UUID.randomUUID();
         UUID lineItemId = UUID.randomUUID();
         when(receiptService.getAllForLineItem(lineItemId))
-                .thenReturn(List.of(sampleResponse(lineItemId, UUID.randomUUID())));
+                .thenReturn(List.of(sampleResponse(reportId, lineItemId, UUID.randomUUID())));
 
         mockMvc.perform(get("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_MANAGER))))
@@ -106,9 +125,9 @@ class ReceiptControllerTest {
 
     @Test
     void getById_returns200_forEmployee() throws Exception {
-        UUID lineItemId = UUID.randomUUID();
+        UUID reportId = UUID.randomUUID();
         UUID receiptId = UUID.randomUUID();
-        when(receiptService.getById(receiptId)).thenReturn(sampleResponse(lineItemId, receiptId));
+        when(receiptService.getById(receiptId)).thenReturn(sampleResponse(reportId, null, receiptId));
 
         mockMvc.perform(get("/xms/employee/receipts/{receiptId}", receiptId)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))

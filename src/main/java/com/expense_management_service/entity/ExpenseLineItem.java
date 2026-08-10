@@ -86,6 +86,11 @@ public class ExpenseLineItem {
     @Column(name = "line_status", length = 255)
     private String lineStatus;
 
+    /** "MANUAL" (created directly by the employee) or "OCR" (created via receipt confirmation). Purely informational — nothing branches on it today. */
+    @Column(name = "created_by", length = 20, nullable = false)
+    @Builder.Default
+    private String createdBy = "MANUAL";
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

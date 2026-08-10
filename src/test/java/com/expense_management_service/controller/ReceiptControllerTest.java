@@ -99,6 +99,44 @@ class ReceiptControllerTest {
     }
 
     @Test
+    void uploadForLineItem_returns201_forEmployee_withNarrowUploadResponse() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        UUID lineItemId = UUID.randomUUID();
+        UUID receiptId = UUID.randomUUID();
+        MockMultipartFile file = new MockMultipartFile("file", "taxi-receipt.pdf", "application/pdf", "content".getBytes());
+        when(receiptService.uploadForLineItem(eq(lineItemId), any())).thenReturn(sampleResponse(reportId, lineItemId, receiptId));
+
+        mockMvc.perform(multipart("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId)
+                        .file(file)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.message").value("Receipt uploaded successfully to the line item."))
+                .andExpect(jsonPath("$.data.receiptId").value(receiptId.toString()))
+                .andExpect(jsonPath("$.data.processingStatus").value("UPLOADED"))
+                .andExpect(jsonPath("$.data.originalFileName").doesNotExist());
+    }
+
+    @Test
+    void uploadForLineItem_returns403_forFinance() throws Exception {
+        UUID lineItemId = UUID.randomUUID();
+        MockMultipartFile file = new MockMultipartFile("file", "taxi-receipt.pdf", "application/pdf", "content".getBytes());
+
+        mockMvc.perform(multipart("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId)
+                        .file(file)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void uploadForLineItem_returns401_whenUnauthenticated() throws Exception {
+        UUID lineItemId = UUID.randomUUID();
+        MockMultipartFile file = new MockMultipartFile("file", "taxi-receipt.pdf", "application/pdf", "content".getBytes());
+
+        mockMvc.perform(multipart("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId).file(file))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
     void getAllForReport_returns200_forManager() throws Exception {
         UUID reportId = UUID.randomUUID();
         when(receiptService.getAllForReport(reportId))

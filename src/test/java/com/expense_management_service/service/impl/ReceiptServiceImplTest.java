@@ -298,6 +298,163 @@ class ReceiptServiceImplTest {
     }
 
     @Test
+    void uploadForLineItem_savesReceiptMetadata_associatedWithReportAndLineItem_whenValid() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+        ArgumentCaptor<Receipt> receiptCaptor = ArgumentCaptor.forClass(Receipt.class);
+        when(receiptRepository.saveAndFlush(receiptCaptor.capture())).thenAnswer(inv -> {
+            Receipt saved = inv.getArgument(0);
+            saved.setReceiptId(UUID.randomUUID());
+            return saved;
+        });
+
+        MockMultipartFile file = pdfFile();
+        ReceiptResponse response = receiptService.uploadForLineItem(lineItemId, file);
+
+        assertThat(response.originalFileName()).isEqualTo("taxi-receipt.pdf");
+        assertThat(response.reportId()).isEqualTo(reportId);
+        assertThat(response.lineItemId()).isEqualTo(lineItemId);
+        assertThat(receiptCaptor.getValue().getReport()).isSameAs(draftReport);
+        assertThat(receiptCaptor.getValue().getLineItem()).isSameAs(lineItem);
+        verify(storageService).upload(argThatKeyContains("receipts/" + employeeId + "/" + reportId + "/" + lineItemId + "/"), eq(file));
+
+        ArgumentCaptor<ReceiptUploadedEvent> eventCaptor = ArgumentCaptor.forClass(ReceiptUploadedEvent.class);
+        verify(applicationEventPublisher).publishEvent(eventCaptor.capture());
+        assertThat(eventCaptor.getValue().receiptId()).isEqualTo(response.receiptId());
+    }
+
+    @Test
+    void uploadForLineItem_rollsBackS3Object_whenMetadataSaveFails() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+        when(receiptRepository.saveAndFlush(any(Receipt.class))).thenThrow(new RuntimeException("db down"));
+
+        assertThatThrownBy(() -> receiptService.uploadForLineItem(lineItemId, pdfFile()))
+                .isInstanceOf(RuntimeException.class)
+                .hasMessage("db down");
+
+        verify(storageService).delete(anyString());
+    }
+
+    @Test
+    void uploadForLineItem_doesNotCreateDbRecord_whenStorageUploadFails() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+        org.mockito.Mockito.doThrow(new StorageException("s3 down")).when(storageService).upload(anyString(), any());
+
+        assertThatThrownBy(() -> receiptService.uploadForLineItem(lineItemId, pdfFile()))
+                .isInstanceOf(StorageException.class);
+
+        verify(receiptRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void uploadForLineItem_throwsAccessDenied_whenCallerDoesNotOwnParentReport() {
+        draftReport.setEmployeeId("someone-else");
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+
+        assertThatThrownBy(() -> receiptService.uploadForLineItem(lineItemId, pdfFile()))
+                .isInstanceOf(AccessDeniedException.class);
+
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void uploadForLineItem_throwsBusinessRuleViolation_whenReportNotEditable() {
+        draftReport.setReportStatus(ReportStatus.SUBMITTED);
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+
+        assertThatThrownBy(() -> receiptService.uploadForLineItem(lineItemId, pdfFile()))
+                .isInstanceOf(BusinessRuleViolationException.class);
+
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void uploadForLineItem_throwsResourceNotFoundException_whenLineItemMissing() {
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> receiptService.uploadForLineItem(lineItemId, pdfFile()))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void uploadForLineItem_throwsIllegalArgumentException_whenFileEmpty() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+        MockMultipartFile empty = new MockMultipartFile("file", "empty.pdf", "application/pdf", new byte[0]);
+
+        assertThatThrownBy(() -> receiptService.uploadForLineItem(lineItemId, empty))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("empty");
+
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void uploadForLineItem_throwsIllegalArgumentException_whenFileTooLarge() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+        ReflectionTestUtils.setField(receiptService, "maxFileSizeBytes", 5L);
+
+        assertThatThrownBy(() -> receiptService.uploadForLineItem(lineItemId, pdfFile()))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("maximum allowed size");
+
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void uploadForLineItem_throwsIllegalArgumentException_whenContentTypeNotAllowed() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+        MockMultipartFile exe = new MockMultipartFile("file", "malware.exe", "application/x-msdownload", "content".getBytes());
+
+        assertThatThrownBy(() -> receiptService.uploadForLineItem(lineItemId, exe))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Unsupported file type");
+
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void uploadForLineItem_throwsIllegalArgumentException_whenBytesDoNotMatchDeclaredType() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+        MockMultipartFile fakePdf = new MockMultipartFile("file", "invoice.pdf", "application/pdf", "MZ-not-really-a-pdf".getBytes());
+
+        assertThatThrownBy(() -> receiptService.uploadForLineItem(lineItemId, fakePdf))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("does not match");
+
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void uploadForLineItem_thenGetAllForLineItem_returnsTheUploadedReceipt() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+        UUID receiptId = UUID.randomUUID();
+        when(receiptRepository.saveAndFlush(any(Receipt.class))).thenAnswer(inv -> {
+            Receipt saved = inv.getArgument(0);
+            saved.setReceiptId(receiptId);
+            return saved;
+        });
+        ReceiptResponse uploaded = receiptService.uploadForLineItem(lineItemId, pdfFile());
+
+        Receipt persisted = receiptOnReport().receiptId(receiptId).lineItem(lineItem)
+                .originalFileName("taxi-receipt.pdf").objectKey("key").build();
+        when(receiptRepository.findByLineItem_LineItemId(lineItemId)).thenReturn(List.of(persisted));
+
+        List<ReceiptResponse> receipts = receiptService.getAllForLineItem(lineItemId);
+
+        assertThat(receipts).extracting(ReceiptResponse::receiptId).containsExactly(uploaded.receiptId());
+        assertThat(receipts).extracting(ReceiptResponse::lineItemId).containsExactly(lineItemId);
+    }
+
+    @Test
     void getAllForReport_returnsMetadata_whenOwner() {
         stubOwnerAndReport();
         Receipt receipt = receiptOnReport().receiptId(UUID.randomUUID())

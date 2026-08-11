@@ -3,18 +3,14 @@ package com.expense_management_service.service;
 import com.expense_management_service.dto.response.EscalationRunResponse;
 
 /**
- * Prevents reports from stalling indefinitely due to approver inaction (EP06 plan, Phase 4 / BR-12).
- * Runs as SYSTEM - never touches CurrentUserService or UmsClient, neither of which has anything
- * to work with on a scheduler thread (no request-bound SecurityContext).
+ * SLA reminder sweep (§5.4, reconfirmed post-Zoho-pivot after full market research - matches 7 of 8
+ * studied systems; Concur is the sole outlier with real auto-escalation). Reminders only - a human
+ * (the approver or Admin) must set a delegate to actually move a stalled assignment. Runs as SYSTEM -
+ * never touches CurrentUserService or UmsClient, neither of which has anything to work with on a
+ * scheduler thread (no request-bound SecurityContext).
  */
 public interface EscalationService {
 
-    /**
-     * Scans every PENDING task past its due date. For each: reassigns to the approver's active
-     * delegate if one exists, else to the approver's own manager (a "skip-level" escalation), by
-     * marking the overdue task ESCALATED and creating a fresh PENDING replacement with its own
-     * SLA window. If neither target exists, the task is left exactly as it is and a warning is
-     * logged - it is never silently dropped or corrupted.
-     */
-    EscalationRunResponse runEscalationSweep();
+    /** Scans every ACTIVE assignment past its due date and fires a reminder event for each. Never reassigns anything. */
+    EscalationRunResponse runReminderSweep();
 }

@@ -6,11 +6,11 @@ import com.expense_management_service.common.exception.ResourceNotFoundException
 import com.expense_management_service.dto.request.CostCenterRequest;
 import com.expense_management_service.dto.response.CostCenterResponse;
 import com.expense_management_service.entity.CostCenter;
+import com.expense_management_service.entity.EmployeeCache;
 import com.expense_management_service.integration.departments.DepartmentClient;
-import com.expense_management_service.integration.ums.UmsClient;
-import com.expense_management_service.integration.ums.dto.UmsUserResponse;
 import com.expense_management_service.mapper.CostCenterMapper;
 import com.expense_management_service.repository.CostCenterRepository;
+import com.expense_management_service.repository.EmployeeCacheRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -38,7 +38,7 @@ class CostCenterServiceImplTest {
     private DepartmentClient departmentClient;
 
     @Mock
-    private UmsClient umsClient;
+    private EmployeeCacheRepository employeeCacheRepository;
 
     private CostCenterServiceImpl costCenterService;
 
@@ -48,7 +48,7 @@ class CostCenterServiceImplTest {
     @BeforeEach
     void setUp() {
         costCenterService = new CostCenterServiceImpl(
-                costCenterRepository, new CostCenterMapper(), departmentClient, umsClient);
+                costCenterRepository, new CostCenterMapper(), departmentClient, employeeCacheRepository);
         departmentUuid = UUID.randomUUID();
         ownerEmployeeId = "5100014";
     }
@@ -59,8 +59,8 @@ class CostCenterServiceImplTest {
 
     private void stubDepartmentAndOwnerValid() {
         when(departmentClient.existsById(departmentUuid)).thenReturn(true);
-        when(umsClient.getAllUsers()).thenReturn(List.of(
-                new UmsUserResponse(UUID.randomUUID(), 5100014L, "Jordan", "Smith", "jordan@example.com", true)));
+        when(employeeCacheRepository.findByEmployeeId(ownerEmployeeId)).thenReturn(Optional.of(
+                EmployeeCache.builder().employeeId(ownerEmployeeId).employmentStatus("Active").build()));
     }
 
     @Test
@@ -95,14 +95,13 @@ class CostCenterServiceImplTest {
     }
 
     @Test
-    void create_throwsIllegalArgumentException_whenOwnerDoesNotExistInUms() {
+    void create_throwsIllegalArgumentException_whenOwnerDoesNotExist() {
         when(departmentClient.existsById(departmentUuid)).thenReturn(true);
-        when(umsClient.getAllUsers()).thenReturn(List.of(
-                new UmsUserResponse(UUID.randomUUID(), 9999999L, "Someone", "Else", "someone@example.com", true)));
+        when(employeeCacheRepository.findByEmployeeId(ownerEmployeeId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> costCenterService.create(validRequest()))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("ownerEmployeeId does not exist in UMS");
+                .hasMessageContaining("ownerEmployeeId does not exist");
 
         verify(costCenterRepository, never()).save(any());
     }
@@ -110,12 +109,12 @@ class CostCenterServiceImplTest {
     @Test
     void create_throwsIllegalArgumentException_whenOwnerIsInactive() {
         when(departmentClient.existsById(departmentUuid)).thenReturn(true);
-        when(umsClient.getAllUsers()).thenReturn(List.of(
-                new UmsUserResponse(UUID.randomUUID(), 5100014L, "Jordan", "Smith", "jordan@example.com", false)));
+        when(employeeCacheRepository.findByEmployeeId(ownerEmployeeId)).thenReturn(Optional.of(
+                EmployeeCache.builder().employeeId(ownerEmployeeId).employmentStatus("Exited").build()));
 
         assertThatThrownBy(() -> costCenterService.create(validRequest()))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Owner user is inactive");
+                .hasMessageContaining("not Active");
 
         verify(costCenterRepository, never()).save(any());
     }

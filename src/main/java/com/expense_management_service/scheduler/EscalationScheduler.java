@@ -8,9 +8,10 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * Periodic SLA escalation sweep (EP06 plan, Phase 4 / BR-12). Cadence configurable via
- * {@code escalation.sla.cron} (default: hourly). Delegates entirely to
- * {@link EscalationService#runEscalationSweep()} - this class only owns the trigger and logging.
+ * Periodic SLA reminder sweep (§5.4 - reminders-only, reconfirmed after full market research; no
+ * auto-reassignment, unlike EP06). Cadence configurable via {@code escalation.sla.cron} (default:
+ * hourly). Delegates entirely to {@link EscalationService#runReminderSweep()} - this class only
+ * owns the trigger and logging.
  * <p>
  * Runs as SYSTEM - must never depend on {@code CurrentUserService} or {@code UmsClient}, both of
  * which require a request-bound {@code SecurityContext} that does not exist on this thread. Note
@@ -26,8 +27,8 @@ public class EscalationScheduler {
 
     @Scheduled(cron = "${escalation.sla.cron:0 0 * * * *}")
     public void runSweep() {
-        log.info("Starting scheduled SLA escalation sweep");
-        EscalationRunResponse result = escalationService.runEscalationSweep();
-        log.info("Scheduled SLA escalation sweep completed: {}", result);
+        log.info("Starting scheduled SLA reminder sweep");
+        EscalationRunResponse result = escalationService.runReminderSweep();
+        log.info("Scheduled SLA reminder sweep completed: {}", result);
     }
 }

@@ -221,7 +221,7 @@ class ReceiptServiceImplTest {
     void upload_throwsIllegalArgumentException_whenBytesDoNotMatchDeclaredType() {
         stubOwnerAndReport();
         // Extension AND content-type both claim PDF (e.g. a renamed executable), but the
-        // actual bytes don't carry the PDF magic number — this must still be caught.
+        // actual bytes don't carry the PDF magic number â€” this must still be caught.
         MockMultipartFile fakePdf = new MockMultipartFile("file", "invoice.pdf", "application/pdf", "MZ-not-really-a-pdf".getBytes());
 
         assertThatThrownBy(() -> receiptService.upload(reportId, fakePdf))
@@ -267,7 +267,7 @@ class ReceiptServiceImplTest {
 
     @Test
     void upload_throwsBusinessRuleViolation_whenReportNotEditable() {
-        draftReport.setReportStatus(ReportStatus.SUBMITTED);
+        draftReport.setReportStatus(ReportStatus.PENDING_APPROVAL);
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
 
@@ -543,7 +543,7 @@ class ReceiptServiceImplTest {
     @Test
     void delete_throwsBusinessRuleViolation_whenReportNotEditable() {
         UUID receiptId = UUID.randomUUID();
-        draftReport.setReportStatus(ReportStatus.SUBMITTED);
+        draftReport.setReportStatus(ReportStatus.PENDING_APPROVAL);
         Receipt receipt = receiptOnReport().receiptId(receiptId).objectKey("receipts/key").build();
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(receiptRepository.findById(receiptId)).thenReturn(Optional.of(receipt));

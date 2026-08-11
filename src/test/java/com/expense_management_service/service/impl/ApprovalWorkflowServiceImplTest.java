@@ -1,34 +1,35 @@
 package com.expense_management_service.service.impl;
 
-import com.expense_management_service.common.exception.BusinessRuleViolationException;
-import com.expense_management_service.dto.response.ApprovalTaskResponse;
+import com.expense_management_service.dto.request.LineItemReviewRequest;
+import com.expense_management_service.dto.request.RejectReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
-import com.expense_management_service.entity.ApprovalMatrix;
-import com.expense_management_service.entity.ApprovalTask;
-import com.expense_management_service.entity.CostCenter;
-import com.expense_management_service.entity.Currency;
+import com.expense_management_service.entity.ApprovalAssignment;
+import com.expense_management_service.entity.ApprovalFlow;
+import com.expense_management_service.entity.ApprovalLevel;
+import com.expense_management_service.entity.ApprovalLevelApprover;
+import com.expense_management_service.entity.ApprovalLevelInstance;
+import com.expense_management_service.entity.ApprovalLineItemReview;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
-import com.expense_management_service.entity.PolicyViolation;
-import com.expense_management_service.enums.ApprovalMode;
-import com.expense_management_service.enums.ApproverType;
-import com.expense_management_service.enums.PolicyEnforcementType;
-import com.expense_management_service.enums.PolicyRuleType;
-import com.expense_management_service.enums.PolicySeverity;
+import com.expense_management_service.enums.ApproverSourceType;
+import com.expense_management_service.enums.AssignmentStatus;
+import com.expense_management_service.enums.LevelInstanceStatus;
+import com.expense_management_service.enums.LevelQuorum;
+import com.expense_management_service.enums.LineItemReviewStatus;
 import com.expense_management_service.enums.ReportStatus;
-import com.expense_management_service.enums.TaskStatus;
-import com.expense_management_service.mapper.ApprovalTaskMapper;
 import com.expense_management_service.mapper.ExpenseReportMapper;
-import com.expense_management_service.mapper.PolicyViolationMapper;
-import com.expense_management_service.repository.ApprovalMatrixRepository;
-import com.expense_management_service.repository.ApprovalTaskRepository;
-import com.expense_management_service.repository.CurrencyRepository;
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
+import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
+import com.expense_management_service.repository.ApprovalLineItemReviewRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
-import com.expense_management_service.service.ApproverResolver;
+import com.expense_management_service.service.ApprovalEventPublisher;
+import com.expense_management_service.service.ApprovalFlowResolutionService;
+import com.expense_management_service.service.ApproverSourceResolver;
+import com.expense_management_service.service.ChainCorrectnessService;
 import com.expense_management_service.service.DelegationService;
-import com.expense_management_service.service.ExchangeRateService;
-import com.expense_management_service.service.PolicyEvaluator;
+import com.expense_management_service.service.PolicyDecision;
+import com.expense_management_service.service.PolicyEvaluationGateway;
 import com.expense_management_service.service.SlaPolicyService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,561 +38,508 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.security.access.AccessDeniedException;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.inOrder;
+import static org.mockito.ArgumentMatchers.anyBoolean;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-// LENIENT: the shared setUp() below stubs the full set of collaborators needed by submit()'s
-// happy path, but many tests deliberately exercise a guard clause that returns before some of
-// those stubs are ever consulted (e.g. "not draft" never reaches currency conversion at all,
-// "no line items" never reaches it either, getMyQueue() doesn't touch ExpenseReportRepository).
-// Strict stubbing would flag each of those as unused; lenient is the correct tool here, not
-// fragmenting the shared setup per test.
+/**
+ * Covers the core state-machine transitions. Uses a single-level, single-approver, single-line-item
+ * flow as the default fixture, built up progressively rather than as a giant shared setup, so each
+ * test's actual repository interactions stay traceable.
+ */
 @MockitoSettings(strictness = Strictness.LENIENT)
 @ExtendWith(MockitoExtension.class)
 class ApprovalWorkflowServiceImplTest {
 
     @Mock private ExpenseReportRepository expenseReportRepository;
-    @Mock private ApprovalTaskRepository approvalTaskRepository;
-    @Mock private ApprovalMatrixRepository approvalMatrixRepository;
-    @Mock private CurrencyRepository currencyRepository;
-    @Mock private ExchangeRateService exchangeRateService;
-    @Mock private ApproverResolver approverResolver;
-    @Mock private DelegationService delegationService;
-    @Mock private SlaPolicyService slaPolicyService;
-    @Mock private PolicyEvaluator policyEvaluator;
+    @Mock private ApprovalLevelInstanceRepository approvalLevelInstanceRepository;
+    @Mock private ApprovalAssignmentRepository approvalAssignmentRepository;
+    @Mock private ApprovalLineItemReviewRepository approvalLineItemReviewRepository;
     @Mock private PolicyViolationRepository policyViolationRepository;
+    @Mock private ApprovalFlowResolutionService approvalFlowResolutionService;
+    @Mock private ApproverSourceResolver approverSourceResolver;
+    @Mock private ChainCorrectnessService chainCorrectnessService;
+    @Mock private DelegationService delegationService;
+    @Mock private PolicyEvaluationGateway policyEvaluationGateway;
+    @Mock private ApprovalEventPublisher approvalEventPublisher;
+    @Mock private SlaPolicyService slaPolicyService;
 
     private ApprovalWorkflowServiceImpl service;
 
-    private final List<ApprovalTask> savedTasks = new ArrayList<>();
-    private ExpenseReport report;
-    private UUID reportId;
-    private UUID costCenterId;
+    private final UUID reportId = UUID.randomUUID();
+    private final UUID flowId = UUID.randomUUID();
+    private final UUID lineItemId = UUID.randomUUID();
+    private final String submitterId = "5100001";
+    private final String approverId = "5100002";
+
+    private final List<ApprovalLevelInstance> savedInstances = new ArrayList<>();
+    private final List<ApprovalAssignment> savedAssignments = new ArrayList<>();
+    private final List<ApprovalLineItemReview> savedReviews = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
-        service = new ApprovalWorkflowServiceImpl(
-                expenseReportRepository, approvalTaskRepository, approvalMatrixRepository,
-                currencyRepository, exchangeRateService,
-                approverResolver, delegationService, slaPolicyService, new ExpenseReportMapper(), new ApprovalTaskMapper(),
-                policyEvaluator, policyViolationRepository, new PolicyViolationMapper());
+        service = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
+                approvalAssignmentRepository, approvalLineItemReviewRepository, policyViolationRepository,
+                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, delegationService,
+                policyEvaluationGateway, approvalEventPublisher, new ExpenseReportMapper(), slaPolicyService,
+                new com.expense_management_service.mapper.PolicyViolationMapper());
 
-        reportId = UUID.randomUUID();
-        costCenterId = UUID.randomUUID();
-        CostCenter costCenter = CostCenter.builder().costCenterId(costCenterId).ownerEmployeeId("cc-owner").build();
-        Currency currency = Currency.builder().currencyId(UUID.randomUUID()).currencyCode("INR").decimalPlaces(2).build();
-
-        report = ExpenseReport.builder()
-                .reportId(reportId)
-                .employeeId("EMP-1")
-                .costCenter(costCenter)
-                .currency(currency)
-                .totalAmount(BigDecimal.valueOf(1000))
-                .reportStatus(ReportStatus.DRAFT)
-                .expenseLineItems(List.of(new ExpenseLineItem()))
-                .build();
-
-        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
-        when(expenseReportRepository.save(any())).thenAnswer(inv -> inv.getArgument(0));
-        when(currencyRepository.findByCurrencyCode(any())).thenReturn(Optional.of(currency));
-        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(BigDecimal.valueOf(1000));
+        when(policyEvaluationGateway.evaluate(any())).thenReturn(new PolicyDecision(true, List.of()));
+        when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
         when(slaPolicyService.resolveSlaBusinessDays()).thenReturn(3);
-        when(approverResolver.resolve(any(ApprovalMatrix.class), anyString()))
-                .thenAnswer(inv -> Optional.of(((ApprovalMatrix) inv.getArgument(0)).getApproverReference()));
-        // Default: only the assigned approver can act (mirrors the old plain-equality check).
-        // Delegate-specific tests below override this per-test.
-        when(delegationService.canAct(anyString(), anyString()))
-                .thenAnswer(inv -> inv.getArgument(0).equals(inv.getArgument(1)));
+        when(delegationService.canAct(any(), any())).thenAnswer(inv -> inv.getArgument(0).equals(inv.getArgument(1)));
 
-        savedTasks.clear();
-        when(approvalTaskRepository.save(any())).thenAnswer(inv -> {
-            ApprovalTask t = inv.getArgument(0);
-            if (t.getTaskId() == null) {
-                t.setTaskId(UUID.randomUUID());
+        when(approvalLevelInstanceRepository.save(any(ApprovalLevelInstance.class))).thenAnswer(inv -> {
+            ApprovalLevelInstance i = inv.getArgument(0);
+            if (i.getInstanceId() == null) {
+                i.setInstanceId(UUID.randomUUID());
             }
-            savedTasks.removeIf(x -> x.getTaskId().equals(t.getTaskId()));
-            savedTasks.add(t);
-            return t;
+            savedInstances.removeIf(existing -> existing.getInstanceId().equals(i.getInstanceId()));
+            savedInstances.add(i);
+            return i;
         });
-        when(approvalTaskRepository.findByReport_ReportIdOrderByApprovalLevelAsc(any())).thenAnswer(inv ->
-                savedTasks.stream()
-                        .filter(t -> t.getReport().getReportId().equals(inv.getArgument(0)))
-                        .sorted(Comparator.comparing(ApprovalTask::getApprovalLevel))
-                        .toList());
-        when(approvalTaskRepository.findByGroupId(any())).thenAnswer(inv ->
-                savedTasks.stream().filter(t -> inv.getArgument(0).equals(t.getGroupId())).toList());
-        when(approvalTaskRepository.findById(any())).thenAnswer(inv ->
-                savedTasks.stream().filter(t -> t.getTaskId().equals(inv.getArgument(0))).findFirst());
+        when(approvalAssignmentRepository.save(any(ApprovalAssignment.class))).thenAnswer(inv -> {
+            ApprovalAssignment a = inv.getArgument(0);
+            if (a.getAssignmentId() == null) {
+                a.setAssignmentId(UUID.randomUUID());
+            }
+            savedAssignments.removeIf(existing -> existing.getAssignmentId().equals(a.getAssignmentId()));
+            savedAssignments.add(a);
+            return a;
+        });
+        when(approvalLineItemReviewRepository.save(any(ApprovalLineItemReview.class))).thenAnswer(inv -> {
+            ApprovalLineItemReview r = inv.getArgument(0);
+            if (r.getReviewId() == null) {
+                r.setReviewId(UUID.randomUUID());
+            }
+            savedReviews.removeIf(existing -> existing.getReviewId().equals(r.getReviewId()));
+            savedReviews.add(r);
+            return r;
+        });
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        when(approvalAssignmentRepository.findByLevelInstance_InstanceId(any()))
+                .thenAnswer(inv -> savedAssignments.stream()
+                        .filter(a -> a.getLevelInstance().getInstanceId().equals(inv.getArgument(0))).toList());
+        when(approvalAssignmentRepository.findByLevelInstance_Report_ReportId(any()))
+                .thenAnswer(inv -> savedAssignments.stream()
+                        .filter(a -> a.getLevelInstance().getReport().getReportId().equals(inv.getArgument(0))).toList());
+        when(delegationService.resolveApproverIdsActingFor(any()))
+                .thenAnswer(inv -> Set.of((String) inv.getArgument(0)));
+        when(approvalAssignmentRepository.findDistinctReportIdsByStatusAndApproverIdIn(any(), any(), any()))
+                .thenAnswer(inv -> {
+                    AssignmentStatus status = inv.getArgument(0);
+                    @SuppressWarnings("unchecked")
+                    java.util.Collection<String> approverIds = inv.getArgument(1);
+                    Pageable pageable = inv.getArgument(2);
+                    List<UUID> reportIds = savedAssignments.stream()
+                            .filter(a -> a.getStatus() == status)
+                            .filter(a -> approverIds.contains(a.getApproverId()))
+                            .map(a -> a.getLevelInstance().getReport().getReportId())
+                            .distinct()
+                            .toList();
+                    return new PageImpl<>(reportIds, pageable, reportIds.size());
+                });
+        when(expenseReportRepository.findHistoryForApprover(any(), anyBoolean(), anyBoolean(), any())).thenAnswer(inv -> {
+            String employeeId = inv.getArgument(0);
+            boolean includeApproved = inv.getArgument(1);
+            boolean includeRejected = inv.getArgument(2);
+            Pageable pageable = inv.getArgument(3);
+            // Reuses whatever findById(reportId) currently returns - this test only ever models one report.
+            List<ExpenseReport> content = expenseReportRepository.findById(reportId)
+                    .filter(r -> (includeApproved && r.getReportStatus() == ReportStatus.APPROVED
+                                    && savedAssignments.stream().anyMatch(a -> a.getApproverId().equals(employeeId) && a.getStatus() == AssignmentStatus.COMPLETED))
+                            || (includeRejected && employeeId.equals(r.getRejectedBy())))
+                    .map(List::of)
+                    .orElse(List.of());
+            return new PageImpl<>(content, pageable, content.size());
+        });
+        when(approvalLineItemReviewRepository.findByLevelInstance_InstanceId(any()))
+                .thenAnswer(inv -> savedReviews.stream()
+                        .filter(r -> r.getLevelInstance().getInstanceId().equals(inv.getArgument(0))).toList());
+        when(approvalLineItemReviewRepository.findByLevelInstance_InstanceIdAndStatus(any(), any()))
+                .thenAnswer(inv -> savedReviews.stream()
+                        .filter(r -> r.getLevelInstance().getInstanceId().equals(inv.getArgument(0)))
+                        .filter(r -> r.getStatus() == inv.getArgument(1)).toList());
+        when(approvalLineItemReviewRepository.findByLineItem_LineItemIdAndLevelInstance_InstanceId(any(), any()))
+                .thenAnswer(inv -> savedReviews.stream()
+                        .filter(r -> r.getLineItem().getLineItemId().equals(inv.getArgument(0)))
+                        .filter(r -> r.getLevelInstance().getInstanceId().equals(inv.getArgument(1)))
+                        .findFirst());
+        when(approvalLevelInstanceRepository.findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(eq(reportId), anyInt()))
+                .thenAnswer(inv -> savedInstances.stream()
+                        .filter(i -> i.getSubmissionCycle().equals(inv.getArgument(1)))
+                        .sorted(java.util.Comparator.comparing(ApprovalLevelInstance::getLevelOrder)).toList());
+        when(approvalLevelInstanceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(eq(reportId), anyInt(), any()))
+                .thenAnswer(inv -> savedInstances.stream()
+                        .filter(i -> i.getSubmissionCycle().equals(inv.getArgument(1)))
+                        .filter(i -> i.getStatus() == inv.getArgument(2))
+                        .findFirst());
+        when(approvalLevelInstanceRepository.findMaxSubmissionCycle(reportId))
+                .thenAnswer(inv -> savedInstances.stream().mapToInt(ApprovalLevelInstance::getSubmissionCycle).max().orElse(0));
     }
 
-    private ApprovalMatrix matrixRow(int level, String approverRef, ApprovalMode mode) {
-        return ApprovalMatrix.builder()
-                .matrixId(UUID.randomUUID())
-                .costCenter(report.getCostCenter())
-                .approvalLevel(level)
-                .approverType(ApproverType.USER)
-                .approverReference(approverRef)
-                .approvalMode(mode)
-                .status("ACTIVE")
+    private ExpenseLineItem lineItem() {
+        return ExpenseLineItem.builder().lineItemId(lineItemId).amount(new java.math.BigDecimal("1000")).build();
+    }
+
+    private ExpenseReport draftReport() {
+        return ExpenseReport.builder().reportId(reportId).employeeId(submitterId)
+                .reportStatus(ReportStatus.DRAFT)
+                .costCenter(com.expense_management_service.entity.CostCenter.builder().costCenterId(UUID.randomUUID()).build())
+                .expenseLineItems(List.of(lineItem()))
                 .build();
     }
 
-    private void givenMatrix(ApprovalMatrix... rows) {
-        when(approvalMatrixRepository.findByCostCenter_CostCenterIdAndStatusOrderByApprovalLevelAsc(costCenterId, "ACTIVE"))
-                .thenReturn(List.of(rows));
+    /** One level, SEQUENTIAL quorum, one NAMED_USER approver entry. */
+    private ApprovalFlow singleLevelFlow() {
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(flowId).name("Single level").isCatchAll(false).build();
+        ApprovalLevel level = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(1).quorum(LevelQuorum.SEQUENTIAL).build();
+        ApprovalLevelApprover entry = ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(level)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference(approverId).build();
+        level.getApprovers().add(entry);
+        flow.getLevels().add(level);
+        return flow;
     }
-
-    private List<ApprovalTask> tasksAtLevel(int level) {
-        return savedTasks.stream().filter(t -> t.getApprovalLevel() == level).toList();
-    }
-
-    // ---- submit() ----
 
     @Test
-    void submit_materialisesFullChain_sequentialParallelAllThenSequential() {
-        givenMatrix(
-                matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL),
-                matrixRow(2, "fin-alex", ApprovalMode.PARALLEL_ALL),
-                matrixRow(2, "fin-priya", ApprovalMode.PARALLEL_ALL),
-                matrixRow(3, "dir-sam", ApprovalMode.SEQUENTIAL));
+    void submit_materializesChainAndActivatesFirstLevel() {
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(approverId));
 
         ExpenseReportResponse response = service.submit(reportId);
 
-        assertThat(response.reportStatus()).isEqualTo("PENDING_APPROVAL");
-        assertThat(savedTasks).hasSize(4);
-
-        List<ApprovalTask> level1 = tasksAtLevel(1);
-        assertThat(level1).hasSize(1);
-        assertThat(level1.get(0).getTaskStatus()).isEqualTo(TaskStatus.PENDING);
-        assertThat(level1.get(0).getAssignedAt()).isNotNull();
-        assertThat(level1.get(0).getDueDate()).isNotNull();
-
-        List<ApprovalTask> level2 = tasksAtLevel(2);
-        assertThat(level2).hasSize(2);
-        assertThat(level2).allMatch(t -> t.getTaskStatus() == TaskStatus.QUEUED);
-        assertThat(level2).allMatch(t -> t.getAssignedAt() == null && t.getDueDate() == null);
-        assertThat(level2.get(0).getGroupId()).isEqualTo(level2.get(1).getGroupId());
-
-        List<ApprovalTask> level3 = tasksAtLevel(3);
-        assertThat(level3).hasSize(1);
-        assertThat(level3.get(0).getTaskStatus()).isEqualTo(TaskStatus.QUEUED);
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
+        assertThat(savedInstances).hasSize(1);
+        assertThat(savedInstances.get(0).getStatus()).isEqualTo(LevelInstanceStatus.ACTIVE);
+        assertThat(savedAssignments).hasSize(1);
+        assertThat(savedAssignments.get(0).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+        assertThat(savedAssignments.get(0).getApproverId()).isEqualTo(approverId);
+        assertThat(savedReviews).hasSize(1);
+        assertThat(savedReviews.get(0).getStatus()).isEqualTo(LineItemReviewStatus.PENDING);
+        verify(chainCorrectnessService).applyCorrectnessPasses(report, 1);
     }
 
     @Test
-    void submit_autoSkipsDuplicateApprover_acrossLevels() {
-        givenMatrix(
-                matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL),
-                matrixRow(2, "mgr-jane", ApprovalMode.SEQUENTIAL));
+    void submit_throws_whenNotInDraft() {
+        ExpenseReport report = draftReport();
+        report.setReportStatus(ReportStatus.APPROVED);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
-        service.submit(reportId);
-
-        assertThat(tasksAtLevel(1).get(0).getTaskStatus()).isEqualTo(TaskStatus.PENDING);
-        assertThat(tasksAtLevel(2).get(0).getTaskStatus()).isEqualTo(TaskStatus.SKIPPED);
+        assertThatThrownBy(() -> service.submit(reportId)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void approve_skipsOverAFullySkippedLevel_andActivatesTheOneAfterIt() {
-        givenMatrix(
-                matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL),
-                matrixRow(2, "mgr-jane", ApprovalMode.SEQUENTIAL), // duplicate of level 1 -> SKIPPED
-                matrixRow(3, "dir-sam", ApprovalMode.SEQUENTIAL));
+    void submit_throws_whenALevelResolvesZeroApprovers() {
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.submit(reportId)).isInstanceOf(IllegalStateException.class);
+    }
+
+    private ExpenseReport submittedReport() {
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(approverId));
         service.submit(reportId);
-        assertThat(tasksAtLevel(2).get(0).getTaskStatus()).isEqualTo(TaskStatus.SKIPPED);
-        ApprovalTask level1Task = tasksAtLevel(1).get(0);
-
-        service.approve(level1Task.getTaskId(), "mgr-jane", null);
-
-        assertThat(tasksAtLevel(3).get(0).getTaskStatus()).isEqualTo(TaskStatus.PENDING);
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL);
+        return report;
     }
 
     @Test
-    void approve_autoApprovesReport_whenEveryRemainingLevelIsFullySkipped() {
-        givenMatrix(
-                matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL),
-                matrixRow(2, "mgr-jane", ApprovalMode.SEQUENTIAL)); // duplicate of level 1, and the last level
-        service.submit(reportId);
-        ApprovalTask level1Task = tasksAtLevel(1).get(0);
+    void reviewLineItem_approvingTheOnlyLineItem_completesTheLevelAndApprovesTheReport() {
+        ExpenseReport report = submittedReport();
 
-        service.approve(level1Task.getTaskId(), "mgr-jane", null);
+        ExpenseReportResponse response = service.reviewLineItem(reportId, lineItemId, approverId,
+                new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
 
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.APPROVED.name());
+        assertThat(savedInstances.get(0).getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED);
         assertThat(report.getApprovedAt()).isNotNull();
     }
 
     @Test
-    void submit_throwsIllegalArgumentException_whenReportIsNotDraft() {
+    void reviewLineItem_needsCorrection_movesReportToAwaitingCorrection_andRequiresAComment() {
+        submittedReport();
+
+        assertThatThrownBy(() -> service.reviewLineItem(reportId, lineItemId, approverId,
+                new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("comment is required");
+
+        ExpenseReportResponse response = service.reviewLineItem(reportId, lineItemId, approverId,
+                new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "Missing receipt"));
+
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.AWAITING_CORRECTION.name());
+    }
+
+    @Test
+    void reviewLineItem_throwsAccessDenied_whenActorIsNotTheResolvedApprover() {
+        submittedReport();
+
+        assertThatThrownBy(() -> service.reviewLineItem(reportId, lineItemId, "someone-else",
+                new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null)))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    }
+
+    @Test
+    void resubmit_resumesInPlace_whenSameFlowStillMatches() {
+        ExpenseReport report = submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "fix it"));
+        report.setReportStatus(ReportStatus.AWAITING_CORRECTION);
+
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
+
+        ExpenseReportResponse response = service.submit(reportId);
+
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
+        assertThat(savedInstances).hasSize(1); // no new instance created - resumed in place
+        assertThat(savedReviews.get(0).getStatus()).isEqualTo(LineItemReviewStatus.PENDING);
+    }
+
+    @Test
+    void resubmit_fullyRestarts_whenADifferentFlowNowMatches() {
+        ExpenseReport report = submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "fix it"));
+        report.setReportStatus(ReportStatus.AWAITING_CORRECTION);
+
+        ApprovalFlow differentFlow = singleLevelFlow();
+        differentFlow.setFlowId(UUID.randomUUID());
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(differentFlow);
+
+        service.submit(reportId);
+
+        assertThat(savedInstances).hasSize(2); // old cycle's instance + a fresh one
+        assertThat(savedInstances.stream().filter(i -> i.getSubmissionCycle() == 1).findFirst().orElseThrow().getStatus())
+                .isEqualTo(LevelInstanceStatus.CANCELLED);
+        assertThat(savedInstances.stream().anyMatch(i -> i.getSubmissionCycle() == 2 && i.getFlowId().equals(differentFlow.getFlowId()))).isTrue();
+    }
+
+    @Test
+    void recall_returnsToDraft_beforeAnyLevelApproved() {
+        submittedReport();
+
+        ExpenseReportResponse response = service.recall(reportId, submitterId);
+
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.DRAFT.name());
+    }
+
+    @Test
+    void recall_blocked_onceALevelHasAlreadyApproved() {
+        ExpenseReport report = submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        report.setReportStatus(ReportStatus.APPROVED); // simulate the persisted state after full approval
+
+        // A fully APPROVED report also fails the recall status check itself - use a report that's
+        // still nominally PENDING_APPROVAL/AWAITING_CORRECTION but already has a COMPLETED level,
+        // which is the actual scenario the guard protects against on a multi-level flow.
         report.setReportStatus(ReportStatus.PENDING_APPROVAL);
 
-        assertThatThrownBy(() -> service.submit(reportId))
+        assertThatThrownBy(() -> service.recall(reportId, submitterId))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("DRAFT");
+                .hasMessageContaining("already completed");
     }
 
     @Test
-    void submit_throwsIllegalArgumentException_whenNoLineItems() {
-        report.setExpenseLineItems(List.of());
+    void recall_throws_whenActorIsNotTheOwner() {
+        submittedReport();
 
-        assertThatThrownBy(() -> service.submit(reportId))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("line items");
+        assertThatThrownBy(() -> service.recall(reportId, "not-the-owner"))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
     }
 
     @Test
-    void submit_throwsIllegalArgumentException_whenNoLevel1ApproverConfigured() {
-        givenMatrix(matrixRow(2, "fin-alex", ApprovalMode.SEQUENTIAL));
+    void rejectReport_isTerminal() {
+        submittedReport();
 
-        assertThatThrownBy(() -> service.submit(reportId))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Level 1");
+        ExpenseReportResponse response = service.rejectReport(reportId, approverId, new RejectReportRequest("Duplicate submission"));
+
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.REJECTED.name());
+        assertThat(savedInstances.get(0).getStatus()).isEqualTo(LevelInstanceStatus.CANCELLED);
     }
 
     @Test
-    void submit_throwsIllegalArgumentException_whenApproverCannotBeResolved() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        when(approverResolver.resolve(any(), anyString())).thenReturn(Optional.empty());
+    void bulkApprove_throws_whenReportHasPolicyViolations() {
+        submittedReport();
+        when(policyViolationRepository.findByLineItem_Report_ReportId(reportId)).thenReturn(
+                List.of(com.expense_management_service.entity.PolicyViolation.builder().build()));
 
-        assertThatThrownBy(() -> service.submit(reportId))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Unable to resolve");
-    }
-
-    // ---- approve() ----
-
-    @Test
-    void approve_sequentialLevel_activatesNextLevel() {
-        givenMatrix(
-                matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL),
-                matrixRow(2, "dir-sam", ApprovalMode.SEQUENTIAL));
-        service.submit(reportId);
-        ApprovalTask level1Task = tasksAtLevel(1).get(0);
-
-        ApprovalTaskResponse response = service.approve(level1Task.getTaskId(), "mgr-jane", "looks good");
-
-        assertThat(response.taskStatus()).isEqualTo("APPROVED");
-        assertThat(tasksAtLevel(2).get(0).getTaskStatus()).isEqualTo(TaskStatus.PENDING);
-        assertThat(tasksAtLevel(2).get(0).getDueDate()).isNotNull();
+        assertThatThrownBy(() -> service.bulkApprove(reportId, approverId)).isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
-    void approve_lastLevel_movesReportToApproved() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        service.submit(reportId);
-        ApprovalTask task = tasksAtLevel(1).get(0);
+    void bulkApprove_approvesEveryPendingLineItem_whenEligible() {
+        submittedReport();
 
-        service.approve(task.getTaskId(), "mgr-jane", null);
+        ExpenseReportResponse response = service.bulkApprove(reportId, approverId);
 
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
-        assertThat(report.getApprovedAt()).isNotNull();
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.APPROVED.name());
+    }
+
+    // ---------------------------------------------------------------------
+    // §14 backend gaps: line-item-reviews, status, my-history
+    // ---------------------------------------------------------------------
+
+    @Test
+    void getApprovalStatus_returnsCurrentLevelAndEligibility_forPendingReport() {
+        submittedReport();
+
+        var status = service.getApprovalStatus(reportId);
+
+        assertThat(status.currentLevelOrder()).isEqualTo(1);
+        assertThat(status.currentLevelDisplayName()).isEqualTo("Level 1"); // no levelName set on the test's singleLevelFlow()
+        assertThat(status.totalLevels()).isEqualTo(1);
+        assertThat(status.canRecall()).isTrue();
+        assertThat(status.canCancel()).isTrue();
     }
 
     @Test
-    void approve_parallelAny_cancelsRemainingPendingSiblings_onFirstApproval() {
-        givenMatrix(matrixRow(1, "fin-alex", ApprovalMode.PARALLEL_ANY), matrixRow(1, "fin-priya", ApprovalMode.PARALLEL_ANY));
-        service.submit(reportId);
-        ApprovalTask alexTask = tasksAtLevel(1).stream().filter(t -> t.getApproverId().equals("fin-alex")).findFirst().orElseThrow();
-        ApprovalTask priyaTask = tasksAtLevel(1).stream().filter(t -> t.getApproverId().equals("fin-priya")).findFirst().orElseThrow();
-        assertThat(alexTask.getTaskStatus()).isEqualTo(TaskStatus.PENDING);
-        assertThat(priyaTask.getTaskStatus()).isEqualTo(TaskStatus.PENDING);
+    void getApprovalStatus_disallowsRecallAndCancel_onceALevelHasApproved() {
+        ExpenseReport report = submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        // Simulate a later level still pending on a multi-level flow, so status isn't yet a final outcome.
+        report.setReportStatus(ReportStatus.PENDING_APPROVAL);
 
-        service.approve(alexTask.getTaskId(), "fin-alex", null);
+        var status = service.getApprovalStatus(reportId);
 
-        assertThat(priyaTask.getTaskStatus()).isEqualTo(TaskStatus.CANCELLED);
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+        assertThat(status.canRecall()).isFalse();
+        assertThat(status.canCancel()).isFalse();
     }
 
     @Test
-    void approve_parallelAll_doesNotCompleteLevel_untilEverySiblingApproves() {
-        givenMatrix(matrixRow(1, "fin-alex", ApprovalMode.PARALLEL_ALL), matrixRow(1, "fin-priya", ApprovalMode.PARALLEL_ALL));
-        service.submit(reportId);
-        ApprovalTask alexTask = tasksAtLevel(1).stream().filter(t -> t.getApproverId().equals("fin-alex")).findFirst().orElseThrow();
-        ApprovalTask priyaTask = tasksAtLevel(1).stream().filter(t -> t.getApproverId().equals("fin-priya")).findFirst().orElseThrow();
+    void getLineItemReviews_visibleToOwner() {
+        submittedReport();
 
-        service.approve(alexTask.getTaskId(), "fin-alex", null);
+        var reviews = service.getLineItemReviews(reportId, submitterId);
 
-        // priya's task must still be PENDING - the level isn't complete, report must not advance.
-        assertThat(priyaTask.getTaskStatus()).isEqualTo(TaskStatus.PENDING);
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL);
-
-        service.approve(priyaTask.getTaskId(), "fin-priya", null);
-
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+        assertThat(reviews).hasSize(1);
+        assertThat(reviews.get(0).status()).isEqualTo(LineItemReviewStatus.PENDING);
+        assertThat(reviews.get(0).levelOrder()).isEqualTo(1);
+        assertThat(reviews.get(0).displayName()).isEqualTo("Level 1");
     }
 
     @Test
-    void approve_parallelAll_completesLevel_whenASiblingWasSkippedAsADuplicate() {
-        // Regression: a same-level duplicate approver (fin-alex configured twice at level 1) is
-        // SKIPPED, not APPROVED. isLevelComplete must not require a SKIPPED sibling to also
-        // become APPROVED - that can never happen, and would leave the level permanently stuck.
-        givenMatrix(
-                matrixRow(1, "fin-alex", ApprovalMode.PARALLEL_ALL),
-                matrixRow(1, "fin-alex", ApprovalMode.PARALLEL_ALL),
-                matrixRow(1, "fin-priya", ApprovalMode.PARALLEL_ALL));
-        service.submit(reportId);
-        List<ApprovalTask> level1 = tasksAtLevel(1);
-        ApprovalTask skipped = level1.stream().filter(t -> t.getTaskStatus() == TaskStatus.SKIPPED).findFirst().orElseThrow();
-        ApprovalTask alexTask = level1.stream()
-                .filter(t -> t.getApproverId().equals("fin-alex") && t != skipped).findFirst().orElseThrow();
-        ApprovalTask priyaTask = level1.stream().filter(t -> t.getApproverId().equals("fin-priya")).findFirst().orElseThrow();
+    void getLineItemReviews_visibleToCurrentApprover() {
+        submittedReport();
 
-        service.approve(alexTask.getTaskId(), "fin-alex", null);
-        service.approve(priyaTask.getTaskId(), "fin-priya", null);
+        var reviews = service.getLineItemReviews(reportId, approverId);
 
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+        assertThat(reviews).hasSize(1);
     }
 
     @Test
-    void approve_throwsIllegalArgumentException_whenTaskIsNotPending() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        service.submit(reportId);
-        ApprovalTask task = tasksAtLevel(1).get(0);
-        task.setTaskStatus(TaskStatus.APPROVED);
+    void getLineItemReviews_throwsAccessDenied_forUnrelatedEmployee() {
+        submittedReport();
 
-        assertThatThrownBy(() -> service.approve(task.getTaskId(), "mgr-jane", null))
-                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> service.getLineItemReviews(reportId, "someone-unrelated"))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
     }
 
     @Test
-    void approve_throwsAccessDeniedException_whenCallerIsNotTheAssignedApprover() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        service.submit(reportId);
-        ApprovalTask task = tasksAtLevel(1).get(0);
+    void getLineItemReviews_showsCommentAfterNeedsCorrection() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "Missing receipt"));
 
-        assertThatThrownBy(() -> service.approve(task.getTaskId(), "someone-else", null))
-                .isInstanceOf(AccessDeniedException.class);
-    }
+        var reviews = service.getLineItemReviews(reportId, submitterId);
 
-    // ---- delegation (Phase 3) ----
-
-    @Test
-    void approve_succeeds_whenActingUserIsAnActiveDelegate_andRecordsActedBy() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        service.submit(reportId);
-        ApprovalTask task = tasksAtLevel(1).get(0);
-        when(delegationService.canAct("mgr-alex", "mgr-jane")).thenReturn(true);
-
-        ApprovalTaskResponse response = service.approve(task.getTaskId(), "mgr-alex", "covering for jane");
-
-        assertThat(response.taskStatus()).isEqualTo("APPROVED");
-        // approverId must NOT change - the delegate acted on Jane's task, they didn't become its owner.
-        assertThat(task.getApproverId()).isEqualTo("mgr-jane");
-        assertThat(task.getActedBy()).isEqualTo("mgr-alex");
+        assertThat(reviews.get(0).status()).isEqualTo(LineItemReviewStatus.NEEDS_CORRECTION);
+        assertThat(reviews.get(0).comment()).isEqualTo("Missing receipt");
     }
 
     @Test
-    void approve_throwsAccessDeniedException_whenDelegationServiceSaysNoDelegateIsActive() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        service.submit(reportId);
-        ApprovalTask task = tasksAtLevel(1).get(0);
-        when(delegationService.canAct("mgr-alex", "mgr-jane")).thenReturn(false);
+    void getMyHistory_returnsApprovedReports_whereCallerHasACompletedAssignment() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
 
-        assertThatThrownBy(() -> service.approve(task.getTaskId(), "mgr-alex", null))
-                .isInstanceOf(AccessDeniedException.class);
+        var history = service.getMyHistory(approverId, "APPROVED", PageRequest.of(0, 20));
+
+        assertThat(history.content()).hasSize(1);
+        assertThat(history.content().get(0).reportStatus()).isEqualTo(ReportStatus.APPROVED.name());
+        assertThat(history.totalElements()).isEqualTo(1);
     }
 
     @Test
-    void approve_leavesActedByNull_whenTheAssignedApproverActsDirectly() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        service.submit(reportId);
-        ApprovalTask task = tasksAtLevel(1).get(0);
+    void getMyHistory_returnsRejectedReports_whereCallerRejected() {
+        submittedReport();
+        service.rejectReport(reportId, approverId, new RejectReportRequest("Duplicate submission"));
 
-        service.approve(task.getTaskId(), "mgr-jane", null);
+        var history = service.getMyHistory(approverId, "REJECTED", PageRequest.of(0, 20));
 
-        assertThat(task.getActedBy()).isNull();
-    }
-
-    // ---- reject() ----
-
-    @Test
-    void reject_revertsReportToDraft_andCancelsLaterQueuedLevels() {
-        givenMatrix(
-                matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL),
-                matrixRow(2, "dir-sam", ApprovalMode.SEQUENTIAL));
-        service.submit(reportId);
-        ApprovalTask task = tasksAtLevel(1).get(0);
-
-        service.reject(task.getTaskId(), "mgr-jane", "not compliant");
-
-        assertThat(task.getTaskStatus()).isEqualTo(TaskStatus.REJECTED);
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.DRAFT);
-        assertThat(tasksAtLevel(2).get(0).getTaskStatus()).isEqualTo(TaskStatus.CANCELLED);
+        assertThat(history.content()).hasSize(1);
+        assertThat(history.content().get(0).reportStatus()).isEqualTo(ReportStatus.REJECTED.name());
     }
 
     @Test
-    void reject_cancelsAlreadyApprovedSibling_inAllRequiredParallelGroup() {
-        givenMatrix(matrixRow(1, "fin-alex", ApprovalMode.PARALLEL_ALL), matrixRow(1, "fin-priya", ApprovalMode.PARALLEL_ALL));
-        service.submit(reportId);
-        ApprovalTask alexTask = tasksAtLevel(1).stream().filter(t -> t.getApproverId().equals("fin-alex")).findFirst().orElseThrow();
-        ApprovalTask priyaTask = tasksAtLevel(1).stream().filter(t -> t.getApproverId().equals("fin-priya")).findFirst().orElseThrow();
-        service.approve(alexTask.getTaskId(), "fin-alex", null);
-        assertThat(alexTask.getTaskStatus()).isEqualTo(TaskStatus.APPROVED);
+    void getMyHistory_excludesRejected_whenFilteredToApprovedOnly() {
+        submittedReport();
+        service.rejectReport(reportId, approverId, new RejectReportRequest("Duplicate submission"));
 
-        service.reject(priyaTask.getTaskId(), "fin-priya", "found an issue");
+        var history = service.getMyHistory(approverId, "APPROVED", PageRequest.of(0, 20));
 
-        assertThat(alexTask.getTaskStatus()).isEqualTo(TaskStatus.CANCELLED);
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.DRAFT);
-    }
-
-    // ---- getMyQueue() ----
-
-    @Test
-    void getMyQueue_returnsOnlyPendingTasksForGivenApprover() {
-        ApprovalTask pending = ApprovalTask.builder().taskId(UUID.randomUUID()).report(report)
-                .approverId("mgr-jane").taskStatus(TaskStatus.PENDING).build();
-        when(approvalTaskRepository.findByApproverIdAndTaskStatus("mgr-jane", TaskStatus.PENDING))
-                .thenReturn(List.of(pending));
-
-        List<ApprovalTaskResponse> queue = service.getMyQueue("mgr-jane");
-
-        assertThat(queue).hasSize(1);
-        assertThat(queue.get(0).approverId()).isEqualTo("mgr-jane");
+        assertThat(history.content()).isEmpty();
     }
 
     @Test
-    void getMyQueue_includesBatchedPolicyWarningCounts() {
-        ApprovalTask pending = ApprovalTask.builder().taskId(UUID.randomUUID()).report(report)
-                .approverId("mgr-jane").taskStatus(TaskStatus.PENDING).build();
-        when(approvalTaskRepository.findByApproverIdAndTaskStatus("mgr-jane", TaskStatus.PENDING))
-                .thenReturn(List.of(pending));
+    void getMyHistory_returnsBoth_whenOutcomeOmitted() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
 
-        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(report).build();
-        PolicyViolation justified = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
-                .ruleType(PolicyRuleType.MISSING_DESCRIPTION).severity(PolicySeverity.WARN).justification("explained").build();
-        PolicyViolation unjustified = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
-                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN).build();
-        when(policyViolationRepository.findByLineItem_Report_ReportIdIn(List.of(reportId)))
-                .thenReturn(List.of(justified, unjustified));
+        var history = service.getMyHistory(approverId, null, PageRequest.of(0, 20));
 
-        List<ApprovalTaskResponse> queue = service.getMyQueue("mgr-jane");
-
-        assertThat(queue).hasSize(1);
-        assertThat(queue.get(0).policyWarningCount()).isEqualTo(2);
-        assertThat(queue.get(0).policyUnjustifiedCount()).isEqualTo(1);
+        assertThat(history.content()).hasSize(1);
     }
 
-    // ---- EP05: a policy evaluation *failure* is always advisory-only and must never block
-    // submission - separate from Phase 3's Block *enforcement*, which is a deliberate exception
-    // to that fail-open posture and is covered in its own section below. ----------------------
+    // ---- getMyQueue() - paginated (§14) ----
 
     @Test
-    void submit_succeeds_whenPolicyEvaluatorThrows() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        when(policyEvaluator.evaluate(any())).thenThrow(new RuntimeException("boom"));
+    void getMyQueue_returnsReportWithActiveAssignment_forTheResolvedApprover() {
+        submittedReport();
 
-        ExpenseReportResponse response = service.submit(reportId);
+        var queue = service.getMyQueue(approverId, PageRequest.of(0, 20));
 
-        assertThat(response.reportStatus()).isEqualTo("PENDING_APPROVAL");
-        assertThat(savedTasks).hasSize(1);
-    }
-
-    // ---- Phase 3: Warn vs. Block enforcement ---------------------------------------------
-
-    @Test
-    void submit_succeeds_whenOnlyWarnViolationsExist() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
-                .thenReturn(false);
-
-        ExpenseReportResponse response = service.submit(reportId);
-
-        assertThat(response.reportStatus()).isEqualTo("PENDING_APPROVAL");
-        assertThat(savedTasks).hasSize(1);
+        assertThat(queue.content()).hasSize(1);
+        assertThat(queue.content().get(0).reportId()).isEqualTo(reportId);
+        assertThat(queue.totalElements()).isEqualTo(1);
     }
 
     @Test
-    void submit_throwsBusinessRuleViolation_whenABlockingViolationExists() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(report).build();
-        PolicyViolation blocking = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
-                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN)
-                .enforcementType(PolicyEnforcementType.BLOCK).message("Amount 12000 exceeds the configured limit of 10000").build();
-        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
-                .thenReturn(true);
-        when(policyViolationRepository.findByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
-                .thenReturn(List.of(blocking));
+    void getMyQueue_isEmpty_forAnEmployeeWithNoActiveAssignment() {
+        submittedReport();
 
-        assertThatThrownBy(() -> service.submit(reportId))
-                .isInstanceOf(BusinessRuleViolationException.class)
-                .hasMessageContaining("12000 exceeds the configured limit of 10000");
+        var queue = service.getMyQueue("someone-unrelated", PageRequest.of(0, 20));
 
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.DRAFT);
-        assertThat(savedTasks).isEmpty();
+        assertThat(queue.content()).isEmpty();
     }
 
     @Test
-    void submit_setsLineItemStatusBlocked_whenABlockingViolationIsDetectedDuringRefresh() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
-        PolicyViolation blocking = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
-                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN)
-                .enforcementType(PolicyEnforcementType.BLOCK).message("Amount exceeds the configured limit").build();
-        when(policyEvaluator.evaluate(any())).thenReturn(List.of(blocking));
-        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
-                .thenReturn(true);
-        when(policyViolationRepository.findByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
-                .thenReturn(List.of(blocking));
+    void getMyQueue_resolvesReportsForEveryApproverIdTheCallerActsFor() {
+        submittedReport();
+        // A delegate acting for the resolved approver must see the same report in their own queue.
+        when(delegationService.resolveApproverIdsActingFor("delegate-of-approver"))
+                .thenReturn(Set.of("delegate-of-approver", approverId));
 
-        assertThatThrownBy(() -> service.submit(reportId)).isInstanceOf(BusinessRuleViolationException.class);
+        var queue = service.getMyQueue("delegate-of-approver", PageRequest.of(0, 20));
 
-        assertThat(lineItem.getLineStatus()).isEqualTo("BLOCKED");
-    }
-
-    @Test
-    void submit_setsLineItemStatusActive_whenOnlyWarnViolationsExist() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
-        lineItem.setLineStatus("ACTIVE");
-        PolicyViolation warning = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
-                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN)
-                .enforcementType(PolicyEnforcementType.WARN).message("Amount exceeds the configured limit").build();
-        when(policyEvaluator.evaluate(any())).thenReturn(List.of(warning));
-        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
-                .thenReturn(false);
-
-        ExpenseReportResponse response = service.submit(reportId);
-
-        assertThat(response.reportStatus()).isEqualTo("PENDING_APPROVAL");
-        assertThat(lineItem.getLineStatus()).isEqualTo("ACTIVE");
-    }
-
-    @Test
-    void submit_flushesPolicyViolationsBeforeCheckingForBlockingOnes() {
-        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
-
-        service.submit(reportId);
-
-        var callOrder = inOrder(policyViolationRepository);
-        callOrder.verify(policyViolationRepository).flush();
-        callOrder.verify(policyViolationRepository).existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK);
-    }
-
-    @Test
-    void getPolicyWarningsForTask_returnsFullViolationListForTheTasksReport() {
-        ApprovalTask task = ApprovalTask.builder().taskId(UUID.randomUUID()).report(report)
-                .approverId("mgr-jane").taskStatus(TaskStatus.PENDING).build();
-        savedTasks.add(task);
-
-        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(report).build();
-        PolicyViolation violation = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
-                .ruleType(PolicyRuleType.MISSING_DESCRIPTION).severity(PolicySeverity.WARN).build();
-        when(policyViolationRepository.findByLineItem_Report_ReportId(reportId)).thenReturn(List.of(violation));
-
-        var warnings = service.getPolicyWarningsForTask(task.getTaskId());
-
-        assertThat(warnings).hasSize(1);
-        assertThat(warnings.get(0).ruleType()).isEqualTo(PolicyRuleType.MISSING_DESCRIPTION);
+        assertThat(queue.content()).hasSize(1);
     }
 }

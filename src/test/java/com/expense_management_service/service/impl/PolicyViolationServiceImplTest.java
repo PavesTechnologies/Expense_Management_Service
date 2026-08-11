@@ -140,7 +140,7 @@ class PolicyViolationServiceImplTest {
 
     @Test
     void justify_throwsBusinessRuleViolation_whenReportNotEditable() {
-        draftReport.setReportStatus(ReportStatus.SUBMITTED);
+        draftReport.setReportStatus(ReportStatus.PENDING_APPROVAL);
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
 

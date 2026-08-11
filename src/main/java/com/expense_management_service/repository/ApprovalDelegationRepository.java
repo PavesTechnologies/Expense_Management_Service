@@ -15,4 +15,7 @@ public interface ApprovalDelegationRepository extends JpaRepository<ApprovalDele
      * a status this table reliably transitions on its own; see {@link DelegationStatus}).
      */
     List<ApprovalDelegation> findByDelegatorIdAndStatusNot(String delegatorId, DelegationStatus status);
+
+    /** Reverse of the above - every non-cancelled delegation naming {@code delegateId} as the delegate, used to resolve who a caller currently stands in for (§14 pagination work). */
+    List<ApprovalDelegation> findByDelegateIdAndStatusNot(String delegateId, DelegationStatus status);
 }

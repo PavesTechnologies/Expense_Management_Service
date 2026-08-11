@@ -532,6 +532,42 @@ class ApprovalWorkflowServiceImplTest {
     }
 
     @Test
+    void submit_setsLineItemStatusBlocked_whenABlockingViolationIsDetectedDuringRefresh() {
+        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        PolicyViolation blocking = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
+                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN)
+                .enforcementType(PolicyEnforcementType.BLOCK).message("Amount exceeds the configured limit").build();
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(blocking));
+        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
+                .thenReturn(true);
+        when(policyViolationRepository.findByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
+                .thenReturn(List.of(blocking));
+
+        assertThatThrownBy(() -> service.submit(reportId)).isInstanceOf(BusinessRuleViolationException.class);
+
+        assertThat(lineItem.getLineStatus()).isEqualTo("BLOCKED");
+    }
+
+    @Test
+    void submit_setsLineItemStatusActive_whenOnlyWarnViolationsExist() {
+        givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        lineItem.setLineStatus("ACTIVE");
+        PolicyViolation warning = PolicyViolation.builder().violationId(UUID.randomUUID()).lineItem(lineItem)
+                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN)
+                .enforcementType(PolicyEnforcementType.WARN).message("Amount exceeds the configured limit").build();
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(warning));
+        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(reportId, PolicyEnforcementType.BLOCK))
+                .thenReturn(false);
+
+        ExpenseReportResponse response = service.submit(reportId);
+
+        assertThat(response.reportStatus()).isEqualTo("PENDING_APPROVAL");
+        assertThat(lineItem.getLineStatus()).isEqualTo("ACTIVE");
+    }
+
+    @Test
     void submit_flushesPolicyViolationsBeforeCheckingForBlockingOnes() {
         givenMatrix(matrixRow(1, "mgr-jane", ApprovalMode.SEQUENTIAL));
 

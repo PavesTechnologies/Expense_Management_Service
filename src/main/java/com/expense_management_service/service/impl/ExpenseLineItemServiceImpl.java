@@ -18,6 +18,7 @@ import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.entity.ProjectCache;
+import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.mapper.ExpenseLineItemMapper;
 import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.CostCenterRepository;
@@ -48,6 +49,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
 
     private static final String STATUS_ACTIVE = "ACTIVE";
+    /** Set on a line item whenever its recomputed policy violations include a BLOCK-enforced one; see {@link #refreshPolicyViolations}. */
+    private static final String STATUS_BLOCKED = "BLOCKED";
 
     private final ExpenseLineItemRepository expenseLineItemRepository;
     private final ExpenseReportRepository expenseReportRepository;
@@ -208,6 +211,15 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
      * explanation. Wrapped defensively: {@link PolicyEvaluator} already promises never to throw,
      * but a policy failure here must never fail the line-item save regardless, mirroring
      * {@link #applyCurrencyConversion}'s fail-open posture in this same class.
+     * <p>
+     * Also applies the BLOCK enforcement step: if any recomputed violation is
+     * {@code enforcementType == BLOCK}, {@code lineItem.lineStatus} is set to {@link #STATUS_BLOCKED};
+     * otherwise it reverts to {@link #STATUS_ACTIVE} (e.g. once a prior blocking violation is
+     * resolved by editing the line item). No exception is thrown for a BLOCK violation — the line
+     * item and its violations are still persisted, just flagged, so the existing policy-warning
+     * endpoint can surface them. {@code lineItem} is already a managed entity by this point (just
+     * persisted/merged by the caller), so mutating its status here is enough — Hibernate's dirty
+     * checking flushes it at transaction commit without a second explicit save.
      */
     private void refreshPolicyViolations(ExpenseLineItem lineItem) {
         try {
@@ -226,6 +238,10 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
 
             policyViolationRepository.deleteAll(existing);
             policyViolationRepository.saveAll(recomputed);
+
+            boolean hasBlockingViolation = recomputed.stream()
+                    .anyMatch(violation -> violation.getEnforcementType() == PolicyEnforcementType.BLOCK);
+            lineItem.setLineStatus(hasBlockingViolation ? STATUS_BLOCKED : STATUS_ACTIVE);
         } catch (Exception ex) {
             log.warn("Policy evaluation failed for line item {} - continuing without policy warnings",
                     lineItem.getLineItemId(), ex);

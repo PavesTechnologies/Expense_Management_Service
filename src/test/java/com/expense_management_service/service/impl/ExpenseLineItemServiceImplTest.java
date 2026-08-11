@@ -17,6 +17,7 @@ import com.expense_management_service.repository.ExpenseCategoryRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.entity.PolicyViolation;
+import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.enums.PolicyRuleType;
 import com.expense_management_service.enums.PolicySeverity;
 import com.expense_management_service.mapper.PolicyViolationMapper;
@@ -352,6 +353,120 @@ class ExpenseLineItemServiceImplTest {
         assertThat(recomputedViolation.getJustification()).isEqualTo("Client requested no memo");
         assertThat(recomputedViolation.getJustifiedAt()).isNotNull();
         verify(policyViolationRepository).saveAll(List.of(recomputedViolation));
+    }
+
+    // ---- Phase 3: BLOCK enforcement flips lineStatus; WARN leaves it ACTIVE ------------------
+    // PolicyEvaluator is mocked here (as in every other test in this class) because the amount-
+    // limit threshold/overage math itself belongs to DefaultPolicyEvaluatorTest and must not be
+    // re-verified here — only the wiring from a returned violation's enforcementType to
+    // ExpenseLineItem.lineStatus is this class's concern. Request amounts are chosen to match the
+    // scenario being illustrated even though the mocked evaluator doesn't actually inspect them.
+
+    private ExpenseLineItemRequest requestWithAmount(BigDecimal amount) {
+        return new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Restaurant", "Team lunch",
+                amount, currencyId, null, null, null, false);
+    }
+
+    private PolicyViolation amountLimitViolation(PolicyEnforcementType enforcementType) {
+        return PolicyViolation.builder()
+                .violationId(UUID.randomUUID())
+                .ruleType(PolicyRuleType.AMOUNT_LIMIT)
+                .severity(PolicySeverity.WARN)
+                .enforcementType(enforcementType)
+                .message("Amount exceeds the configured limit of 1500")
+                .build();
+    }
+
+    @Test
+    void create_lineStatusIsActive_whenAmountWithinLimit_noViolation() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, requestWithAmount(new BigDecimal("1200")));
+
+        assertThat(response.lineStatus()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void create_lineStatusIsActive_whenAmountEqualsLimit_noViolationBecauseEvaluatorUsesStrictlyGreaterThan() {
+        // The evaluator's amount > limit (not >=) semantics are DefaultPolicyEvaluatorTest's concern;
+        // here we only confirm that an empty violation list (as it would return for amount == limit)
+        // leaves the line item ACTIVE.
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, requestWithAmount(new BigDecimal("1500")));
+
+        assertThat(response.lineStatus()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void create_setsLineStatusBlocked_whenBlockViolationDetected() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        PolicyViolation blocking = amountLimitViolation(PolicyEnforcementType.BLOCK);
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(blocking));
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of(blocking));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, requestWithAmount(new BigDecimal("1600")));
+
+        assertThat(response.lineStatus()).isEqualTo("BLOCKED");
+        assertThat(response.policyWarnings()).hasSize(1);
+        verify(policyViolationRepository).saveAll(List.of(blocking));
+        // BLOCK never rejects the save - the line item and its violation are both still persisted.
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
+    void create_lineStatusRemainsActive_whenOnlyWarnViolationDetected() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        PolicyViolation warning = amountLimitViolation(PolicyEnforcementType.WARN);
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(warning));
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of(warning));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, requestWithAmount(new BigDecimal("1600")));
+
+        assertThat(response.lineStatus()).isEqualTo("ACTIVE");
+        assertThat(response.policyWarnings()).hasSize(1);
+    }
+
+    @Test
+    void update_revertsLineStatusFromBlockedToActive_whenBlockingViolationIsResolved() {
+        UUID lineItemId = UUID.randomUUID();
+        ExpenseCategory category = activeCategory("TRAVEL");
+        ExpenseLineItem existing = ExpenseLineItem.builder().lineItemId(lineItemId).report(draftReport)
+                .category(category).amount(new BigDecimal("1600")).currency(currency).lineStatus("BLOCKED").build();
+        PolicyViolation staleBlocking = amountLimitViolation(PolicyEnforcementType.BLOCK);
+
+        stubOwnerAndReport();
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId))
+                .thenReturn(Optional.of(existing));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(category));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        // First call is refreshPolicyViolations()'s "existing" lookup (before delete); the second
+        // is toResponse()'s post-recompute read — a real repository would return the recomputed
+        // (now empty) set there, which this two-value stub mirrors.
+        when(policyViolationRepository.findByLineItem_LineItemId(lineItemId)).thenReturn(List.of(staleBlocking), List.of());
+        // The employee lowered the amount to 1200 - no longer breaches the limit.
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+
+        ExpenseLineItemResponse response = expenseLineItemService.update(reportId, lineItemId, requestWithAmount(new BigDecimal("1200")));
+
+        assertThat(response.lineStatus()).isEqualTo("ACTIVE");
+        assertThat(response.policyWarnings()).isEmpty();
+        verify(policyViolationRepository).deleteAll(List.of(staleBlocking));
     }
 
     // ---- EP02-S4: VAT/GST ----

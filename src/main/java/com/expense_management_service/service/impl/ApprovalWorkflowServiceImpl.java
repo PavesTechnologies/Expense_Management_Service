@@ -54,6 +54,9 @@ import java.util.stream.Collectors;
 public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     private static final String MATRIX_STATUS_ACTIVE = "ACTIVE";
+    /** Mirrors {@code ExpenseLineItemServiceImpl}'s line-item status constants — see {@link #refreshPolicyViolationsForReport}. */
+    private static final String LINE_ITEM_STATUS_ACTIVE = "ACTIVE";
+    private static final String LINE_ITEM_STATUS_BLOCKED = "BLOCKED";
 
     private final ExpenseReportRepository expenseReportRepository;
     private final ApprovalTaskRepository approvalTaskRepository;
@@ -241,6 +244,10 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
                 policyViolationRepository.deleteAll(existing);
                 policyViolationRepository.saveAll(recomputed);
+
+                boolean hasBlockingViolation = recomputed.stream()
+                        .anyMatch(violation -> violation.getEnforcementType() == PolicyEnforcementType.BLOCK);
+                lineItem.setLineStatus(hasBlockingViolation ? LINE_ITEM_STATUS_BLOCKED : LINE_ITEM_STATUS_ACTIVE);
             }
             policyViolationRepository.flush();
         } catch (Exception ex) {

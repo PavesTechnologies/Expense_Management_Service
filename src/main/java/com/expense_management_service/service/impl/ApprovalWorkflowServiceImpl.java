@@ -7,6 +7,7 @@ import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.LineItemReviewResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.dto.response.PendingLineItemResponse;
 import com.expense_management_service.entity.ApprovalAssignment;
 import com.expense_management_service.entity.ApprovalFlow;
@@ -42,6 +43,9 @@ import com.expense_management_service.common.BusinessDayCalculator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -51,6 +55,8 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -336,18 +342,27 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<ApprovalQueueItemResponse> getMyQueue(String actingEmployeeId) {
-        var actionableAssignments = approvalAssignmentRepository.findByStatus(AssignmentStatus.ACTIVE).stream()
-                .filter(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()))
+    public PageResponse<ApprovalQueueItemResponse> getMyQueue(String actingEmployeeId, Pageable pageable) {
+        Set<String> approverIds = delegationService.resolveApproverIdsActingFor(actingEmployeeId);
+
+        Page<UUID> reportIdsPage = approvalAssignmentRepository
+                .findDistinctReportIdsByStatusAndApproverIdIn(AssignmentStatus.ACTIVE, approverIds, pageable);
+
+        List<ApprovalQueueItemResponse> items = reportIdsPage.getContent().stream()
+                .map(reportId -> representativeAssignment(reportId, approverIds))
+                .flatMap(Optional::stream)
+                .map(this::toQueueItem)
                 .toList();
 
-        Map<UUID, ApprovalAssignment> byReport = new java.util.LinkedHashMap<>();
-        for (ApprovalAssignment assignment : actionableAssignments) {
-            UUID reportId = assignment.getLevelInstance().getReport().getReportId();
-            byReport.putIfAbsent(reportId, assignment);
-        }
+        return PageResponse.of(new PageImpl<>(items, pageable, reportIdsPage.getTotalElements()));
+    }
 
-        return byReport.values().stream().map(this::toQueueItem).toList();
+    /** The one ACTIVE assignment a queue row is built from for a given report - first match, same tie-break as the pre-pagination in-memory version. */
+    private Optional<ApprovalAssignment> representativeAssignment(UUID reportId, Set<String> approverIds) {
+        return approvalAssignmentRepository.findByLevelInstance_Report_ReportId(reportId).stream()
+                .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
+                .filter(a -> approverIds.contains(a.getApproverId()))
+                .findFirst();
     }
 
     private ApprovalQueueItemResponse toQueueItem(ApprovalAssignment assignment) {
@@ -467,26 +482,13 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<ExpenseReportResponse> getMyHistory(String actingEmployeeId, String outcome) {
+    public PageResponse<ExpenseReportResponse> getMyHistory(String actingEmployeeId, String outcome, Pageable pageable) {
         boolean includeApproved = outcome == null || outcome.equalsIgnoreCase("APPROVED");
         boolean includeRejected = outcome == null || outcome.equalsIgnoreCase("REJECTED");
 
-        java.util.Set<UUID> seen = new java.util.LinkedHashSet<>();
-        List<ExpenseReport> reports = new java.util.ArrayList<>();
-
-        if (includeApproved) {
-            approvalAssignmentRepository.findByApproverIdAndStatus(actingEmployeeId, AssignmentStatus.COMPLETED).stream()
-                    .map(a -> a.getLevelInstance().getReport())
-                    .filter(r -> r.getReportStatus() == ReportStatus.APPROVED)
-                    .filter(r -> seen.add(r.getReportId()))
-                    .forEach(reports::add);
-        }
-        if (includeRejected) {
-            expenseReportRepository.findByRejectedBy(actingEmployeeId).stream()
-                    .filter(r -> seen.add(r.getReportId()))
-                    .forEach(reports::add);
-        }
-        return reports.stream().map(this::toResponse).toList();
+        Page<ExpenseReport> page = expenseReportRepository
+                .findHistoryForApprover(actingEmployeeId, includeApproved, includeRejected, pageable);
+        return PageResponse.of(page.map(this::toResponse));
     }
 
     // ---------------------------------------------------------------------

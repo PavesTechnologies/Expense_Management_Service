@@ -11,10 +11,12 @@ import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.LineItemReviewResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.service.ApprovalWorkflowService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
+import org.springframework.data.domain.PageRequest;
 import org.springframework.web.bind.annotation.*;
 
 /**
@@ -66,8 +68,9 @@ public class ApprovalWorkflowController {
     }
 
     @GetMapping("/my-queue")
-    public ApiResponse<List<ApprovalQueueItemResponse>> getMyQueue() {
-        return ApiResponse.success(approvalWorkflowService.getMyQueue(currentUserService.getEmployeeId()));
+    public ApiResponse<PageResponse<ApprovalQueueItemResponse>> getMyQueue(
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.success(approvalWorkflowService.getMyQueue(currentUserService.getEmployeeId(), PageRequest.of(page, size)));
     }
 
     @GetMapping("/{reportId}/line-item-reviews")
@@ -81,7 +84,10 @@ public class ApprovalWorkflowController {
     }
 
     @GetMapping("/my-history")
-    public ApiResponse<List<ExpenseReportResponse>> getMyHistory(@RequestParam(required = false) String outcome) {
-        return ApiResponse.success(approvalWorkflowService.getMyHistory(currentUserService.getEmployeeId(), outcome));
+    public ApiResponse<PageResponse<ExpenseReportResponse>> getMyHistory(
+            @RequestParam(required = false) String outcome,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.success(
+                approvalWorkflowService.getMyHistory(currentUserService.getEmployeeId(), outcome, PageRequest.of(page, size)));
     }
 }

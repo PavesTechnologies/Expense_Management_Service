@@ -5,6 +5,7 @@ import com.expense_management_service.dto.request.LineItemReviewRequest;
 import com.expense_management_service.dto.request.RejectReportRequest;
 import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.enums.LineItemReviewStatus;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.JwtAuthConverter;
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -117,12 +119,15 @@ class ApprovalWorkflowControllerTest {
     @Test
     void getMyQueue_returns200() throws Exception {
         when(currentUserService.getEmployeeId()).thenReturn("5100002");
-        when(approvalWorkflowService.getMyQueue("5100002")).thenReturn(List.of(
-                new ApprovalQueueItemResponse(UUID.randomUUID(), "EXP-0001", "5100001", new BigDecimal("1000"), "INR", 1, List.of(), true)));
+        ApprovalQueueItemResponse item =
+                new ApprovalQueueItemResponse(UUID.randomUUID(), "EXP-0001", "5100001", new BigDecimal("1000"), "INR", 1, List.of(), true);
+        when(approvalWorkflowService.getMyQueue(eq("5100002"), any(Pageable.class)))
+                .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
 
         mockMvc.perform(get("/xms/approvals/my-queue")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].reportNumber").value("EXP-0001"));
+                .andExpect(jsonPath("$.data.content[0].reportNumber").value("EXP-0001"))
+                .andExpect(jsonPath("$.data.totalElements").value(1));
     }
 }

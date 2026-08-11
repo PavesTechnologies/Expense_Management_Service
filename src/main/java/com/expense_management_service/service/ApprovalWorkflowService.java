@@ -6,6 +6,8 @@ import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.LineItemReviewResponse;
+import com.expense_management_service.dto.response.PageResponse;
+import org.springframework.data.domain.Pageable;
 
 import java.util.List;
 import java.util.UUID;
@@ -32,8 +34,13 @@ public interface ApprovalWorkflowService {
     /** Whole-report, terminal Reject (§6) - distinct from line-level Needs Correction. */
     ExpenseReportResponse rejectReport(UUID reportId, String actingEmployeeId, RejectReportRequest request);
 
-    /** Presence-based "My Approvals" (§1.5/§9.1) - every report where the caller (or their active delegate) currently has an ACTIVE assignment. */
-    List<ApprovalQueueItemResponse> getMyQueue(String actingEmployeeId);
+    /**
+     * Presence-based "My Approvals" (§1.5/§9.1) - every report where the caller (or their active
+     * delegate) currently has an ACTIVE assignment. Server-side paginated (§14) - resolved via a
+     * single {@code approverId IN (...)} query rather than loading every ACTIVE assignment
+     * system-wide into memory.
+     */
+    PageResponse<ApprovalQueueItemResponse> getMyQueue(String actingEmployeeId, Pageable pageable);
 
     /** Approves every line item on a report in one transaction - only for reports with zero pending flags (§4.4/§10.3). */
     ExpenseReportResponse bulkApprove(UUID reportId, String actingEmployeeId);
@@ -54,7 +61,8 @@ public interface ApprovalWorkflowService {
      * {@code "REJECTED"}, or {@code null} for both. Approved = the caller has a COMPLETED
      * assignment on a report now APPROVED; Rejected = the caller is the report's {@code rejectedBy}.
      * Does not (yet) attribute delegate-acted decisions back to the delegate - a documented
-     * simplification, not an oversight.
+     * simplification, not an oversight. Server-side paginated (§14) via a single query - see
+     * {@code ExpenseReportRepository.findHistoryForApprover}.
      */
-    List<ExpenseReportResponse> getMyHistory(String actingEmployeeId, String outcome);
+    PageResponse<ExpenseReportResponse> getMyHistory(String actingEmployeeId, String outcome, Pageable pageable);
 }

@@ -80,6 +80,12 @@ import java.util.stream.Collectors;
 @Slf4j
 public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
+    private static final String MATRIX_STATUS_ACTIVE = "ACTIVE";
+    /** Mirrors {@code ExpenseLineItemServiceImpl}'s line-item status constants — see {@link #refreshPolicyViolationsForReport}. */
+    private static final String LINE_ITEM_STATUS_ACTIVE = "ACTIVE";
+    private static final String LINE_ITEM_STATUS_BLOCKED = "BLOCKED";
+
+
     private final ExpenseReportRepository expenseReportRepository;
     private final ApprovalLevelInstanceRepository approvalLevelInstanceRepository;
     private final ApprovalAssignmentRepository approvalAssignmentRepository;

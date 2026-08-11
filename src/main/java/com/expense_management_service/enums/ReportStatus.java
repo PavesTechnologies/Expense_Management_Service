@@ -41,7 +41,7 @@ public enum ReportStatus {
     /** Terminal - employee-initiated abandon, distinct from Recall (which returns to DRAFT). */
     CANCELLED,
     CLOSED,
-    REIMBURSED;
+    REIMBURSED, SUBMITTED;
 
     private static final Set<ReportStatus> EDITABLE = EnumSet.of(DRAFT, POLICY_REJECTED, QUERY_RAISED, AWAITING_CORRECTION);
     private static final Set<ReportStatus> DELETABLE = EnumSet.of(DRAFT);

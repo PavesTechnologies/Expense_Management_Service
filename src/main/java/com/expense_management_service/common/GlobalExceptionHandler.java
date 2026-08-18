@@ -75,8 +75,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
+        log.error("DataIntegrityViolationException occurred: ", ex);
+        String detailMessage = ex.getMostSpecificCause() != null && ex.getMostSpecificCause().getMessage() != null
+                ? ex.getMostSpecificCause().getMessage()
+                : "Database data integrity constraint was violated";
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ApiResponse.error("This record cannot be saved or deleted because it is still referenced by other records"));
+                .body(ApiResponse.error(detailMessage));
     }
 
     @ExceptionHandler(DuplicateResourceException.class)

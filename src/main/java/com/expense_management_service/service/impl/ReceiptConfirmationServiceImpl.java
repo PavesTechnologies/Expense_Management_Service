@@ -27,6 +27,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -117,6 +118,13 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
     private void linkReceiptToLineItem(Receipt receipt, UUID lineItemId) {
         ExpenseLineItem lineItem = expenseLineItemRepository.findById(lineItemId)
                 .orElseThrow(() -> new ResourceNotFoundException("ExpenseLineItem not found with id: " + lineItemId));
+        List<Receipt> existingReceipts = receiptRepository.findByLineItem_LineItemId(lineItemId);
+        for (Receipt existing : existingReceipts) {
+            if (!existing.getReceiptId().equals(receipt.getReceiptId())) {
+                existing.setLineItem(null);
+                receiptRepository.save(existing);
+            }
+        }
         receipt.setLineItem(lineItem);
     }
 

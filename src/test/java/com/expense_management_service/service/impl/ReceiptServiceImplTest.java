@@ -324,6 +324,36 @@ class ReceiptServiceImplTest {
     }
 
     @Test
+    void uploadForLineItem_doesNotDeleteExistingReceipts_whenLineItemAlreadyHasReceipts() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));
+
+        Receipt existingReceipt = Receipt.builder()
+                .receiptId(UUID.randomUUID())
+                .report(draftReport)
+                .lineItem(lineItem)
+                .employeeId(employeeId)
+                .originalFileName("existing.pdf")
+                .storedFileName("existing.pdf")
+                .objectKey("key1")
+                .build();
+
+        when(receiptRepository.saveAndFlush(any(Receipt.class))).thenAnswer(inv -> {
+            Receipt saved = inv.getArgument(0);
+            saved.setReceiptId(UUID.randomUUID());
+            return saved;
+        });
+
+        MockMultipartFile file = pdfFile();
+        ReceiptResponse response = receiptService.uploadForLineItem(lineItemId, file);
+
+        assertThat(response.originalFileName()).isEqualTo("taxi-receipt.pdf");
+        assertThat(response.lineItemId()).isEqualTo(lineItemId);
+        verify(receiptRepository, never()).delete(any());
+        verify(receiptRepository, never()).deleteById(any());
+    }
+
+    @Test
     void uploadForLineItem_rollsBackS3Object_whenMetadataSaveFails() {
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));

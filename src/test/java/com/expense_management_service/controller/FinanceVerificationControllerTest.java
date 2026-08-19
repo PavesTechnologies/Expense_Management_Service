@@ -89,7 +89,7 @@ class FinanceVerificationControllerTest {
 
     private ExpenseReportResponse sampleReportResponse(String status) {
         return new ExpenseReportResponse(UUID.randomUUID(), "EXP-0001", "5100001", "Trip", "Client visit", "2026",
-                UUID.randomUUID(), "Engineering", status, UUID.randomUUID(), "INR", new BigDecimal("1000"), new BigDecimal("1000"),
+                UUID.randomUUID(), "Engineering", status, "NONE", UUID.randomUUID(), "INR", new BigDecimal("1000"), new BigDecimal("1000"),
                 LocalDateTime.now(), null, null, LocalDateTime.now(), LocalDateTime.now(), 1, true, false, 0, 0);
     }
 

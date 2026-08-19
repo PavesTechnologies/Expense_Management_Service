@@ -84,6 +84,7 @@ class ApprovalWorkflowServiceImplTest {
     @Mock private com.expense_management_service.service.MaterialChangeEvaluator materialChangeEvaluator;
     @Mock private com.expense_management_service.repository.FinanceVerificationReviewRepository financeVerificationReviewRepository;
     @Mock private com.expense_management_service.repository.VerificationQueryRepository verificationQueryRepository;
+    @Mock private com.expense_management_service.service.CostCenterBudgetService costCenterBudgetService;
 
     private ApprovalWorkflowServiceImpl service;
 
@@ -106,7 +107,7 @@ class ApprovalWorkflowServiceImplTest {
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, costCenterBudgetService);
 
         when(materialChangeEvaluator.computeGlAccountFingerprint(any())).thenReturn("");
         when(policyEvaluationGateway.evaluate(any())).thenReturn(new PolicyDecision(true, List.of()));
@@ -296,10 +297,12 @@ class ApprovalWorkflowServiceImplTest {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
                         new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, costCenterBudgetService);
 
         ExpenseReport report = draftReport();
         report.getExpenseLineItems().get(0).setClientBillable(true);
+        report.setTotalAmount(new java.math.BigDecimal("50000"));
+        report.setFiscalYear("2026");
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
         when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(financeOnlyFlow());
         when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of("5100050"));
@@ -317,6 +320,8 @@ class ApprovalWorkflowServiceImplTest {
         assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
         assertThat(report.getPaymentRoutingStatus())
                 .isEqualTo(com.expense_management_service.enums.PaymentRoutingStatus.INVOICE_HANDOFF_PENDING);
+        verify(costCenterBudgetService, org.mockito.Mockito.times(1))
+                .consumeBudget(report.getCostCenter(), "2026", new java.math.BigDecimal("50000"));
     }
 
     @Test
@@ -339,9 +344,11 @@ class ApprovalWorkflowServiceImplTest {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
                         new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, costCenterBudgetService);
 
         ExpenseReport report = draftReport();
+        report.setTotalAmount(new java.math.BigDecimal("50000"));
+        report.setFiscalYear("2026");
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
         when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(financeOnlyFlow());
         when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of("5100050"));
@@ -359,6 +366,24 @@ class ApprovalWorkflowServiceImplTest {
         assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
         assertThat(report.getPaymentRoutingStatus())
                 .isEqualTo(com.expense_management_service.enums.PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        verify(costCenterBudgetService, org.mockito.Mockito.times(1))
+                .consumeBudget(report.getCostCenter(), "2026", new java.math.BigDecimal("50000"));
+    }
+
+    @Test
+    void managerOnlyFlowCompletion_neverConsumesBudget() {
+        ExpenseReport report = draftReport();
+        report.setTotalAmount(new java.math.BigDecimal("50000"));
+        report.setFiscalYear("2026");
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(approverId));
+
+        service.submit(reportId);
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+        verify(costCenterBudgetService, never()).consumeBudget(any(), any(), any());
     }
 
     @Test

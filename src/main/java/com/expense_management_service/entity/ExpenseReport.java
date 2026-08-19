@@ -114,6 +114,19 @@ public class ExpenseReport {
     @Builder.Default
     private PaymentRoutingStatus paymentRoutingStatus = PaymentRoutingStatus.NONE;
 
+    /**
+     * Who confirmed the external payment (AP_EXECUTIVE), and when - set only by {@code
+     * ApPaymentServiceImpl.markPaymentCompleted}, alongside {@link #paymentRoutingStatus}
+     * transitioning {@code APPROVED_FOR_PAYMENT -> PAYMENT_COMPLETED}. There is no {@code
+     * paymentReference}/{@code paymentRemarks} field - those don't exist anywhere in the current
+     * model and are not invented here; see the AP Payment implementation report.
+     */
+    @Column(name = "payment_completed_by", length = 255)
+    private String paymentCompletedBy;
+
+    @Column(name = "payment_completed_at")
+    private LocalDateTime paymentCompletedAt;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

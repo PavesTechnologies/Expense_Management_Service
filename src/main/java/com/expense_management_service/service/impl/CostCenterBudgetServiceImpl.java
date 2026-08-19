@@ -2,6 +2,7 @@ package com.expense_management_service.service.impl;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import com.expense_management_service.common.exception.DuplicateResourceException;
@@ -85,6 +86,33 @@ public class CostCenterBudgetServiceImpl implements CostCenterBudgetService {
         CostCenterBudget entity = findEntity(budgetId);
         costCenterBudgetRepository.delete(entity);
         log.info("Deleted cost center budget {}", budgetId);
+    }
+
+    @Override
+    public void consumeBudget(CostCenter costCenter, String fiscalYear, BigDecimal amount) {
+        if (costCenter == null || fiscalYear == null || amount == null || amount.signum() == 0) {
+            return;
+        }
+        Optional<CostCenterBudget> budgetOpt = costCenterBudgetRepository
+                .findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenter.getCostCenterId(), fiscalYear);
+        if (budgetOpt.isEmpty()) {
+            log.warn("No CostCenterBudget configured for cost center {} fiscal year {} - skipping budget consumption of {}",
+                    costCenter.getCostCenterCode(), fiscalYear, amount);
+            return;
+        }
+
+        CostCenterBudget budget = budgetOpt.get();
+        BigDecimal newAvailable = budget.getAvailableBudget().subtract(amount);
+        budget.setAvailableBudget(newAvailable);
+        costCenterBudgetRepository.save(budget);
+
+        if (newAvailable.signum() < 0) {
+            log.warn("Cost center {} fiscal year {} available budget is now negative ({}) after consuming {} - "
+                            + "no blocking rule exists for exceeding budget today",
+                    costCenter.getCostCenterCode(), fiscalYear, newAvailable, amount);
+        }
+        log.info("Consumed {} from cost center {} fiscal year {} budget - available budget now {}",
+                amount, costCenter.getCostCenterCode(), fiscalYear, newAvailable);
     }
 
     private CostCenter findActiveCostCenter(UUID costCenterId) {

@@ -7,6 +7,8 @@ import com.expense_management_service.enums.OcrStatus;
 import com.expense_management_service.security.JwtAuthConverter;
 import com.expense_management_service.service.ReceiptService;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -22,8 +24,10 @@ import java.util.List;
 import java.util.UUID;
 
 import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
+import static com.expense_management_service.security.RoleConstants.ROLE_AP_EXECUTIVE;
 import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
+import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE_EXECUTIVE;
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -149,6 +153,28 @@ class ReceiptControllerTest {
     }
 
     @Test
+    void getAllForReport_returns200_forFinanceExecutive() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        when(receiptService.getAllForReport(reportId))
+                .thenReturn(List.of(sampleResponse(reportId, null, UUID.randomUUID())));
+
+        mockMvc.perform(get("/xms/employee/expense-reports/{reportId}/receipts", reportId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE_EXECUTIVE))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void getAllForReport_returns200_forApExecutive() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        when(receiptService.getAllForReport(reportId))
+                .thenReturn(List.of(sampleResponse(reportId, null, UUID.randomUUID())));
+
+        mockMvc.perform(get("/xms/employee/expense-reports/{reportId}/receipts", reportId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AP_EXECUTIVE))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void getAllForLineItem_returns200_forManager() throws Exception {
         UUID reportId = UUID.randomUUID();
         UUID lineItemId = UUID.randomUUID();
@@ -162,6 +188,30 @@ class ReceiptControllerTest {
     }
 
     @Test
+    void getAllForLineItem_returns200_forFinanceExecutive() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        UUID lineItemId = UUID.randomUUID();
+        when(receiptService.getAllForLineItem(lineItemId))
+                .thenReturn(List.of(sampleResponse(reportId, lineItemId, UUID.randomUUID())));
+
+        mockMvc.perform(get("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE_EXECUTIVE))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void getAllForLineItem_returns200_forApExecutive() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        UUID lineItemId = UUID.randomUUID();
+        when(receiptService.getAllForLineItem(lineItemId))
+                .thenReturn(List.of(sampleResponse(reportId, lineItemId, UUID.randomUUID())));
+
+        mockMvc.perform(get("/xms/employee/expense-line-items/{lineItemId}/receipts", lineItemId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AP_EXECUTIVE))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
     void getById_returns200_forEmployee() throws Exception {
         UUID reportId = UUID.randomUUID();
         UUID receiptId = UUID.randomUUID();
@@ -171,6 +221,64 @@ class ReceiptControllerTest {
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.receiptId").value(receiptId.toString()));
+    }
+
+    @Test
+    void getById_returns200_forFinanceExecutive() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        UUID receiptId = UUID.randomUUID();
+        when(receiptService.getById(receiptId)).thenReturn(sampleResponse(reportId, null, receiptId));
+
+        mockMvc.perform(get("/xms/employee/receipts/{receiptId}", receiptId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE_EXECUTIVE))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void getById_returns200_forApExecutive() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        UUID receiptId = UUID.randomUUID();
+        when(receiptService.getById(receiptId)).thenReturn(sampleResponse(reportId, null, receiptId));
+
+        mockMvc.perform(get("/xms/employee/receipts/{receiptId}", receiptId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AP_EXECUTIVE))))
+                .andExpect(status().isOk());
+    }
+
+    /**
+     * Full role matrix on {@code /view} - the exact same {@code hasAnyRole(...)} expression is
+     * reused verbatim on all 5 GET receipt endpoints, so proving it here for every allowed role
+     * (plus 401/403) covers the annotation's actual boolean logic once; the other endpoints only
+     * need to additionally confirm the two newly-added roles specifically (see above/below).
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {ROLE_ADMIN, ROLE_GENERAL, ROLE_MANAGER, ROLE_FINANCE, ROLE_FINANCE_EXECUTIVE, ROLE_AP_EXECUTIVE})
+    void getViewUrl_returns200_forEveryAllowedRole(String role) throws Exception {
+        UUID receiptId = UUID.randomUUID();
+        when(receiptService.getViewUrl(receiptId))
+                .thenReturn(new ReceiptUrlResponse("https://signed-view-url", LocalDateTime.now().plusMinutes(15)));
+
+        mockMvc.perform(get("/xms/employee/receipts/{receiptId}/view", receiptId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(role))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.url").value("https://signed-view-url"));
+    }
+
+    @Test
+    void getViewUrl_returns401_whenUnauthenticated() throws Exception {
+        UUID receiptId = UUID.randomUUID();
+
+        mockMvc.perform(get("/xms/employee/receipts/{receiptId}/view", receiptId))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void getViewUrl_returns403_forRoleNotInTheAllowedList() throws Exception {
+        UUID receiptId = UUID.randomUUID();
+
+        mockMvc.perform(get("/xms/employee/receipts/{receiptId}/view", receiptId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority("ROLE_SOME_OTHER_ROLE"))))
+                .andExpect(status().isForbidden());
     }
 
     @Test
@@ -195,6 +303,28 @@ class ReceiptControllerTest {
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.url").value("https://signed-download-url"));
+    }
+
+    @Test
+    void getDownloadUrl_returns200_forFinanceExecutive() throws Exception {
+        UUID receiptId = UUID.randomUUID();
+        when(receiptService.getDownloadUrl(receiptId))
+                .thenReturn(new ReceiptUrlResponse("https://signed-download-url", LocalDateTime.now().plusMinutes(15)));
+
+        mockMvc.perform(get("/xms/employee/receipts/{receiptId}/download", receiptId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE_EXECUTIVE))))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void getDownloadUrl_returns200_forApExecutive() throws Exception {
+        UUID receiptId = UUID.randomUUID();
+        when(receiptService.getDownloadUrl(receiptId))
+                .thenReturn(new ReceiptUrlResponse("https://signed-download-url", LocalDateTime.now().plusMinutes(15)));
+
+        mockMvc.perform(get("/xms/employee/receipts/{receiptId}/download", receiptId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AP_EXECUTIVE))))
+                .andExpect(status().isOk());
     }
 
     @Test

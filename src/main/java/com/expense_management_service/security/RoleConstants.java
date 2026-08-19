@@ -20,6 +20,11 @@ package com.expense_management_service.security;
  * the pre-existing {@code FINANCE} role, which already gates unrelated XMS modules (GL
  * Account, Currency, Policy administration, etc.) and is left untouched. Same "expected,
  * confirm with UMS" caveat applies.
+ * <p>
+ * {@code AP_EXECUTIVE} is likewise distinct and additive, scoped only to {@code
+ * ApPaymentController} (confirming external payment completion) - it never performs Finance
+ * Verification, never approves/rejects, and cannot act on a report outside {@code
+ * APPROVED_FOR_PAYMENT}. Same "expected, confirm with UMS" caveat applies.
  */
 public final class RoleConstants {
 
@@ -37,6 +42,9 @@ public final class RoleConstants {
 
     public static final String FINANCE_EXECUTIVE = "FINANCE_EXECUTIVE";
     public static final String ROLE_FINANCE_EXECUTIVE = SecurityConstants.ROLE_PREFIX + FINANCE_EXECUTIVE;
+
+    public static final String AP_EXECUTIVE = "AP_EXECUTIVE";
+    public static final String ROLE_AP_EXECUTIVE = SecurityConstants.ROLE_PREFIX + AP_EXECUTIVE;
 
     private RoleConstants() {
     }

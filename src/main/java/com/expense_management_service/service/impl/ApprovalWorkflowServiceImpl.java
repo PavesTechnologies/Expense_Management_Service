@@ -20,10 +20,11 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.enums.AssignmentStatus;
 import com.expense_management_service.enums.LevelInstanceStatus;
 import com.expense_management_service.enums.LevelQuorum;
+import com.expense_management_service.enums.LevelType;
 import com.expense_management_service.enums.LineItemReviewStatus;
+import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.mapper.ApprovalFlowMapper;
-import com.expense_management_service.mapper.ExpenseReportMapper;
 import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
@@ -36,6 +37,8 @@ import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ApproverSourceResolver;
 import com.expense_management_service.service.ChainCorrectnessService;
 import com.expense_management_service.service.DelegationService;
+import com.expense_management_service.service.LevelReviewStrategy;
+import com.expense_management_service.service.MaterialChangeEvaluator;
 import com.expense_management_service.service.PolicyDecision;
 import com.expense_management_service.service.PolicyEvaluationGateway;
 import com.expense_management_service.service.SlaPolicyService;
@@ -97,9 +100,11 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private final DelegationService delegationService;
     private final PolicyEvaluationGateway policyEvaluationGateway;
     private final ApprovalEventPublisher approvalEventPublisher;
-    private final ExpenseReportMapper expenseReportMapper;
     private final SlaPolicyService slaPolicyService;
     private final PolicyViolationMapper policyViolationMapper;
+    private final List<LevelReviewStrategy> levelReviewStrategies;
+    private final ExpenseReportResponseFactory expenseReportResponseFactory;
+    private final MaterialChangeEvaluator materialChangeEvaluator;
 
     // ---------------------------------------------------------------------
     // Submission / resubmission
@@ -141,7 +146,14 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         return toResponse(findReport(reportId));
     }
 
-    /** Employee resubmits after Needs Correction (§2.8/§4.3): resume in place if the same flow still matches, else full restart. */
+    /**
+     * Employee resubmits after Needs Correction/Query (§2.8/§4.3). Manager-originated correction:
+     * resume in place if the same flow still matches, else full restart - unchanged. Finance-
+     * originated correction (Finance Verification): resume Finance in place only if BOTH the same
+     * flow still matches AND {@code MaterialChangeEvaluator} finds no material change - otherwise
+     * full restart back at Manager, since a client-billable flip (for one example) is never a
+     * flow-matching criterion at all but must still force re-approval.
+     */
     private ExpenseReportResponse resubmitCorrection(ExpenseReport report) {
         PolicyDecision decision = policyEvaluationGateway.evaluate(report);
         if (!decision.allowed()) {
@@ -152,13 +164,25 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         var currentInstances = approvalLevelInstanceRepository
                 .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), currentCycle);
         UUID currentFlowId = currentInstances.isEmpty() ? null : currentInstances.get(0).getFlowId();
+        ApprovalLevelInstance correctionSourceInstance = currentInstances.stream()
+                .filter(i -> i.getStatus() == LevelInstanceStatus.ACTIVE)
+                .findFirst()
+                .orElse(null);
+        LevelType correctionSourceLevelType = correctionSourceInstance != null ? correctionSourceInstance.getLevelType() : LevelType.APPROVAL;
 
         ApprovalFlow rematchedFlow = approvalFlowResolutionService.resolveMatchingFlow(report);
+        boolean sameFlow = rematchedFlow.getFlowId().equals(currentFlowId);
 
-        if (rematchedFlow.getFlowId().equals(currentFlowId)) {
-            return resumeInPlace(report, currentCycle);
+        boolean restart;
+        if (correctionSourceLevelType == LevelType.FINANCE_VERIFICATION) {
+            boolean materialChange = correctionSourceInstance != null
+                    && materialChangeEvaluator.hasMaterialChange(report, correctionSourceInstance);
+            restart = !sameFlow || materialChange;
+        } else {
+            restart = !sameFlow;
         }
-        return fullRestart(report, rematchedFlow);
+
+        return restart ? fullRestart(report, rematchedFlow) : resumeInPlace(report, currentCycle);
     }
 
     private ExpenseReportResponse resumeInPlace(ExpenseReport report, int cycle) {
@@ -167,16 +191,15 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 .orElseThrow(() -> new IllegalStateException(
                         "Report " + report.getReportId() + " is AWAITING_CORRECTION but has no ACTIVE level instance"));
 
-        approvalLineItemReviewRepository.findByLevelInstance_InstanceIdAndStatus(
-                        activeInstance.getInstanceId(), LineItemReviewStatus.NEEDS_CORRECTION)
-                .forEach(review -> {
-                    review.setStatus(LineItemReviewStatus.PENDING);
-                    approvalLineItemReviewRepository.save(review);
-                });
+        resolveStrategy(activeInstance.getLevelType()).resumeCorrectedReviews(activeInstance);
 
-        report.setReportStatus(ReportStatus.PENDING_APPROVAL);
+        report.setReportStatus(activeInstance.getLevelType() == LevelType.FINANCE_VERIFICATION
+                ? ReportStatus.PENDING_FINANCE_VERIFICATION : ReportStatus.PENDING_APPROVAL);
         expenseReportRepository.save(report);
         approvalEventPublisher.publish("REPORT_RESUMED", report.getReportId(), "level=" + activeInstance.getLevelOrder());
+        if (activeInstance.getLevelType() == LevelType.FINANCE_VERIFICATION) {
+            approvalEventPublisher.publish("VERIFICATION_QUERY_RESOLVED", report.getReportId(), "level=" + activeInstance.getLevelOrder());
+        }
 
         log.info("Report {} resumed in place at level {} (same flow still matches)", report.getReportId(), activeInstance.getLevelOrder());
         return toResponse(findReport(report.getReportId()));
@@ -218,8 +241,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         if (report.getReportStatus() != ReportStatus.PENDING_APPROVAL && report.getReportStatus() != ReportStatus.AWAITING_CORRECTION) {
             throw new IllegalArgumentException("Only a report Pending Approval or Awaiting Correction may be recalled");
         }
-        if (hasAnyLevelApproved(report)) {
-            throw new IllegalArgumentException("Cannot recall or cancel - at least one approval level has already completed");
+        if (blocksRecall(report)) {
+            throw new IllegalArgumentException(
+                    "Cannot recall - at least one approval level has already completed, or Finance Verification is already active");
         }
 
         cancelAllOpenInstances(report, currentSubmissionCycle(reportId));
@@ -273,6 +297,10 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         ApprovalLevelInstance activeInstance = approvalLevelInstanceRepository
                 .findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, cycle, LevelInstanceStatus.ACTIVE)
                 .orElseThrow(() -> new IllegalArgumentException("Report " + reportId + " has no level currently active for review"));
+        if (activeInstance.getLevelType() != LevelType.APPROVAL) {
+            throw new IllegalArgumentException("Report " + reportId + "'s active level is a Finance Verification level - "
+                    + "use the Finance Verification API, not the generic approval review endpoint");
+        }
 
         ApprovalAssignment authorizing = approvalAssignmentRepository.findByLevelInstance_InstanceId(activeInstance.getInstanceId())
                 .stream()
@@ -498,6 +526,31 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     }
 
     // ---------------------------------------------------------------------
+    // Re-entry point for non-APPROVAL level-type strategies (Finance Verification)
+    // ---------------------------------------------------------------------
+
+    @Override
+    public void advanceAfterLevelReviewed(UUID reportId, UUID instanceId, String completingApproverId) {
+        ExpenseReport report = findReport(reportId);
+        ApprovalLevelInstance instance = approvalLevelInstanceRepository.findById(instanceId)
+                .orElseThrow(() -> new ResourceNotFoundException("ApprovalLevelInstance not found with id: " + instanceId));
+
+        if (!resolveStrategy(instance.getLevelType()).isLevelComplete(instance)) {
+            return;
+        }
+
+        ApprovalAssignment completingAssignment = approvalAssignmentRepository.findByLevelInstance_InstanceId(instanceId)
+                .stream()
+                .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
+                .filter(a -> a.getApproverId().equals(completingApproverId))
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "No ACTIVE assignment for approver " + completingApproverId + " at level instance " + instanceId));
+
+        completeLevelOrAdvanceSequential(report, instance, completingAssignment, currentSubmissionCycle(reportId));
+    }
+
+    // ---------------------------------------------------------------------
     // Chain materialisation & activation
     // ---------------------------------------------------------------------
 
@@ -507,6 +560,10 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 .sorted(Comparator.comparing(ApprovalLevel::getLevelOrder))
                 .toList();
 
+        boolean clientBillableAny = report.getExpenseLineItems() != null && report.getExpenseLineItems().stream()
+                .anyMatch(li -> Boolean.TRUE.equals(li.getClientBillable()));
+        String glAccountFingerprint = materialChangeEvaluator.computeGlAccountFingerprint(report);
+
         for (ApprovalLevel level : levels) {
             ApprovalLevelInstance instance = ApprovalLevelInstance.builder()
                     .report(report)
@@ -514,8 +571,13 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                     .levelOrder(level.getLevelOrder())
                     .levelName(level.getLevelName())
                     .quorum(level.getQuorum())
+                    .levelType(level.getLevelType())
                     .submissionCycle(cycle)
                     .status(LevelInstanceStatus.QUEUED)
+                    .materializedTotalAmount(report.getTotalAmount())
+                    .materializedCostCenterId(report.getCostCenter() != null ? report.getCostCenter().getCostCenterId() : null)
+                    .materializedClientBillableAny(clientBillableAny)
+                    .materializedGlAccountFingerprint(glAccountFingerprint)
                     .build();
             ApprovalLevelInstance savedInstance = approvalLevelInstanceRepository.save(instance);
 
@@ -563,6 +625,10 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         instance.setStatus(LevelInstanceStatus.ACTIVE);
         approvalLevelInstanceRepository.save(instance);
 
+        report.setReportStatus(instance.getLevelType() == LevelType.FINANCE_VERIFICATION
+                ? ReportStatus.PENDING_FINANCE_VERIFICATION : ReportStatus.PENDING_APPROVAL);
+        expenseReportRepository.save(report);
+
         var assignments = approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
                 .filter(a -> a.getStatus() != AssignmentStatus.SKIPPED)
                 .sorted(Comparator.comparing(ApprovalAssignment::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
@@ -574,14 +640,11 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             assignments.forEach(this::activateAssignment);
         }
 
-        for (ExpenseLineItem lineItem : report.getExpenseLineItems()) {
-            approvalLineItemReviewRepository.save(ApprovalLineItemReview.builder()
-                    .lineItem(lineItem)
-                    .levelInstance(instance)
-                    .status(LineItemReviewStatus.PENDING)
-                    .build());
-        }
+        resolveStrategy(instance.getLevelType()).createPendingReviews(instance, report.getExpenseLineItems());
         approvalEventPublisher.publish("LEVEL_ACTIVATED", report.getReportId(), "level=" + instance.getLevelOrder());
+        if (instance.getLevelType() == LevelType.FINANCE_VERIFICATION) {
+            approvalEventPublisher.publish("FINANCE_VERIFICATION_ACTIVATED", report.getReportId(), "level=" + instance.getLevelOrder());
+        }
     }
 
     /** SLA clock starts only now, not at materialisation (§5.4/§7.3) - mirrors EP06's exact same rule. */
@@ -594,8 +657,14 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     }
 
     private boolean isInstanceFullyApproved(ApprovalLevelInstance instance) {
-        return approvalLineItemReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
-                .allMatch(r -> r.getStatus() == LineItemReviewStatus.APPROVED);
+        return resolveStrategy(instance.getLevelType()).isLevelComplete(instance);
+    }
+
+    private LevelReviewStrategy resolveStrategy(LevelType levelType) {
+        return levelReviewStrategies.stream()
+                .filter(strategy -> strategy.levelType() == levelType)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("No LevelReviewStrategy registered for level type " + levelType));
     }
 
     /**
@@ -618,11 +687,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 ApprovalAssignment next = remaining.get();
                 activateAssignment(next);
 
-                approvalLineItemReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId())
-                        .forEach(review -> {
-                            review.setStatus(LineItemReviewStatus.PENDING);
-                            approvalLineItemReviewRepository.save(review);
-                        });
+                resolveStrategy(instance.getLevelType()).resetPendingReviews(instance);
                 approvalEventPublisher.publish("SEQUENTIAL_ENTRY_ADVANCED", report.getReportId(),
                         "level=" + instance.getLevelOrder() + " nextApprover=" + next.getApproverId());
                 return;
@@ -639,6 +704,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         instance.setStatus(LevelInstanceStatus.COMPLETED);
         approvalLevelInstanceRepository.save(instance);
         approvalEventPublisher.publish("LEVEL_COMPLETED", report.getReportId(), "level=" + instance.getLevelOrder());
+        if (instance.getLevelType() == LevelType.FINANCE_VERIFICATION) {
+            approvalEventPublisher.publish("FINANCE_VERIFICATION_COMPLETED", report.getReportId(), "level=" + instance.getLevelOrder());
+        }
 
         activateNextEligibleLevel(report, cycle, instance.getLevelOrder());
     }
@@ -647,9 +715,41 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private void completeReport(ExpenseReport report) {
         report.setReportStatus(ReportStatus.APPROVED);
         report.setApprovedAt(LocalDateTime.now());
+        applyPaymentRouting(report);
         expenseReportRepository.save(report);
         approvalEventPublisher.publish("REPORT_APPROVED", report.getReportId(), "handoff=reimbursement-tracking");
         log.info("Report {} fully approved - handed off to Reimbursement Tracking", report.getReportId());
+    }
+
+    /**
+     * Downstream payment/invoice routing (Finance Verification Phase 6) - deliberately independent
+     * of {@code reportStatus} (Rule #8: never mix downstream payment state into workflow state).
+     * A no-op (leaves {@code paymentRoutingStatus = NONE}) for any chain with no Finance level at
+     * all, so existing Manager-only flows are completely unaffected. Only ever runs once, at the
+     * same moment the report reaches APPROVED - there is no separate "Finance verified but payment
+     * routing pending" state, since nothing in this codebase can complete a chain without also
+     * completing its last level.
+     */
+    private void applyPaymentRouting(ExpenseReport report) {
+        int cycle = currentSubmissionCycle(report.getReportId());
+        boolean hadFinanceLevel = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), cycle)
+                .stream()
+                .anyMatch(instance -> instance.getLevelType() == LevelType.FINANCE_VERIFICATION);
+        if (!hadFinanceLevel) {
+            return;
+        }
+
+        boolean anyClientBillable = report.getExpenseLineItems() != null && report.getExpenseLineItems().stream()
+                .anyMatch(lineItem -> Boolean.TRUE.equals(lineItem.getClientBillable()));
+
+        if (anyClientBillable) {
+            report.setPaymentRoutingStatus(PaymentRoutingStatus.INVOICE_HANDOFF_PENDING);
+            approvalEventPublisher.publish("REPORT_INVOICE_HANDOFF", report.getReportId(), "reason=client-billable");
+        } else {
+            report.setPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+            approvalEventPublisher.publish("REPORT_APPROVED_FOR_PAYMENT", report.getReportId(), "reason=internal");
+        }
     }
 
     private void cancelAllOpenInstances(ExpenseReport report, int cycle) {
@@ -699,7 +799,27 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     private boolean isRecallEligible(ExpenseReport report) {
         boolean statusOk = report.getReportStatus() == ReportStatus.PENDING_APPROVAL || report.getReportStatus() == ReportStatus.AWAITING_CORRECTION;
-        return statusOk && !hasAnyLevelApproved(report);
+        return statusOk && !blocksRecall(report);
+    }
+
+    /**
+     * Recall's restriction (§6), extended for Finance Verification (spec §40): blocked once any
+     * level has completed (unchanged), OR once a FINANCE_VERIFICATION level has ever gone ACTIVE in
+     * the current cycle - "managerial/business justification has already progressed into financial
+     * verification," so recall should not be able to undo that even while the report is currently
+     * AWAITING_CORRECTION from a Finance query. Cancel is deliberately NOT subject to this extra
+     * check (spec §40: cancel remains a permitted withdrawal) - see {@link #hasAnyLevelApproved}.
+     */
+    private boolean blocksRecall(ExpenseReport report) {
+        if (report.getReportStatus() == ReportStatus.DRAFT) {
+            return false;
+        }
+        int cycle = currentSubmissionCycle(report.getReportId());
+        return approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), cycle)
+                .stream()
+                .anyMatch(i -> i.getStatus() == LevelInstanceStatus.COMPLETED
+                        || (i.getLevelType() == LevelType.FINANCE_VERIFICATION && i.getStatus() == LevelInstanceStatus.ACTIVE));
     }
 
     private boolean isCancelEligible(ExpenseReport report) {
@@ -735,10 +855,6 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     }
 
     private ExpenseReportResponse toResponse(ExpenseReport report) {
-        int violations = policyViolationRepository.findByLineItem_Report_ReportId(report.getReportId()).size();
-        int unjustified = (int) policyViolationRepository.findByLineItem_Report_ReportId(report.getReportId()).stream()
-                .filter(v -> v.getJustification() == null).count();
-        return expenseReportMapper.toResponse(report, report.getReportStatus().isEditable(), report.getReportStatus().isDeletable(),
-                violations, unjustified);
+        return expenseReportResponseFactory.toResponse(report);
     }
 }

@@ -3,6 +3,7 @@ package com.expense_management_service.service.impl;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.PolicyViolation;
+import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.PolicyDecision;
@@ -19,12 +20,20 @@ import java.util.Objects;
 
 /**
  * Interim {@link PolicyEvaluationGateway} adapter wrapping the existing, advisory-only
- * {@link PolicyEvaluator} (WARN/INFO only, never blocks) until the separately-built Policy Engine
- * rebuild lands. Re-runs evaluation across every line item at submission time (mirrors EP06's
- * {@code refreshPolicyViolationsForReport}, including justification carry-over), wrapped
- * defensively so a policy failure can never block a submission - on top of {@code PolicyEvaluator}'s
- * own never-throw contract. Always returns {@code allowed = true} since there is no blocking tier
- * today.
+ * {@link PolicyEvaluator} until the separately-built Policy Engine rebuild lands. Re-runs
+ * evaluation across every line item at submission time (mirrors EP06's {@code
+ * refreshPolicyViolationsForReport}, including justification carry-over), wrapped defensively so a
+ * policy failure can never block a submission - on top of {@code PolicyEvaluator}'s own
+ * never-throw contract.
+ * <p>
+ * BLOCK enforcement (Finance Verification Phase 0 decision): this previously always returned
+ * {@code allowed = true} regardless of {@code PolicyEnforcementType.BLOCK} violations - a genuine
+ * gap, not a documented simplification, confirmed by there being zero non-test references to
+ * {@code BLOCK} that actually blocked anything. Fixed here because Finance Verification's
+ * eligibility checker needs "policy exception resolved" to mean something real: a checker that
+ * appears to enforce BLOCK while this gateway silently allowed it through would be worse than not
+ * checking at all. Uses {@code PolicyViolationRepository}'s existing "Block gate" fast-path query -
+ * that method already existed, unused, suggesting this fix was anticipated but never wired in.
  */
 @Service
 @RequiredArgsConstructor
@@ -40,7 +49,10 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
     public PolicyDecision evaluate(ExpenseReport report) {
         List<PolicyViolation> current = refreshViolations(report);
         var display = current.stream().map(policyViolationMapper::toResponse).toList();
-        return new PolicyDecision(true, display);
+
+        boolean hasBlockViolation = policyViolationRepository
+                .existsByLineItem_Report_ReportIdAndEnforcementType(report.getReportId(), PolicyEnforcementType.BLOCK);
+        return new PolicyDecision(!hasBlockViolation, display);
     }
 
     private List<PolicyViolation> refreshViolations(ExpenseReport report) {

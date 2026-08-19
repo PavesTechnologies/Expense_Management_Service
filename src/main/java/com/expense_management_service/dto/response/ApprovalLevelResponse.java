@@ -1,6 +1,7 @@
 package com.expense_management_service.dto.response;
 
 import com.expense_management_service.enums.LevelQuorum;
+import com.expense_management_service.enums.LevelType;
 
 import java.util.List;
 import java.util.UUID;
@@ -12,6 +13,7 @@ public record ApprovalLevelResponse(
         String levelName,
         String displayName,
         LevelQuorum quorum,
+        LevelType levelType,
         List<ApprovalLevelApproverResponse> approvers
 ) {
 }

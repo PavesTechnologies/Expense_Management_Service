@@ -12,6 +12,7 @@ import com.expense_management_service.enums.ApproverSourceType;
 import com.expense_management_service.enums.CriterionField;
 import com.expense_management_service.enums.CriterionOperator;
 import com.expense_management_service.enums.LevelQuorum;
+import com.expense_management_service.enums.LevelType;
 import com.expense_management_service.mapper.ApprovalFlowMapper;
 import com.expense_management_service.repository.ApprovalFlowRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,7 +43,7 @@ class ApprovalFlowServiceImplTest {
     }
 
     private ApprovalLevelRequest oneManagerLevel(int order) {
-        return new ApprovalLevelRequest(order, "Manager Review", LevelQuorum.SEQUENTIAL,
+        return new ApprovalLevelRequest(order, "Manager Review", LevelQuorum.SEQUENTIAL, null,
                 List.of(new ApprovalLevelApproverRequest(1, ApproverSourceType.REPORTING_MANAGER, null)));
     }
 
@@ -66,6 +67,43 @@ class ApprovalFlowServiceImplTest {
         assertThat(response.name()).isEqualTo("Travel over 10k");
         assertThat(response.levels()).hasSize(1);
         assertThat(response.isCatchAll()).isFalse();
+    }
+
+    @Test
+    void create_savesFinanceVerificationLevel_whenLevelTypeSpecified() {
+        when(approvalFlowRepository.findAll()).thenReturn(List.of());
+        when(approvalFlowRepository.save(any(ApprovalFlow.class))).thenAnswer(inv -> {
+            ApprovalFlow f = inv.getArgument(0);
+            f.setFlowId(UUID.randomUUID());
+            return f;
+        });
+        ApprovalLevelRequest managerLevel = oneManagerLevel(1);
+        ApprovalLevelRequest financeLevel = new ApprovalLevelRequest(2, "Finance Verification", LevelQuorum.SEQUENTIAL,
+                LevelType.FINANCE_VERIFICATION,
+                List.of(new ApprovalLevelApproverRequest(1, ApproverSourceType.FINANCE_OWNER, null)));
+        ApprovalFlowRequest request = new ApprovalFlowRequest("Manager then Finance", 1, "1",
+                List.of(new ApprovalFlowCriterionRequest(1, CriterionField.AMOUNT, CriterionOperator.GREATER_THAN, "1")),
+                List.of(managerLevel, financeLevel), "ACTIVE");
+
+        ApprovalFlowResponse response = service.create(request);
+
+        assertThat(response.levels()).hasSize(2);
+        assertThat(response.levels().get(0).levelType()).isEqualTo(LevelType.APPROVAL);
+        assertThat(response.levels().get(1).levelType()).isEqualTo(LevelType.FINANCE_VERIFICATION);
+    }
+
+    @Test
+    void create_defaultsLevelTypeToApproval_whenOmitted() {
+        when(approvalFlowRepository.findAll()).thenReturn(List.of());
+        when(approvalFlowRepository.save(any(ApprovalFlow.class))).thenAnswer(inv -> {
+            ApprovalFlow f = inv.getArgument(0);
+            f.setFlowId(UUID.randomUUID());
+            return f;
+        });
+
+        ApprovalFlowResponse response = service.create(validFlowRequest());
+
+        assertThat(response.levels().get(0).levelType()).isEqualTo(LevelType.APPROVAL);
     }
 
     @Test
@@ -94,7 +132,7 @@ class ApprovalFlowServiceImplTest {
 
     @Test
     void create_throws_whenNamedUserHasNoSourceReference() {
-        ApprovalLevelRequest level = new ApprovalLevelRequest(1, null, LevelQuorum.SEQUENTIAL,
+        ApprovalLevelRequest level = new ApprovalLevelRequest(1, null, LevelQuorum.SEQUENTIAL, null,
                 List.of(new ApprovalLevelApproverRequest(1, ApproverSourceType.NAMED_USER, null)));
         ApprovalFlowRequest request = new ApprovalFlowRequest("Bad named user", 1, "1",
                 List.of(new ApprovalFlowCriterionRequest(1, CriterionField.AMOUNT, CriterionOperator.GREATER_THAN, "1")),

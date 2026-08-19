@@ -55,7 +55,7 @@ class ApprovalFlowControllerTest {
     private ApprovalFlowRequest sampleRequest() {
         return new ApprovalFlowRequest("Travel over 10k", 1, "1",
                 List.of(new ApprovalFlowCriterionRequest(1, CriterionField.AMOUNT, CriterionOperator.GREATER_THAN, "10000")),
-                List.of(new ApprovalLevelRequest(1, "Manager Review", LevelQuorum.SEQUENTIAL,
+                List.of(new ApprovalLevelRequest(1, "Manager Review", LevelQuorum.SEQUENTIAL, null,
                         List.of(new ApprovalLevelApproverRequest(1, ApproverSourceType.REPORTING_MANAGER, null)))),
                 "ACTIVE");
     }

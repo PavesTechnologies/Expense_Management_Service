@@ -27,11 +27,19 @@ import java.util.Set;
  * before a report ever reaches this engine - not owned or transitioned by it. {@code CLOSED} and
  * {@code REIMBURSED} belong to Reimbursement Tracking's lifecycle, downstream of this engine's
  * {@code APPROVED} handoff.
+ * <p>
+ * {@code PENDING_FINANCE_VERIFICATION} is new (Finance Verification): set instead of {@code
+ * PENDING_APPROVAL} while the currently-ACTIVE level instance's {@code levelType ==
+ * FINANCE_VERIFICATION}, so employees/managers/Finance can tell whose hands a report is in without
+ * inspecting level instances directly. A flow with no Finance level never sets this - existing
+ * Manager-only flows go {@code PENDING_APPROVAL} -&gt; {@code APPROVED} exactly as before.
  */
 public enum ReportStatus {
     DRAFT,
     PENDING_APPROVAL,
-    /** Non-terminal: ≥1 line item flagged Needs Correction; other lines' approvals are preserved. */
+    /** Set while the currently-ACTIVE level is a FINANCE_VERIFICATION level - see class javadoc. */
+    PENDING_FINANCE_VERIFICATION,
+    /** Non-terminal: ≥1 line item flagged Needs Correction (Manager) or Queried (Finance); other lines' outcomes are preserved. */
     AWAITING_CORRECTION,
     POLICY_REJECTED,
     QUERY_RAISED,

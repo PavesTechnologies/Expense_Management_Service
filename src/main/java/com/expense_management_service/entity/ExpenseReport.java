@@ -1,5 +1,6 @@
 package com.expense_management_service.entity;
 
+import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import jakarta.persistence.*;
 import lombok.*;
@@ -101,6 +102,17 @@ public class ExpenseReport {
 
     @Column(name = "rejected_at")
     private LocalDateTime rejectedAt;
+
+    /**
+     * Downstream payment/invoice transport status, deliberately independent of {@link
+     * #reportStatus} - a Reimbursement/Invoice integration failure must never corrupt a report's
+     * completed approval/Finance-verification record. NONE for every existing report and for any
+     * flow with no FINANCE_VERIFICATION level; only ever set once Finance verification completes.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_routing_status", length = 255)
+    @Builder.Default
+    private PaymentRoutingStatus paymentRoutingStatus = PaymentRoutingStatus.NONE;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)

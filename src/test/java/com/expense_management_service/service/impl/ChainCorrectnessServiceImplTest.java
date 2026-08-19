@@ -6,6 +6,7 @@ import com.expense_management_service.entity.EmployeeCache;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.SystemConfiguration;
 import com.expense_management_service.enums.AssignmentStatus;
+import com.expense_management_service.enums.LevelType;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
 import com.expense_management_service.repository.EmployeeCacheRepository;
@@ -138,5 +139,30 @@ class ChainCorrectnessServiceImplTest {
 
         assertThat(firstLevelAssignment.getStatus()).isEqualTo(AssignmentStatus.PENDING);
         assertThat(secondLevelAssignment.getStatus()).isEqualTo(AssignmentStatus.SKIPPED);
+    }
+
+    /**
+     * Finance Verification regression (spec §14): neither pass filters by levelType - they already
+     * walk "every assignment across every instance" regardless of type, so a person resolved as
+     * both the Manager approver and the Finance approver (e.g. Finance is also Cost Center Owner)
+     * is caught by the exact same duplicate-approver pass, with no Finance-specific code path.
+     */
+    @Test
+    void applyCorrectnessPasses_skipsDuplicateApprover_whenSameEmployeeIsBothManagerAndFinanceApprover() {
+        ExpenseReport report = reportBy("5100001");
+        ApprovalAssignment managerAssignment = ApprovalAssignment.builder().assignmentId(UUID.randomUUID()).approverId("5100002").status(AssignmentStatus.PENDING).build();
+        ApprovalAssignment financeAssignment = ApprovalAssignment.builder().assignmentId(UUID.randomUUID()).approverId("5100002").status(AssignmentStatus.PENDING).build();
+
+        ApprovalLevelInstance managerLevel = ApprovalLevelInstance.builder().instanceId(UUID.randomUUID()).levelOrder(1).levelType(LevelType.APPROVAL).build();
+        ApprovalLevelInstance financeLevel = ApprovalLevelInstance.builder().instanceId(UUID.randomUUID()).levelOrder(2).levelType(LevelType.FINANCE_VERIFICATION).build();
+        when(approvalAssignmentRepository.findByLevelInstance_InstanceId(managerLevel.getInstanceId())).thenReturn(List.of(managerAssignment));
+        when(approvalAssignmentRepository.findByLevelInstance_InstanceId(financeLevel.getInstanceId())).thenReturn(List.of(financeAssignment));
+        when(approvalLevelInstanceRepository.findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), 1))
+                .thenReturn(List.of(managerLevel, financeLevel));
+
+        service.applyCorrectnessPasses(report, 1);
+
+        assertThat(managerAssignment.getStatus()).isEqualTo(AssignmentStatus.PENDING);
+        assertThat(financeAssignment.getStatus()).isEqualTo(AssignmentStatus.SKIPPED);
     }
 }

@@ -10,6 +10,7 @@ import com.expense_management_service.entity.ApprovalFlow;
 import com.expense_management_service.entity.ApprovalFlowCriterion;
 import com.expense_management_service.entity.ApprovalLevel;
 import com.expense_management_service.entity.ApprovalLevelApprover;
+import com.expense_management_service.enums.LevelType;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -79,6 +80,7 @@ public class ApprovalFlowMapper {
                     .levelOrder(levelRequest.levelOrder())
                     .levelName(levelRequest.levelName())
                     .quorum(levelRequest.quorum())
+                    .levelType(levelRequest.levelType() != null ? levelRequest.levelType() : LevelType.APPROVAL)
                     .build();
             for (var approverRequest : levelRequest.approvers()) {
                 level.getApprovers().add(ApprovalLevelApprover.builder()
@@ -117,6 +119,7 @@ public class ApprovalFlowMapper {
                 level.getLevelName(),
                 resolveDisplayName(level.getLevelName(), level.getLevelOrder()),
                 level.getQuorum(),
+                level.getLevelType(),
                 level.getApprovers().stream()
                         .map(a -> new ApprovalLevelApproverResponse(a.getEntryId(), a.getEntryOrder(), a.getSourceType(), a.getSourceReference()))
                         .toList()

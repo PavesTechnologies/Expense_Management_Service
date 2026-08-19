@@ -237,4 +237,51 @@ class CostCenterBudgetServiceImplTest {
 
         verify(costCenterBudgetRepository).delete(existing);
     }
+
+    // ---------------------------------------------------------------------
+    // consumeBudget - AP/Finance-approval budget consumption
+    // ---------------------------------------------------------------------
+
+    @Test
+    void consumeBudget_decrementsAvailableBudget_whenBudgetConfigured() {
+        CostCenterBudget budget = CostCenterBudget.builder().budgetId(UUID.randomUUID()).costCenter(activeCostCenter)
+                .fiscalYear("2026").budgetAmount(BigDecimal.valueOf(500000)).availableBudget(BigDecimal.valueOf(500000)).build();
+        when(costCenterBudgetRepository.findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterId, "2026"))
+                .thenReturn(Optional.of(budget));
+        when(costCenterBudgetRepository.save(any(CostCenterBudget.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        costCenterBudgetService.consumeBudget(activeCostCenter, "2026", BigDecimal.valueOf(50000));
+
+        assertThat(budget.getAvailableBudget()).isEqualByComparingTo("450000");
+    }
+
+    @Test
+    void consumeBudget_isANoOp_whenNoBudgetConfiguredForCostCenterAndFiscalYear() {
+        when(costCenterBudgetRepository.findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterId, "2026"))
+                .thenReturn(Optional.empty());
+
+        costCenterBudgetService.consumeBudget(activeCostCenter, "2026", BigDecimal.valueOf(50000));
+
+        verify(costCenterBudgetRepository, never()).save(any());
+    }
+
+    @Test
+    void consumeBudget_allowsAvailableBudgetToGoNegative_withoutThrowing() {
+        CostCenterBudget budget = CostCenterBudget.builder().budgetId(UUID.randomUUID()).costCenter(activeCostCenter)
+                .fiscalYear("2026").budgetAmount(BigDecimal.valueOf(10000)).availableBudget(BigDecimal.valueOf(1000)).build();
+        when(costCenterBudgetRepository.findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterId, "2026"))
+                .thenReturn(Optional.of(budget));
+        when(costCenterBudgetRepository.save(any(CostCenterBudget.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        costCenterBudgetService.consumeBudget(activeCostCenter, "2026", BigDecimal.valueOf(5000));
+
+        assertThat(budget.getAvailableBudget()).isEqualByComparingTo("-4000");
+    }
+
+    @Test
+    void consumeBudget_isANoOp_whenCostCenterIsNull() {
+        costCenterBudgetService.consumeBudget(null, "2026", BigDecimal.valueOf(50000));
+
+        verify(costCenterBudgetRepository, never()).save(any());
+    }
 }

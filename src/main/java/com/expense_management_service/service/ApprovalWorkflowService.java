@@ -65,4 +65,14 @@ public interface ApprovalWorkflowService {
      * {@code ExpenseReportRepository.findHistoryForApprover}.
      */
     PageResponse<ExpenseReportResponse> getMyHistory(String actingEmployeeId, String outcome, Pageable pageable);
+
+    /**
+     * Re-entry point for a level-type strategy other than APPROVAL (currently: Finance
+     * Verification) whose own action just brought every line item at {@code instanceId} to that
+     * level's terminal positive outcome. Runs the exact same SEQUENTIAL-advance / level-completion
+     * / next-level-activation / report-completion logic {@code reviewLineItem} uses internally for
+     * Manager approval - a no-op if the level is not actually complete yet (e.g. a SEQUENTIAL
+     * level with another entry still pending its own pass).
+     */
+    void advanceAfterLevelReviewed(UUID reportId, UUID instanceId, String completingApproverId);
 }

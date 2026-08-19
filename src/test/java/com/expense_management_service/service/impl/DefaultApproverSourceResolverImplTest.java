@@ -8,6 +8,7 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.enums.ApproverSourceType;
 import com.expense_management_service.repository.DepartmentApproverRepository;
 import com.expense_management_service.repository.EmployeeCacheRepository;
+import com.expense_management_service.repository.FinanceTeamApproverRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
@@ -24,6 +25,7 @@ class DefaultApproverSourceResolverImplTest {
 
     @Mock private EmployeeCacheRepository employeeCacheRepository;
     @Mock private DepartmentApproverRepository departmentApproverRepository;
+    @Mock private FinanceTeamApproverRepository financeTeamApproverRepository;
 
     private DefaultApproverSourceResolverImpl resolver;
 
@@ -33,7 +35,7 @@ class DefaultApproverSourceResolverImplTest {
 
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
-        resolver = new DefaultApproverSourceResolverImpl(employeeCacheRepository, departmentApproverRepository);
+        resolver = new DefaultApproverSourceResolverImpl(employeeCacheRepository, departmentApproverRepository, financeTeamApproverRepository);
     }
 
     @Test
@@ -97,6 +99,29 @@ class DefaultApproverSourceResolverImplTest {
         ApprovalLevelApprover entry = ApprovalLevelApprover.builder().sourceType(ApproverSourceType.COST_CENTER_OWNER).build();
         CostCenter costCenter = CostCenter.builder().costCenterId(UUID.randomUUID()).ownerEmployeeId(null).build();
         ExpenseReport report = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("5100001").costCenter(costCenter).build();
+
+        assertThat(resolver.resolve(entry, report)).isEmpty();
+    }
+
+    @Test
+    void resolve_returnsFinanceTeamApprover_forFinanceOwner() {
+        UUID costCenterId = UUID.randomUUID();
+        ApprovalLevelApprover entry = ApprovalLevelApprover.builder().sourceType(ApproverSourceType.FINANCE_OWNER).build();
+        CostCenter costCenter = CostCenter.builder().costCenterId(costCenterId).build();
+        ExpenseReport report = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("5100001").costCenter(costCenter).build();
+        when(financeTeamApproverRepository.findByCostCenter_CostCenterId(costCenterId)).thenReturn(Optional.of(
+                com.expense_management_service.entity.FinanceTeamApprover.builder().costCenter(costCenter).approverEmployeeId("5100088").build()));
+
+        assertThat(resolver.resolve(entry, report)).contains("5100088");
+    }
+
+    @Test
+    void resolve_returnsEmpty_forFinanceOwner_whenNoMappingExists() {
+        UUID costCenterId = UUID.randomUUID();
+        ApprovalLevelApprover entry = ApprovalLevelApprover.builder().sourceType(ApproverSourceType.FINANCE_OWNER).build();
+        CostCenter costCenter = CostCenter.builder().costCenterId(costCenterId).build();
+        ExpenseReport report = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("5100001").costCenter(costCenter).build();
+        when(financeTeamApproverRepository.findByCostCenter_CostCenterId(costCenterId)).thenReturn(Optional.empty());
 
         assertThat(resolver.resolve(entry, report)).isEmpty();
     }

@@ -2,11 +2,13 @@ package com.expense_management_service.entity;
 
 import com.expense_management_service.enums.LevelInstanceStatus;
 import com.expense_management_service.enums.LevelQuorum;
+import com.expense_management_service.enums.LevelType;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -63,6 +65,19 @@ public class ApprovalLevelInstance {
     @Column(name = "quorum", length = 255, nullable = false)
     private LevelQuorum quorum;
 
+    /**
+     * Snapshot copy from the matched {@code ApprovalLevel.levelType} at resolution time - governs
+     * which strategy ({@code ApprovalReviewStrategy}/{@code FinanceVerificationStrategy}) and which
+     * review table ({@code ApprovalLineItemReview}/{@code FinanceVerificationReview}) this instance
+     * is reviewed through. Backfilled to APPROVAL for every level instance materialized before
+     * Finance Verification existed (see V13 migration) - never re-read from config afterward, same
+     * as every other field on this entity.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "level_type", length = 255, nullable = false)
+    @Builder.Default
+    private LevelType levelType = LevelType.APPROVAL;
+
     /** Increments each time a report is resubmitted/restarted (§3.2) - distinguishes a stale prior cycle's rows from the current one. */
     @Column(name = "submission_cycle", nullable = false)
     private Integer submissionCycle;
@@ -70,6 +85,30 @@ public class ApprovalLevelInstance {
     @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 255)
     private LevelInstanceStatus status;
+
+    /**
+     * The four fields below are a report-level "as of materialization" snapshot, redundantly
+     * copied onto every level instance of one materialization pass (no separate "cycle" entity
+     * exists to hold a single copy). Read by {@code MaterialChangeEvaluator} at Finance-originated
+     * resubmission time to decide resume-Finance-in-place vs restart-at-Manager - a genuinely
+     * different question from "does a different ApprovalFlow now match" (§ApprovalFlowResolutionService):
+     * a client-billable flip, for instance, is never a flow-matching criterion at all, but is always
+     * material here.
+     */
+    @Column(name = "materialized_total_amount", precision = 19, scale = 4)
+    private BigDecimal materializedTotalAmount;
+
+    @Column(name = "materialized_cost_center_id")
+    private UUID materializedCostCenterId;
+
+    /** True if any line item was client-billable at materialization time. */
+    @Column(name = "materialized_client_billable_any")
+    private Boolean materializedClientBillableAny;
+
+    /** Sorted "lineItemId=glAccountId;..." fingerprint at materialization time - a mismatch means at least one line item's GL mapping has since changed. */
+    @Lob
+    @Column(name = "materialized_gl_account_fingerprint")
+    private String materializedGlAccountFingerprint;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)

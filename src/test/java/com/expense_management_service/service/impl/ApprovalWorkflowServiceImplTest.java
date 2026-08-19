@@ -11,8 +11,10 @@ import com.expense_management_service.entity.ApprovalLevelInstance;
 import com.expense_management_service.entity.ApprovalLineItemReview;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.FinanceVerificationReview;
 import com.expense_management_service.enums.ApproverSourceType;
 import com.expense_management_service.enums.AssignmentStatus;
+import com.expense_management_service.enums.FinanceVerificationStatus;
 import com.expense_management_service.enums.LevelInstanceStatus;
 import com.expense_management_service.enums.LevelQuorum;
 import com.expense_management_service.enums.LineItemReviewStatus;
@@ -79,6 +81,9 @@ class ApprovalWorkflowServiceImplTest {
     @Mock private PolicyEvaluationGateway policyEvaluationGateway;
     @Mock private ApprovalEventPublisher approvalEventPublisher;
     @Mock private SlaPolicyService slaPolicyService;
+    @Mock private com.expense_management_service.service.MaterialChangeEvaluator materialChangeEvaluator;
+    @Mock private com.expense_management_service.repository.FinanceVerificationReviewRepository financeVerificationReviewRepository;
+    @Mock private com.expense_management_service.repository.VerificationQueryRepository verificationQueryRepository;
 
     private ApprovalWorkflowServiceImpl service;
 
@@ -97,9 +102,13 @@ class ApprovalWorkflowServiceImplTest {
         service = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, policyViolationRepository,
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, delegationService,
-                policyEvaluationGateway, approvalEventPublisher, new ExpenseReportMapper(), slaPolicyService,
-                new com.expense_management_service.mapper.PolicyViolationMapper());
+                policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
+                new com.expense_management_service.mapper.PolicyViolationMapper(),
+                List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository)),
+                new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
+                materialChangeEvaluator);
 
+        when(materialChangeEvaluator.computeGlAccountFingerprint(any())).thenReturn("");
         when(policyEvaluationGateway.evaluate(any())).thenReturn(new PolicyDecision(true, List.of()));
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
         when(slaPolicyService.resolveSlaBusinessDays()).thenReturn(3);
@@ -193,6 +202,8 @@ class ApprovalWorkflowServiceImplTest {
                         .findFirst());
         when(approvalLevelInstanceRepository.findMaxSubmissionCycle(reportId))
                 .thenAnswer(inv -> savedInstances.stream().mapToInt(ApprovalLevelInstance::getSubmissionCycle).max().orElse(0));
+        when(approvalLevelInstanceRepository.findById(any()))
+                .thenAnswer(inv -> savedInstances.stream().filter(i -> i.getInstanceId().equals(inv.getArgument(0))).findFirst());
     }
 
     private ExpenseLineItem lineItem() {
@@ -236,6 +247,137 @@ class ApprovalWorkflowServiceImplTest {
         assertThat(savedReviews).hasSize(1);
         assertThat(savedReviews.get(0).getStatus()).isEqualTo(LineItemReviewStatus.PENDING);
         verify(chainCorrectnessService).applyCorrectnessPasses(report, 1);
+    }
+
+    /** Manager (APPROVAL) then Finance (FINANCE_VERIFICATION) - regression for the levelType-snapshot fix (§Phase 4). */
+    private ApprovalFlow managerThenFinanceFlow() {
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(flowId).name("Manager then Finance").isCatchAll(false).build();
+        ApprovalLevel managerLevel = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(1)
+                .quorum(LevelQuorum.SEQUENTIAL).levelType(com.expense_management_service.enums.LevelType.APPROVAL).build();
+        managerLevel.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(managerLevel)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference(approverId).build());
+        ApprovalLevel financeLevel = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(2)
+                .quorum(LevelQuorum.SEQUENTIAL).levelType(com.expense_management_service.enums.LevelType.FINANCE_VERIFICATION).build();
+        financeLevel.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(financeLevel)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference("5100050").build());
+        flow.getLevels().add(managerLevel);
+        flow.getLevels().add(financeLevel);
+        return flow;
+    }
+
+    /** Single FINANCE_VERIFICATION level, NAMED_USER approver - a "Finance-only flow" per spec test #4. */
+    private ApprovalFlow financeOnlyFlow() {
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(flowId).name("Finance only").isCatchAll(false).build();
+        ApprovalLevel financeLevel = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(1)
+                .quorum(LevelQuorum.SEQUENTIAL).levelType(com.expense_management_service.enums.LevelType.FINANCE_VERIFICATION).build();
+        financeLevel.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(financeLevel)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference("5100050").build());
+        flow.getLevels().add(financeLevel);
+        return flow;
+    }
+
+    @Test
+    void financeLevelCompletion_routesToInvoiceHandoff_whenAnyLineItemIsClientBillable() {
+        List<FinanceVerificationReview> financeReviews = new ArrayList<>();
+        when(financeVerificationReviewRepository.save(any(FinanceVerificationReview.class))).thenAnswer(inv -> {
+            FinanceVerificationReview r = inv.getArgument(0);
+            financeReviews.add(r);
+            return r;
+        });
+        when(financeVerificationReviewRepository.findByLevelInstance_InstanceId(any()))
+                .thenAnswer(inv -> financeReviews.stream()
+                        .filter(r -> r.getLevelInstance().getInstanceId().equals(inv.getArgument(0))).toList());
+
+        ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
+                approvalAssignmentRepository, approvalLineItemReviewRepository, policyViolationRepository,
+                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, delegationService,
+                policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
+                new com.expense_management_service.mapper.PolicyViolationMapper(),
+                List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
+                        new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
+                new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
+                materialChangeEvaluator);
+
+        ExpenseReport report = draftReport();
+        report.getExpenseLineItems().get(0).setClientBillable(true);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(financeOnlyFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of("5100050"));
+
+        serviceWithFinance.submit(reportId);
+
+        ApprovalLevelInstance financeInstance = savedInstances.stream()
+                .filter(i -> i.getLevelType() == com.expense_management_service.enums.LevelType.FINANCE_VERIFICATION)
+                .findFirst().orElseThrow();
+        FinanceVerificationReview review = financeReviews.stream().findFirst().orElseThrow();
+        review.setStatus(FinanceVerificationStatus.VERIFIED);
+
+        serviceWithFinance.advanceAfterLevelReviewed(reportId, financeInstance.getInstanceId(), "5100050");
+
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+        assertThat(report.getPaymentRoutingStatus())
+                .isEqualTo(com.expense_management_service.enums.PaymentRoutingStatus.INVOICE_HANDOFF_PENDING);
+    }
+
+    @Test
+    void financeLevelCompletion_routesToApprovedForPayment_whenNoLineItemIsClientBillable() {
+        List<FinanceVerificationReview> financeReviews = new ArrayList<>();
+        when(financeVerificationReviewRepository.save(any(FinanceVerificationReview.class))).thenAnswer(inv -> {
+            FinanceVerificationReview r = inv.getArgument(0);
+            financeReviews.add(r);
+            return r;
+        });
+        when(financeVerificationReviewRepository.findByLevelInstance_InstanceId(any()))
+                .thenAnswer(inv -> financeReviews.stream()
+                        .filter(r -> r.getLevelInstance().getInstanceId().equals(inv.getArgument(0))).toList());
+
+        ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
+                approvalAssignmentRepository, approvalLineItemReviewRepository, policyViolationRepository,
+                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, delegationService,
+                policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
+                new com.expense_management_service.mapper.PolicyViolationMapper(),
+                List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
+                        new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
+                new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
+                materialChangeEvaluator);
+
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(financeOnlyFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of("5100050"));
+
+        serviceWithFinance.submit(reportId);
+
+        ApprovalLevelInstance financeInstance = savedInstances.stream()
+                .filter(i -> i.getLevelType() == com.expense_management_service.enums.LevelType.FINANCE_VERIFICATION)
+                .findFirst().orElseThrow();
+        FinanceVerificationReview review = financeReviews.stream().findFirst().orElseThrow();
+        review.setStatus(FinanceVerificationStatus.VERIFIED);
+
+        serviceWithFinance.advanceAfterLevelReviewed(reportId, financeInstance.getInstanceId(), "5100050");
+
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+        assertThat(report.getPaymentRoutingStatus())
+                .isEqualTo(com.expense_management_service.enums.PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+    }
+
+    @Test
+    void submit_snapshotsLevelTypeOntoEveryInstance_forAMixedManagerFinanceFlow() {
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(managerThenFinanceFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(approverId));
+
+        ExpenseReportResponse response = service.submit(reportId);
+
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
+        assertThat(savedInstances).hasSize(2);
+        var managerInstance = savedInstances.stream().filter(i -> i.getLevelOrder() == 1).findFirst().orElseThrow();
+        var financeInstance = savedInstances.stream().filter(i -> i.getLevelOrder() == 2).findFirst().orElseThrow();
+        assertThat(managerInstance.getLevelType()).isEqualTo(com.expense_management_service.enums.LevelType.APPROVAL);
+        assertThat(managerInstance.getStatus()).isEqualTo(LevelInstanceStatus.ACTIVE);
+        assertThat(financeInstance.getLevelType()).isEqualTo(com.expense_management_service.enums.LevelType.FINANCE_VERIFICATION);
+        assertThat(financeInstance.getStatus()).isEqualTo(LevelInstanceStatus.QUEUED);
     }
 
     @Test

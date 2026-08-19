@@ -1,6 +1,7 @@
 package com.expense_management_service.entity;
 
 import com.expense_management_service.enums.LevelQuorum;
+import com.expense_management_service.enums.LevelType;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -45,6 +46,12 @@ public class ApprovalLevel {
     @Enumerated(EnumType.STRING)
     @Column(name = "quorum", length = 255, nullable = false)
     private LevelQuorum quorum;
+
+    /** Defaults to APPROVAL - existing flows configured before Finance Verification existed behave exactly as before. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "level_type", length = 255, nullable = false)
+    @Builder.Default
+    private LevelType levelType = LevelType.APPROVAL;
 
     @OneToMany(mappedBy = "level", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default

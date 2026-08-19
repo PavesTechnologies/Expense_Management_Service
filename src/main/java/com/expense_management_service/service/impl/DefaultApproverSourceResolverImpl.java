@@ -6,6 +6,7 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.enums.ApproverSourceType;
 import com.expense_management_service.repository.DepartmentApproverRepository;
 import com.expense_management_service.repository.EmployeeCacheRepository;
+import com.expense_management_service.repository.FinanceTeamApproverRepository;
 import com.expense_management_service.service.ApproverSourceResolver;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +23,7 @@ public class DefaultApproverSourceResolverImpl implements ApproverSourceResolver
 
     private final EmployeeCacheRepository employeeCacheRepository;
     private final DepartmentApproverRepository departmentApproverRepository;
+    private final FinanceTeamApproverRepository financeTeamApproverRepository;
 
     @Override
     public Optional<String> resolve(ApprovalLevelApprover entry, ExpenseReport report) {
@@ -57,6 +59,16 @@ public class DefaultApproverSourceResolverImpl implements ApproverSourceResolver
                     .filter(DefaultApproverSourceResolverImpl::isNonBlank)
                     .or(() -> {
                         log.warn("Cost center {} has no ownerEmployeeId configured",
+                                report.getCostCenter() != null ? report.getCostCenter().getCostCenterId() : null);
+                        return Optional.empty();
+                    });
+
+            case FINANCE_OWNER -> Optional.ofNullable(report.getCostCenter())
+                    .flatMap(cc -> financeTeamApproverRepository.findByCostCenter_CostCenterId(cc.getCostCenterId()))
+                    .map(com.expense_management_service.entity.FinanceTeamApprover::getApproverEmployeeId)
+                    .filter(DefaultApproverSourceResolverImpl::isNonBlank)
+                    .or(() -> {
+                        log.warn("Cost center {} has no FinanceTeamApprover mapping configured",
                                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterId() : null);
                         return Optional.empty();
                     });

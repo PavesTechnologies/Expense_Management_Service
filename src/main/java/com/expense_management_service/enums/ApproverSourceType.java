@@ -13,5 +13,7 @@ public enum ApproverSourceType {
     /** {@code sourceReference} is ignored; resolves via {@code DepartmentApprover} for the submitter's {@code EmployeeCache.departmentUuid}. */
     DEPARTMENT_OWNER,
     /** {@code sourceReference} is ignored; resolves to the report's {@code CostCenter.ownerEmployeeId}. */
-    COST_CENTER_OWNER
+    COST_CENTER_OWNER,
+    /** {@code sourceReference} is ignored; resolves via {@code FinanceTeamApprover} for the report's cost center. */
+    FINANCE_OWNER
 }

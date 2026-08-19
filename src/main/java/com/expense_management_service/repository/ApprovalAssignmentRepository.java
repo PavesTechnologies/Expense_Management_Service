@@ -2,6 +2,7 @@ package com.expense_management_service.repository;
 
 import com.expense_management_service.entity.ApprovalAssignment;
 import com.expense_management_service.enums.AssignmentStatus;
+import com.expense_management_service.enums.LevelType;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -38,4 +39,14 @@ public interface ApprovalAssignmentRepository extends JpaRepository<ApprovalAssi
     Page<UUID> findDistinctReportIdsByStatusAndApproverIdIn(
             @Param("status") AssignmentStatus status, @Param("approverIds") Collection<String> approverIds, Pageable pageable);
 
+    /** Same as {@link #findDistinctReportIdsByStatusAndApproverIdIn}, additionally scoped to one level type - backs Finance's own "My Queue" so a Finance-role approver's Manager-level assignments (if any) never leak into it, and vice versa. */
+    @Query("""
+            SELECT a.levelInstance.report.reportId FROM ApprovalAssignment a
+            WHERE a.status = :status AND a.approverId IN :approverIds AND a.levelInstance.levelType = :levelType
+            GROUP BY a.levelInstance.report.reportId
+            ORDER BY MIN(a.assignedAt) ASC
+            """)
+    Page<UUID> findDistinctReportIdsByStatusAndApproverIdInAndLevelType(
+            @Param("status") AssignmentStatus status, @Param("approverIds") Collection<String> approverIds,
+            @Param("levelType") LevelType levelType, Pageable pageable);
 }

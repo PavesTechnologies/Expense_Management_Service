@@ -28,6 +28,18 @@ public class VerificationQuery {
     @ToString.Exclude
     private ExpenseLineItem lineItem;
 
+    /**
+     * Nullable: rows created through the pre-existing generic {@code VerificationQueryController}
+     * predate this column and have none. Set only when a query is raised through Finance
+     * Verification ({@code FinanceVerificationServiceImpl.queryLineItem}) - ties the query back to
+     * the FINANCE_VERIFICATION level instance that raised it, so resubmission routing can tell
+     * whether an open query came from Finance.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "instance_id", nullable = true)
+    @ToString.Exclude
+    private ApprovalLevelInstance levelInstance;
+
     @Column(name = "raised_by", length = 255, nullable = false)
     private String raisedBy;
 

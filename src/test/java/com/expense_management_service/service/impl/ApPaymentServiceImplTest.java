@@ -75,6 +75,7 @@ class ApPaymentServiceImplTest {
         ExpenseReportResponse response = service.markPaymentCompleted(reportId, "5100099");
 
         assertThat(response).isNotNull();
+        assertThat(response.paymentRoutingStatus()).isEqualTo(PaymentRoutingStatus.PAYMENT_COMPLETED.name());
         assertThat(report.getPaymentRoutingStatus()).isEqualTo(PaymentRoutingStatus.PAYMENT_COMPLETED);
         assertThat(report.getPaymentCompletedBy()).isEqualTo("5100099");
         assertThat(report.getPaymentCompletedAt()).isNotNull();

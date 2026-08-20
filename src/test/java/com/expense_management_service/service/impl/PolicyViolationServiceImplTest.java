@@ -99,6 +99,34 @@ class PolicyViolationServiceImplTest {
     }
 
     @Test
+    void getForLineItem_returnsWarnings_forApExecutive_onSomeoneElsesReport() {
+        draftReport.setEmployeeId("someone-else");
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId)).thenReturn(Optional.of(lineItem));
+        when(policyViolationRepository.findByLineItem_LineItemId(lineItemId)).thenReturn(List.of());
+
+        List<PolicyWarningResponse> responses = policyViolationService.getForLineItem(reportId, lineItemId);
+
+        assertThat(responses).isEmpty();
+    }
+
+    @Test
+    void getForLineItem_returnsWarnings_forFinanceExecutive_onSomeoneElsesReport() {
+        draftReport.setEmployeeId("someone-else");
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId)).thenReturn(Optional.of(lineItem));
+        when(policyViolationRepository.findByLineItem_LineItemId(lineItemId)).thenReturn(List.of());
+
+        List<PolicyWarningResponse> responses = policyViolationService.getForLineItem(reportId, lineItemId);
+
+        assertThat(responses).isEmpty();
+    }
+
+    @Test
     void justify_savesJustification_whenValid() {
         UUID violationId = UUID.randomUUID();
         PolicyViolation existing = violation(violationId);

@@ -104,7 +104,7 @@ public class ReceiptController {
     }
 
     @GetMapping("/xms/employee/expense-reports/{reportId}/receipts")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE','AP_EXECUTIVE')")
     @Operation(
             summary = "List every receipt on a report",
             description = "Includes receipts not yet linked to any line item. Returns metadata only — no "
@@ -116,7 +116,7 @@ public class ReceiptController {
     }
 
     @GetMapping("/xms/employee/expense-line-items/{lineItemId}/receipts")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE','AP_EXECUTIVE')")
     @Operation(
             summary = "List receipts linked to a line item",
             description = "Legacy, line-item-scoped view — only returns receipts that have already been "
@@ -128,14 +128,14 @@ public class ReceiptController {
     }
 
     @GetMapping("/xms/employee/receipts/{receiptId}")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE','AP_EXECUTIVE')")
     @Operation(summary = "Get receipt metadata", description = "Returns metadata only — never the S3 object key.")
     public ApiResponse<ReceiptResponse> getById(@PathVariable UUID receiptId) {
         return ApiResponse.success(receiptService.getById(receiptId));
     }
 
     @GetMapping("/xms/employee/receipts/{receiptId}/view")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE','AP_EXECUTIVE')")
     @Operation(
             summary = "Get a time-limited URL to preview the receipt inline in a browser",
             description = "The URL is a pre-signed S3 GET link (default TTL: 15 minutes) — the bucket itself is "
@@ -150,7 +150,7 @@ public class ReceiptController {
     }
 
     @GetMapping("/xms/employee/receipts/{receiptId}/download")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE','AP_EXECUTIVE')")
     @Operation(
             summary = "Get a time-limited URL to download the receipt",
             description = "Same pre-signed mechanism as /view, but forces a \"Save As\" download using the "

@@ -9,6 +9,8 @@ public enum PaymentRoutingStatus {
     /** No routing decision made yet - the report hasn't finished Finance verification (or has no Finance level). */
     NONE,
     APPROVED_FOR_PAYMENT,
+    /** Terminal for an internal expense - set only by AP_EXECUTIVE confirming the external payment actually happened; XMS never pays anything itself. */
+    PAYMENT_COMPLETED,
     INVOICE_HANDOFF_PENDING,
     INVOICE_HANDOFF_COMPLETED,
     /** Handoff to the downstream module failed; retried independently of the approval/Finance state. */

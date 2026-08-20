@@ -36,6 +36,7 @@ import com.expense_management_service.service.ApprovalFlowResolutionService;
 import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ApproverSourceResolver;
 import com.expense_management_service.service.ChainCorrectnessService;
+import com.expense_management_service.service.CostCenterBudgetService;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.LevelReviewStrategy;
 import com.expense_management_service.service.MaterialChangeEvaluator;
@@ -105,6 +106,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private final List<LevelReviewStrategy> levelReviewStrategies;
     private final ExpenseReportResponseFactory expenseReportResponseFactory;
     private final MaterialChangeEvaluator materialChangeEvaluator;
+    private final CostCenterBudgetService costCenterBudgetService;
 
     // ---------------------------------------------------------------------
     // Submission / resubmission
@@ -739,6 +741,21 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         if (!hadFinanceLevel) {
             return;
         }
+        // Idempotency guard (Finance Verification Phase 8): applyPaymentRouting/completeReport can
+        // only reach here once per report under normal state-machine flow, but a concurrent
+        // near-simultaneous verify on the last two line items could both observe "level complete"
+        // before either commits - ExpenseReport.version already forces one of those two racing
+        // transactions to fail at commit (rolling back its budget consumption with it), and this
+        // explicit check makes the second, already-rolled-forward case a clean no-op instead of
+        // relying on that alone.
+        if (report.getPaymentRoutingStatus() != PaymentRoutingStatus.NONE) {
+            return;
+        }
+
+        // Budget consumption happens exactly once, right here, for every report that passed through
+        // a Finance Verification level - regardless of client-billable routing below. See the AP
+        // Payment implementation report for why this reads unconditionally from the spec.
+        costCenterBudgetService.consumeBudget(report.getCostCenter(), report.getFiscalYear(), report.getTotalAmount());
 
         boolean anyClientBillable = report.getExpenseLineItems() != null && report.getExpenseLineItems().stream()
                 .anyMatch(lineItem -> Boolean.TRUE.equals(lineItem.getClientBillable()));

@@ -1,6 +1,8 @@
 package com.expense_management_service.repository;
 
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.enums.PaymentRoutingStatus;
+import com.expense_management_service.enums.ReportStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -42,4 +44,12 @@ public interface ExpenseReportRepository extends JpaRepository<ExpenseReport, UU
             @Param("includeApproved") boolean includeApproved,
             @Param("includeRejected") boolean includeRejected,
             Pageable pageable);
+
+    /**
+     * The AP Payment queue: internal expenses (never client-billable - those are routed to {@code
+     * INVOICE_HANDOFF_PENDING} instead, never {@code APPROVED_FOR_PAYMENT}) that finished Finance
+     * Verification and are awaiting external payment confirmation.
+     */
+    Page<ExpenseReport> findByReportStatusAndPaymentRoutingStatus(
+            ReportStatus reportStatus, PaymentRoutingStatus paymentRoutingStatus, Pageable pageable);
 }

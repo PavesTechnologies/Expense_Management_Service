@@ -505,6 +505,28 @@ class ReceiptServiceImplTest {
     }
 
     @Test
+    void getAllForReport_returnsMetadata_forApExecutive_onSomeoneElsesReport() {
+        draftReport.setEmployeeId("someone-else");
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+        when(receiptRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
+
+        assertThat(receiptService.getAllForReport(reportId)).isEmpty();
+    }
+
+    @Test
+    void getAllForReport_returnsMetadata_forFinanceExecutive_onSomeoneElsesReport() {
+        draftReport.setEmployeeId("someone-else");
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+        when(receiptRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
+
+        assertThat(receiptService.getAllForReport(reportId)).isEmpty();
+    }
+
+    @Test
     void getAllForLineItem_returnsMetadata_whenOwner() {
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(lineItem));

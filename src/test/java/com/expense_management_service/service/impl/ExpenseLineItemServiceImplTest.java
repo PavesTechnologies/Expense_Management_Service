@@ -279,6 +279,35 @@ class ExpenseLineItemServiceImplTest {
         assertThat(expenseLineItemService.getAllForReport(reportId)).hasSize(1);
     }
 
+    /**
+     * Regression: {@code assertViewable}'s privileged-reviewer whitelist previously omitted
+     * FINANCE_EXECUTIVE/AP_EXECUTIVE (added after ADMIN/FINANCE/MANAGER), which meant an
+     * AP_EXECUTIVE calling {@code ApPaymentServiceImpl.getPaymentDetails} - which delegates here
+     * via {@code getAllForReport} - was wrongly denied on a report they don't personally own, even
+     * though the report had correctly reached APPROVED_FOR_PAYMENT.
+     */
+    @Test
+    void getAllForReport_returnsItems_forApExecutive_onSomeoneElsesReport() {
+        draftReport.setEmployeeId("someone-else");
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+        when(expenseLineItemRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
+
+        assertThat(expenseLineItemService.getAllForReport(reportId)).isEmpty();
+    }
+
+    @Test
+    void getAllForReport_returnsItems_forFinanceExecutive_onSomeoneElsesReport() {
+        draftReport.setEmployeeId("someone-else");
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+        when(expenseLineItemRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
+
+        assertThat(expenseLineItemService.getAllForReport(reportId)).isEmpty();
+    }
+
     // --- EP05: policy evaluation is advisory-only and must never affect the save --------------
 
     @Test

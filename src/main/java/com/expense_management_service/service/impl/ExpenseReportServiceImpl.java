@@ -189,7 +189,8 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
 
     private boolean isPrivilegedReviewer(CurrentUser caller) {
         return hasRole(caller, RoleConstants.ADMIN) || hasRole(caller, RoleConstants.FINANCE)
-                || hasRole(caller, RoleConstants.MANAGER);
+                || hasRole(caller, RoleConstants.MANAGER) || hasRole(caller, RoleConstants.FINANCE_EXECUTIVE)
+                || hasRole(caller, RoleConstants.AP_EXECUTIVE);
     }
 
     private boolean hasRole(CurrentUser caller, String role) {

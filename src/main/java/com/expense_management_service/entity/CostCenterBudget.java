@@ -40,6 +40,17 @@ public class CostCenterBudget {
     @Column(name = "available_budget", precision = 19, scale = 4, nullable = false)
     private BigDecimal availableBudget;
 
+    /**
+     * Optimistic lock - protects against two concurrent Finance approvals against the same cost
+     * center racing on a read-modify-write of {@link #availableBudget} (a classic lost-update
+     * bug for a financial ledger value). Same pattern as {@code ExpenseReport.version}/{@code
+     * ApprovalLineItemReview.version} - added for AP/budget-consumption (see {@code
+     * CostCenterBudgetServiceImpl.consumeBudget}), the first writer to this row after creation.
+     */
+    @Version
+    @Column(name = "version")
+    private Long version;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

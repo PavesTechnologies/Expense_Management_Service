@@ -237,6 +237,34 @@ class ExpenseReportServiceImplTest {
     }
 
     @Test
+    void getById_allowsApExecutive_toViewSomeoneElsesReport() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
+                .reportStatus(ReportStatus.APPROVED).fiscalYear(fiscalYear).build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+
+        ExpenseReportResponse response = expenseReportService.getById(reportId);
+
+        assertThat(response.reportId()).isEqualTo(reportId);
+    }
+
+    @Test
+    void getById_allowsFinanceExecutive_toViewSomeoneElsesReport() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
+                .reportStatus(ReportStatus.PENDING_APPROVAL).fiscalYear(fiscalYear).build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+
+        ExpenseReportResponse response = expenseReportService.getById(reportId);
+
+        assertThat(response.reportId()).isEqualTo(reportId);
+    }
+
+    @Test
     void getById_throwsResourceNotFoundException_whenMissing() {
         UUID reportId = UUID.randomUUID();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.empty());

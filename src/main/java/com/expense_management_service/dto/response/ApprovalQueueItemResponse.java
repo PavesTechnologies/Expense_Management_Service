@@ -1,6 +1,7 @@
 package com.expense_management_service.dto.response;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -11,6 +12,9 @@ public record ApprovalQueueItemResponse(
         String employeeId,
         BigDecimal totalAmount,
         String currencyCode,
+        String costCenterName,
+        String reportStatus,
+        LocalDateTime submittedAt,
         Integer levelOrder,
         List<PendingLineItemResponse> pendingLineItems,
         boolean eligibleForBulkApprove

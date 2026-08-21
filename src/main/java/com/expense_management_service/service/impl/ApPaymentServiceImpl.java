@@ -14,12 +14,12 @@ import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.service.ApPaymentService;
 import com.expense_management_service.service.ApprovalEventPublisher;
 import com.expense_management_service.service.ApprovalWorkflowService;
+import com.expense_management_service.service.CostCenterBudgetService;
 import com.expense_management_service.service.ExpenseLineItemService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.data.domain.Page;
-import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -45,6 +45,7 @@ public class ApPaymentServiceImpl implements ApPaymentService {
     private final ApprovalEventPublisher approvalEventPublisher;
     private final AuditLogRepository auditLogRepository;
     private final ExpenseReportResponseFactory expenseReportResponseFactory;
+    private final CostCenterBudgetService costCenterBudgetService;
 
     @Override
     @Transactional(readOnly = true)
@@ -86,6 +87,15 @@ public class ApPaymentServiceImpl implements ApPaymentService {
                     "Report " + reportId + " cannot be marked as paid - it is not APPROVED_FOR_PAYMENT "
                             + "(reportStatus=" + report.getReportStatus() + ", paymentRoutingStatus=" + previous + ")");
         }
+
+        // Budget is consumed exactly once, right here, at the moment payment actually completes -
+        // not at submission, approval, Finance verification, or the earlier APPROVED_FOR_PAYMENT
+        // routing decision. The guard above already makes this call unreachable on a duplicate
+        // completion attempt (a second call sees previous == PAYMENT_COMPLETED and throws before
+        // ever reaching this line), and this whole method runs in one @Transactional boundary, so a
+        // failure here (e.g. a concurrent-update conflict on the budget row) rolls back the
+        // paymentRoutingStatus/paymentCompletedBy/paymentCompletedAt writes below with it.
+        costCenterBudgetService.consumeBudget(report.getCostCenter(), report.getFiscalYear(), report.getTotalAmount());
 
         LocalDateTime now = LocalDateTime.now();
         report.setPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED);

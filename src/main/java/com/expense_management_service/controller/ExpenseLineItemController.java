@@ -45,13 +45,13 @@ public class ExpenseLineItemController {
     }
 
     @GetMapping("/{lineItemId}")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE')")
     public ApiResponse<ExpenseLineItemResponse> getById(@PathVariable UUID reportId, @PathVariable UUID lineItemId) {
         return ApiResponse.success(expenseLineItemService.getById(reportId, lineItemId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE')")
     public ApiResponse<List<ExpenseLineItemResponse>> getAll(@PathVariable UUID reportId) {
         return ApiResponse.success(expenseLineItemService.getAllForReport(reportId));
     }

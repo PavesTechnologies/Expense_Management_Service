@@ -21,12 +21,16 @@ public interface CostCenterBudgetService {
 
     /**
      * Decrements {@code availableBudget} for the cost center's budget in the given fiscal year by
-     * {@code amount} - called exactly once per report, at final Finance approval (see {@code
-     * ApprovalWorkflowServiceImpl.applyPaymentRouting}), which owns the idempotency guard; this
-     * method itself always consumes when called. A no-op (logged) if no budget row is configured
-     * for that cost center/fiscal year - an unbudgeted cost center is not an error condition today.
-     * Never throws for an over-budget result - {@code availableBudget} is allowed to go negative;
-     * no blocking rule exists in the current system (see the implementation report).
+     * {@code amount} - called exactly once per report, at AP payment completion (see {@code
+     * ApPaymentServiceImpl.markPaymentCompleted}), which owns the idempotency guard (its own
+     * "already APPROVED_FOR_PAYMENT?" check makes a duplicate completion attempt fail before ever
+     * reaching this call); this method itself always consumes when called. Deliberately NOT called
+     * at submission, Manager approval, Finance verification, or the APPROVED_FOR_PAYMENT routing
+     * decision (see {@code ApprovalWorkflowServiceImpl.applyPaymentRouting}) - none of those are the
+     * point at which the organization actually pays out, so none of them should move real budget. A
+     * no-op (logged) if no budget row is configured for that cost center/fiscal year - an unbudgeted
+     * cost center is not an error condition today. Never throws for an over-budget result -
+     * {@code availableBudget} is allowed to go negative; no blocking rule exists in the current system.
      */
     void consumeBudget(CostCenter costCenter, String fiscalYear, BigDecimal amount);
 }

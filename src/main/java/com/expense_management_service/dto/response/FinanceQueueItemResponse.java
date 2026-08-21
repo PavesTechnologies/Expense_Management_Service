@@ -1,6 +1,7 @@
 package com.expense_management_service.dto.response;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -12,6 +13,8 @@ public record FinanceQueueItemResponse(
         BigDecimal totalAmount,
         String currencyCode,
         String costCenterName,
+        String reportStatus,
+        LocalDateTime submittedAt,
         Integer levelOrder,
         List<FinancePendingLineItemResponse> pendingLineItems
 ) {

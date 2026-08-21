@@ -27,7 +27,6 @@ import com.expense_management_service.repository.FinanceVerificationReviewReposi
 import com.expense_management_service.repository.VerificationQueryRepository;
 import com.expense_management_service.service.ApprovalEventPublisher;
 import com.expense_management_service.service.ApprovalWorkflowService;
-import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.FinanceEligibilityResult;
 import com.expense_management_service.service.FinanceVerificationEligibilityChecker;
 import com.expense_management_service.service.FinanceVerificationService;
@@ -37,16 +36,12 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -60,7 +55,6 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
     private final FinanceVerificationReviewRepository financeVerificationReviewRepository;
     private final ExpenseLineItemRepository expenseLineItemRepository;
-    private final DelegationService delegationService;
     private final FinanceVerificationEligibilityChecker financeVerificationEligibilityChecker;
     private final ApprovalEventPublisher approvalEventPublisher;
     private final ApprovalWorkflowService approvalWorkflowService;
@@ -83,7 +77,7 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
         review.setPolicyExceptionResolvedFlag(true);
         review.setReceiptValidatedFlag(true);
         review.setStatus(FinanceVerificationStatus.VERIFIED);
-        review.setActedBy(actingEmployeeId.equals(ctx.authorizing().getApproverId()) ? null : actingEmployeeId);
+        review.setActedBy(actingEmployeeId);
         review.setActionedAt(LocalDateTime.now());
         financeVerificationReviewRepository.save(review);
         approvalEventPublisher.publish("LINE_ITEM_VERIFIED", reportId, "lineItem=" + lineItemId + " by=" + actingEmployeeId);
@@ -113,7 +107,7 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
         FinanceVerificationReview review = ctx.review();
         review.setStatus(FinanceVerificationStatus.QUERIED);
         review.setComment(reason);
-        review.setActedBy(actingEmployeeId.equals(ctx.authorizing().getApproverId()) ? null : actingEmployeeId);
+        review.setActedBy(actingEmployeeId);
         review.setActionedAt(LocalDateTime.now());
         financeVerificationReviewRepository.save(review);
 
@@ -128,31 +122,27 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
     @Override
     @Transactional(readOnly = true)
     public PageResponse<FinanceQueueItemResponse> getFinanceQueue(String actingEmployeeId, Pageable pageable) {
-        Set<String> approverIds = delegationService.resolveApproverIdsActingFor(actingEmployeeId);
+        // Role+status based (§8): any Finance Executive sees every report awaiting Finance
+        // Verification, regardless of whether they (or anyone) were specifically resolved as the
+        // configured approver for that report's cost center - the FINANCE_EXECUTIVE role check
+        // already happened at the controller layer. Matches how the AP Payment queue works.
+        Page<ExpenseReport> reportsPage = expenseReportRepository.findByReportStatus(
+                ReportStatus.PENDING_FINANCE_VERIFICATION, pageable);
 
-        Page<UUID> reportIdsPage = approvalAssignmentRepository.findDistinctReportIdsByStatusAndApproverIdInAndLevelType(
-                AssignmentStatus.ACTIVE, approverIds, LevelType.FINANCE_VERIFICATION, pageable);
-
-        List<FinanceQueueItemResponse> items = reportIdsPage.getContent().stream()
-                .map(reportId -> representativeFinanceAssignment(reportId, approverIds))
-                .flatMap(Optional::stream)
+        List<FinanceQueueItemResponse> items = reportsPage.getContent().stream()
                 .map(this::toQueueItem)
                 .toList();
 
-        return PageResponse.of(new PageImpl<>(items, pageable, reportIdsPage.getTotalElements()));
+        return PageResponse.of(new PageImpl<>(items, pageable, reportsPage.getTotalElements()));
     }
 
-    private Optional<ApprovalAssignment> representativeFinanceAssignment(UUID reportId, Set<String> approverIds) {
-        return approvalAssignmentRepository.findByLevelInstance_Report_ReportId(reportId).stream()
-                .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
-                .filter(a -> a.getLevelInstance().getLevelType() == LevelType.FINANCE_VERIFICATION)
-                .filter(a -> approverIds.contains(a.getApproverId()))
-                .findFirst();
-    }
-
-    private FinanceQueueItemResponse toQueueItem(ApprovalAssignment assignment) {
-        ApprovalLevelInstance instance = assignment.getLevelInstance();
-        ExpenseReport report = instance.getReport();
+    private FinanceQueueItemResponse toQueueItem(ExpenseReport report) {
+        ApprovalLevelInstance instance = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleAndStatus(
+                        report.getReportId(), currentCycle(report.getReportId()), LevelInstanceStatus.ACTIVE)
+                .filter(i -> i.getLevelType() == LevelType.FINANCE_VERIFICATION)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Report " + report.getReportId() + " is PENDING_FINANCE_VERIFICATION but has no ACTIVE Finance level instance"));
 
         var pendingReviews = financeVerificationReviewRepository
                 .findByLevelInstance_InstanceIdAndStatus(instance.getInstanceId(), FinanceVerificationStatus.PENDING);
@@ -176,14 +166,15 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
                 report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTotalAmount(),
                 report.getCurrency() != null ? report.getCurrency().getCurrencyCode() : null,
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
+                report.getReportStatus() != null ? report.getReportStatus().name() : null,
+                report.getSubmittedAt(),
                 instance.getLevelOrder(), pendingLineItems);
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<FinanceLineItemReviewResponse> getFinanceReviews(UUID reportId, String actingEmployeeId) {
-        ExpenseReport report = findReport(reportId);
-        assertCanViewFinanceReviews(report, actingEmployeeId);
+        findReport(reportId);
 
         int cycle = currentCycle(reportId);
         var financeInstances = approvalLevelInstanceRepository
@@ -205,19 +196,15 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
         return result;
     }
 
-    private void assertCanViewFinanceReviews(ExpenseReport report, String actingEmployeeId) {
-        if (Objects.equals(report.getEmployeeId(), actingEmployeeId)) {
-            return;
-        }
-        boolean everAssigned = approvalAssignmentRepository.findByLevelInstance_Report_ReportId(report.getReportId())
-                .stream()
-                .anyMatch(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()));
-        if (!everAssigned) {
-            throw new AccessDeniedException("You may not view this report's Finance verification history");
-        }
-    }
-
-    /** Shared lookup + authorization + idempotency guard for both VERIFY and QUERY - kept as one place so the two actions can never authorize differently. */
+    /**
+     * Shared lookup + idempotency guard for both VERIFY and QUERY - kept as one place so the two
+     * actions can never authorize differently. Authorization itself (§8) is role-only: the caller
+     * already holds FINANCE_EXECUTIVE (checked by {@code @PreAuthorize} at the controller), so
+     * anyone with that role may act on any report's currently-active Finance level - matching how
+     * the AP Payment queue's own actions work. {@code authorizing} is only a representative
+     * assignment used to drive the existing completion bookkeeping in {@code
+     * ApprovalWorkflowService.advanceAfterLevelReviewed}, not a per-caller authorization gate.
+     */
     private FinanceActionContext resolveContext(UUID reportId, UUID lineItemId, String actingEmployeeId) {
         ExpenseReport report = findReport(reportId);
         if (report.getReportStatus() != ReportStatus.PENDING_FINANCE_VERIFICATION) {
@@ -234,10 +221,9 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
         ApprovalAssignment authorizing = approvalAssignmentRepository.findByLevelInstance_InstanceId(activeInstance.getInstanceId())
                 .stream()
                 .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
-                .filter(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()))
                 .findFirst()
-                .orElseThrow(() -> new AccessDeniedException(
-                        "You are not an active Finance approver (or delegate) for this report's current level"));
+                .orElseThrow(() -> new IllegalStateException(
+                        "Report " + reportId + " has an ACTIVE Finance level instance but no ACTIVE assignment"));
 
         ExpenseLineItem lineItem = expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId)
                 .orElseThrow(() -> new ResourceNotFoundException("Line item " + lineItemId + " is not part of report " + reportId));

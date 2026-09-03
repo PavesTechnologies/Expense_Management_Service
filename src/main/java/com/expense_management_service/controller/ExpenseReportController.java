@@ -47,7 +47,7 @@ public class ExpenseReportController {
     }
 
     @GetMapping("/{reportId}")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE')")
     public ApiResponse<ExpenseReportResponse> getById(@PathVariable UUID reportId) {
         return ApiResponse.success(expenseReportService.getById(reportId));
     }

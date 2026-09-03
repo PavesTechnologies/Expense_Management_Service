@@ -13,8 +13,10 @@ import java.util.UUID;
  * Finance Verification's own action surface - deliberately separate from {@link
  * ApprovalWorkflowService} (rather than overloading {@code reviewLineItem}) because Finance
  * actions carry Finance-specific eligibility gating and audit snapshots {@code
- * ApprovalWorkflowService.reviewLineItem} never needs. Shares the same authorization model
- * (resolved {@code approverId} or active delegate - never role alone) and re-enters {@code
+ * ApprovalWorkflowService.reviewLineItem} never needs. Authorization is role+status based (§8):
+ * any {@code FINANCE_EXECUTIVE} may act on any report currently at Finance Verification, not just
+ * whichever approver a {@code FinanceTeamApprover} mapping happens to resolve for that report's
+ * cost center - matching how the AP Payment queue/actions already work. Re-enters {@code
  * ApprovalWorkflowService.advanceAfterLevelReviewed} for level/report progression once every line
  * item is VERIFIED, so there is exactly one place that owns SEQUENTIAL/quorum/next-level logic.
  */
@@ -30,7 +32,7 @@ public interface FinanceVerificationService {
      */
     ExpenseReportResponse queryLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, String reason);
 
-    /** Presence-based "My Finance Queue" (mirrors {@code ApprovalWorkflowService.getMyQueue}) - every report where the caller (or their active delegate) currently has an ACTIVE Finance assignment. */
+    /** Role+status based "My Finance Queue" (§8) - every report currently PENDING_FINANCE_VERIFICATION, visible to any FINANCE_EXECUTIVE regardless of per-report assignment. */
     PageResponse<FinanceQueueItemResponse> getFinanceQueue(String actingEmployeeId, Pageable pageable);
 
     /** Current-submission-cycle Finance review status + audit snapshot for every line item, across every FINANCE_VERIFICATION level of this cycle. */

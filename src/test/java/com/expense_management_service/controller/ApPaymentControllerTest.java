@@ -1,7 +1,9 @@
 package com.expense_management_service.controller;
 
 import com.expense_management_service.config.SecurityConfig;
+import com.expense_management_service.dto.response.ApPaymentDetailsResponse;
 import com.expense_management_service.dto.response.ApPaymentQueueItemResponse;
+import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.security.CurrentUserService;
@@ -112,6 +114,29 @@ class ApPaymentControllerTest {
     @Test
     void getApQueue_returns403_forFinanceExecutiveRole() throws Exception {
         mockMvc.perform(get("/xms/ap-payments/queue").with(financeExecutive()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void getPaymentDetails_returns200_forApExecutive_whenServiceSucceeds() throws Exception {
+        // Diagnostic/regression test: service mocked to succeed, isolating Layer 1 (@PreAuthorize)
+        // from the real ApPaymentServiceImpl. If this test fails with 403, the bug is in
+        // SecurityConfig/JwtAuthConverter/@PreAuthorize. If it passes (as it does), Layer 1 is
+        // proven fine and a real "You do not have permission" response must originate from
+        // ApPaymentServiceImpl.getPaymentDetails's own AccessDeniedException, not from Spring Security.
+        UUID reportId = UUID.randomUUID();
+        ApPaymentDetailsResponse details = new ApPaymentDetailsResponse(
+                sampleReportResponse("APPROVED"), List.of(),
+                new ApprovalStatusResponse(2, "Finance", "Finance", 2, false, false));
+        when(apPaymentService.getPaymentDetails(reportId)).thenReturn(details);
+
+        mockMvc.perform(get("/xms/ap-payments/{reportId}", reportId).with(apExecutive()))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void getPaymentDetails_returns403_forGeneralRole() throws Exception {
+        mockMvc.perform(get("/xms/ap-payments/{reportId}", UUID.randomUUID()).with(general()))
                 .andExpect(status().isForbidden());
     }
 

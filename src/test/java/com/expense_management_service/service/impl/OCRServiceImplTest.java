@@ -34,6 +34,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -369,6 +370,22 @@ class OCRServiceImplTest {
         when(receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receiptId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> ocrService.getLatestResult(receiptId)).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void getStatus_allowsApExecutive_toViewSomeoneElsesReceipt() {
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+
+        assertThatCode(() -> ocrService.getStatus(receiptId)).doesNotThrowAnyException();
+    }
+
+    @Test
+    void getStatus_allowsFinanceExecutive_toViewSomeoneElsesReceipt() {
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+
+        assertThatCode(() -> ocrService.getStatus(receiptId)).doesNotThrowAnyException();
     }
 
     /**

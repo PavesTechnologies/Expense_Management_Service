@@ -30,7 +30,6 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
-import org.springframework.security.access.AccessDeniedException;
 
 import java.util.List;
 import java.util.Optional;
@@ -53,7 +52,6 @@ class FinanceVerificationServiceImplTest {
     @Mock private ApprovalAssignmentRepository approvalAssignmentRepository;
     @Mock private FinanceVerificationReviewRepository financeVerificationReviewRepository;
     @Mock private ExpenseLineItemRepository expenseLineItemRepository;
-    @Mock private DelegationService delegationService;
     @Mock private FinanceVerificationEligibilityChecker financeVerificationEligibilityChecker;
     @Mock private ApprovalEventPublisher approvalEventPublisher;
     @Mock private ApprovalWorkflowService approvalWorkflowService;
@@ -72,11 +70,10 @@ class FinanceVerificationServiceImplTest {
         var factory = new ExpenseReportResponseFactory(new com.expense_management_service.mapper.ExpenseReportMapper(), policyViolationRepository);
         service = new FinanceVerificationServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, financeVerificationReviewRepository, expenseLineItemRepository,
-                delegationService, financeVerificationEligibilityChecker, approvalEventPublisher, approvalWorkflowService, factory,
+                financeVerificationEligibilityChecker, approvalEventPublisher, approvalWorkflowService, factory,
                 verificationQueryRepository);
 
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
-        when(delegationService.canAct(any(), any())).thenAnswer(inv -> inv.getArgument(0).equals(inv.getArgument(1)));
     }
 
     private ExpenseReport pendingFinanceReport() {
@@ -117,12 +114,19 @@ class FinanceVerificationServiceImplTest {
     }
 
     @Test
-    void verifyLineItem_throws_whenActorIsNotAuthorized() {
+    void verifyLineItem_succeeds_forAnyFinanceExecutive_notJustTheResolvedCostCenterApprover() {
+        // §8: Finance Verification access is role+status based (checked by @PreAuthorize at the
+        // controller), not tied to being the specific FinanceTeamApprover resolved for this
+        // report's cost center - so a different Finance Executive can still act on it.
         FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.PENDING).build();
         stubHappyPathUpTo(review);
+        when(financeVerificationEligibilityChecker.check(any())).thenReturn(FinanceEligibilityResult.ok());
 
-        assertThatThrownBy(() -> service.verifyLineItem(reportId, lineItemId, "someoneElse"))
-                .isInstanceOf(AccessDeniedException.class);
+        ExpenseReportResponse response = service.verifyLineItem(reportId, lineItemId, "someoneElse");
+
+        assertThat(response).isNotNull();
+        assertThat(review.getStatus()).isEqualTo(FinanceVerificationStatus.VERIFIED);
+        assertThat(review.getActedBy()).isEqualTo("someoneElse");
     }
 
     @Test
@@ -161,21 +165,9 @@ class FinanceVerificationServiceImplTest {
         assertThat(review.getGlAccountCodeSnapshot()).isEqualTo("6100");
         assertThat(review.getPolicyExceptionResolvedFlag()).isTrue();
         assertThat(review.getReceiptValidatedFlag()).isTrue();
-        assertThat(review.getActedBy()).isNull();
+        assertThat(review.getActedBy()).isEqualTo(approverId);
         verify(approvalEventPublisher).publish(eq("LINE_ITEM_VERIFIED"), eq(reportId), any());
         verify(approvalWorkflowService).advanceAfterLevelReviewed(reportId, instanceId, approverId);
-    }
-
-    @Test
-    void verifyLineItem_setsActedBy_whenActingAsDelegate() {
-        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.PENDING).build();
-        stubHappyPathUpTo(review);
-        when(financeVerificationEligibilityChecker.check(any())).thenReturn(FinanceEligibilityResult.ok());
-        when(delegationService.canAct("5100077", approverId)).thenReturn(true);
-
-        service.verifyLineItem(reportId, lineItemId, "5100077");
-
-        assertThat(review.getActedBy()).isEqualTo("5100077");
     }
 
     @Test
@@ -213,22 +205,21 @@ class FinanceVerificationServiceImplTest {
     }
 
     @Test
-    void getFinanceQueue_returnsOnlyReportsWithAnActiveFinanceAssignmentForTheCaller() {
-        when(delegationService.resolveApproverIdsActingFor(approverId)).thenReturn(java.util.Set.of(approverId));
+    void getFinanceQueue_returnsEveryReportPendingFinanceVerification_regardlessOfCaller() {
+        // §8: role+status based - not filtered by any per-report assignment, so the acting
+        // employee id passed in doesn't change which reports come back.
         var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
-        when(approvalAssignmentRepository.findDistinctReportIdsByStatusAndApproverIdInAndLevelType(
-                eq(AssignmentStatus.ACTIVE), any(), eq(LevelType.FINANCE_VERIFICATION), eq(pageable)))
-                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(reportId), pageable, 1));
-
+        ExpenseReport report = pendingFinanceReport();
+        when(expenseReportRepository.findByReportStatus(ReportStatus.PENDING_FINANCE_VERIFICATION, pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(report), pageable, 1));
+        when(approvalLevelInstanceRepository.findMaxSubmissionCycle(reportId)).thenReturn(1);
         ApprovalLevelInstance instance = financeInstance();
-        instance.setReport(pendingFinanceReport());
-        ApprovalAssignment assignment = ApprovalAssignment.builder().assignmentId(UUID.randomUUID()).approverId(approverId)
-                .status(AssignmentStatus.ACTIVE).levelInstance(instance).build();
-        when(approvalAssignmentRepository.findByLevelInstance_Report_ReportId(reportId)).thenReturn(List.of(assignment));
+        when(approvalLevelInstanceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, LevelInstanceStatus.ACTIVE))
+                .thenReturn(Optional.of(instance));
         when(financeVerificationReviewRepository.findByLevelInstance_InstanceIdAndStatus(instanceId, FinanceVerificationStatus.PENDING))
                 .thenReturn(List.of());
 
-        var page = service.getFinanceQueue(approverId, pageable);
+        var page = service.getFinanceQueue("anyFinanceExecutive", pageable);
 
         assertThat(page.totalElements()).isEqualTo(1);
         assertThat(page.content()).hasSize(1);

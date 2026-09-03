@@ -25,17 +25,14 @@ import org.springframework.web.bind.annotation.*;
  * ApprovalWorkflowController} (§Refactoring rule: no second workflow engine, but a distinct API
  * surface for a distinct action vocabulary).
  * <p>
- * Two-layer authorization, both required:
- * <ol>
- *   <li><b>Layer 1 (here, {@code @PreAuthorize}):</b> the caller must hold the {@code
- *   FINANCE_EXECUTIVE} role. Role-only, matching this module's existing convention of
- *   role-based (not fine-grained permission-based) endpoint authorization - this is a coarse
- *   "is this user even a Finance user" gate, it says nothing about which report.</li>
- *   <li><b>Layer 2 (unchanged, inside {@code FinanceVerificationServiceImpl}):</b> the caller
- *   must be the exact resolved Finance approver for THIS report, or their active delegate.
- *   Layer 1 passing never substitutes for this - a FINANCE_EXECUTIVE user with no assignment
- *   on a given report is still denied by Layer 2.</li>
- * </ol>
+ * Authorization is role+status based (§8): the caller must hold the {@code FINANCE_EXECUTIVE}
+ * role ({@code @PreAuthorize} here) and the target report must actually be at (or have passed
+ * through) Finance Verification ({@code FinanceVerificationServiceImpl}'s own status/instance
+ * checks). Deliberately not gated by any per-report/per-cost-center assignment - a Finance
+ * Executive doesn't need to be the specific approver a {@code FinanceTeamApprover} mapping
+ * resolves to for a report's cost center in order to act on it. Matches how the AP Payment
+ * queue/actions already work.
+ * <p>
  * Deliberately does not include {@code ADMIN} in this check - add {@code
  * hasAnyRole('FINANCE_EXECUTIVE','ADMIN')} later if an admin override is actually wanted.
  */

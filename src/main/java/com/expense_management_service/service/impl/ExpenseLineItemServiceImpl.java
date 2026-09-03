@@ -314,7 +314,8 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private void assertViewable(ExpenseReport report) {
         CurrentUser caller = currentUserService.getCurrentUser();
         boolean privileged = hasRole(caller, RoleConstants.ADMIN) || hasRole(caller, RoleConstants.FINANCE)
-                || hasRole(caller, RoleConstants.MANAGER);
+                || hasRole(caller, RoleConstants.MANAGER) || hasRole(caller, RoleConstants.FINANCE_EXECUTIVE)
+                || hasRole(caller, RoleConstants.AP_EXECUTIVE);
         if (privileged) {
             return;
         }

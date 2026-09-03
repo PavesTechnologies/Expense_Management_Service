@@ -56,7 +56,6 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -84,7 +83,6 @@ class ApprovalWorkflowServiceImplTest {
     @Mock private com.expense_management_service.service.MaterialChangeEvaluator materialChangeEvaluator;
     @Mock private com.expense_management_service.repository.FinanceVerificationReviewRepository financeVerificationReviewRepository;
     @Mock private com.expense_management_service.repository.VerificationQueryRepository verificationQueryRepository;
-    @Mock private com.expense_management_service.service.CostCenterBudgetService costCenterBudgetService;
 
     private ApprovalWorkflowServiceImpl service;
 
@@ -107,7 +105,7 @@ class ApprovalWorkflowServiceImplTest {
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator, costCenterBudgetService);
+                materialChangeEvaluator);
 
         when(materialChangeEvaluator.computeGlAccountFingerprint(any())).thenReturn("");
         when(policyEvaluationGateway.evaluate(any())).thenReturn(new PolicyDecision(true, List.of()));
@@ -297,7 +295,7 @@ class ApprovalWorkflowServiceImplTest {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
                         new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator, costCenterBudgetService);
+                materialChangeEvaluator);
 
         ExpenseReport report = draftReport();
         report.getExpenseLineItems().get(0).setClientBillable(true);
@@ -320,8 +318,6 @@ class ApprovalWorkflowServiceImplTest {
         assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
         assertThat(report.getPaymentRoutingStatus())
                 .isEqualTo(com.expense_management_service.enums.PaymentRoutingStatus.INVOICE_HANDOFF_PENDING);
-        verify(costCenterBudgetService, org.mockito.Mockito.times(1))
-                .consumeBudget(report.getCostCenter(), "2026", new java.math.BigDecimal("50000"));
     }
 
     @Test
@@ -344,7 +340,7 @@ class ApprovalWorkflowServiceImplTest {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
                         new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator, costCenterBudgetService);
+                materialChangeEvaluator);
 
         ExpenseReport report = draftReport();
         report.setTotalAmount(new java.math.BigDecimal("50000"));
@@ -366,24 +362,6 @@ class ApprovalWorkflowServiceImplTest {
         assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
         assertThat(report.getPaymentRoutingStatus())
                 .isEqualTo(com.expense_management_service.enums.PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
-        verify(costCenterBudgetService, org.mockito.Mockito.times(1))
-                .consumeBudget(report.getCostCenter(), "2026", new java.math.BigDecimal("50000"));
-    }
-
-    @Test
-    void managerOnlyFlowCompletion_neverConsumesBudget() {
-        ExpenseReport report = draftReport();
-        report.setTotalAmount(new java.math.BigDecimal("50000"));
-        report.setFiscalYear("2026");
-        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
-        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
-        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(approverId));
-
-        service.submit(reportId);
-        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
-
-        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
-        verify(costCenterBudgetService, never()).consumeBudget(any(), any(), any());
     }
 
     @Test
@@ -543,6 +521,43 @@ class ApprovalWorkflowServiceImplTest {
 
         assertThat(response.reportStatus()).isEqualTo(ReportStatus.REJECTED.name());
         assertThat(savedInstances.get(0).getStatus()).isEqualTo(LevelInstanceStatus.CANCELLED);
+        assertThat(savedAssignments.get(0).getStatus()).isEqualTo(AssignmentStatus.SUPERSEDED);
+    }
+
+    /**
+     * Regression for the reject/recall/cancel path leaving sibling co-approver assignments ACTIVE
+     * under ANY_OF/ALL_OF quorum: {@code cancelAllOpenInstances} used to only cancel the {@code
+     * ApprovalLevelInstance}, never the still-open {@code ApprovalAssignment} rows on it, so a
+     * co-approver's assignment-status-based "My Queue" kept showing a report whose approval had
+     * already terminated.
+     */
+    @Test
+    void rejectReport_closesEveryCoApproversAssignment_underAnyOfQuorum_soTheyNoLongerSeeItInMyQueue() {
+        String coApproverId = "5100099";
+        ExpenseReport report = draftReport();
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(flowId).name("Two-approver ANY_OF").isCatchAll(false).build();
+        ApprovalLevel level = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(1).quorum(LevelQuorum.ANY_OF).build();
+        ApprovalLevelApprover entry1 = ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(level)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference(approverId).build();
+        ApprovalLevelApprover entry2 = ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(level)
+                .entryOrder(2).sourceType(ApproverSourceType.NAMED_USER).sourceReference(coApproverId).build();
+        level.getApprovers().add(entry1);
+        level.getApprovers().add(entry2);
+        flow.getLevels().add(level);
+
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(flow);
+        when(approverSourceResolver.resolve(eq(entry1), any())).thenReturn(Optional.of(approverId));
+        when(approverSourceResolver.resolve(eq(entry2), any())).thenReturn(Optional.of(coApproverId));
+
+        service.submit(reportId);
+        assertThat(savedAssignments).hasSize(2).allMatch(a -> a.getStatus() == AssignmentStatus.ACTIVE);
+        assertThat(service.getMyQueue(coApproverId, PageRequest.of(0, 20)).content()).hasSize(1);
+
+        service.rejectReport(reportId, approverId, new RejectReportRequest("Policy violation"));
+
+        assertThat(savedAssignments).noneMatch(a -> a.getStatus() == AssignmentStatus.ACTIVE || a.getStatus() == AssignmentStatus.PENDING);
+        assertThat(service.getMyQueue(coApproverId, PageRequest.of(0, 20)).content()).isEmpty();
     }
 
     @Test

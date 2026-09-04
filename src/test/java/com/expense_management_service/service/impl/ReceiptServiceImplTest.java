@@ -9,12 +9,15 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.Receipt;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.mapper.ReceiptMapper;
+import com.expense_management_service.entity.ApprovalAssignment;
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.ReceiptRepository;
 import com.expense_management_service.event.ReceiptUploadedEvent;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
+import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.storage.StorageException;
 import com.expense_management_service.storage.StorageService;
 import org.junit.jupiter.api.BeforeEach;
@@ -58,6 +61,10 @@ class ReceiptServiceImplTest {
     private CurrentUserService currentUserService;
     @Mock
     private ApplicationEventPublisher applicationEventPublisher;
+    @Mock
+    private ApprovalAssignmentRepository approvalAssignmentRepository;
+    @Mock
+    private DelegationService delegationService;
 
     private ReceiptServiceImpl receiptService;
 
@@ -70,7 +77,8 @@ class ReceiptServiceImplTest {
     @BeforeEach
     void setUp() {
         receiptService = new ReceiptServiceImpl(receiptRepository, expenseReportRepository, expenseLineItemRepository,
-                storageService, currentUserService, new ReceiptMapper(), applicationEventPublisher);
+                storageService, currentUserService, new ReceiptMapper(), applicationEventPublisher,
+                approvalAssignmentRepository, delegationService);
         ReflectionTestUtils.setField(receiptService, "maxFileSizeBytes", 10L * 1024 * 1024);
         ReflectionTestUtils.setField(receiptService, "presignedUrlTtlMinutes", 15L);
 
@@ -616,5 +624,25 @@ class ReceiptServiceImplTest {
         assertThatThrownBy(() -> receiptService.delete(receiptId)).isInstanceOf(AccessDeniedException.class);
 
         verify(receiptRepository, never()).delete(any());
+    }
+
+    @Test
+    void getViewUrl_succeeds_forAssignedApproverOrDelegate() {
+        UUID receiptId = UUID.randomUUID();
+        draftReport.setEmployeeId("employee123");
+        Receipt receipt = receiptOnReport().receiptId(receiptId).objectKey("receipts/key").build();
+        String approverEmployeeId = "manager456";
+
+        CurrentUser managerCaller = new CurrentUser(UUID.randomUUID(), approverEmployeeId, "mgr@example.com", "Manager", List.of("GENERAL"), List.of());
+        when(currentUserService.getCurrentUser()).thenReturn(managerCaller);
+        when(receiptRepository.findById(receiptId)).thenReturn(Optional.of(receipt));
+        
+        ApprovalAssignment assignment = ApprovalAssignment.builder().approverId(approverEmployeeId).build();
+        when(approvalAssignmentRepository.findByLevelInstance_Report_ReportId(reportId)).thenReturn(List.of(assignment));
+        when(delegationService.canAct(approverEmployeeId, approverEmployeeId)).thenReturn(true);
+        when(storageService.generateViewUrl(eq("receipts/key"), any())).thenReturn("https://signed-url");
+
+        ReceiptUrlResponse response = receiptService.getViewUrl(receiptId);
+        assertThat(response.url()).isEqualTo("https://signed-url");
     }
 }

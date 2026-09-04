@@ -20,12 +20,14 @@ import com.expense_management_service.entity.Receipt;
 import com.expense_management_service.mapper.ReceiptMapper;
 import com.expense_management_service.enums.OcrStatus;
 import com.expense_management_service.event.ReceiptUploadedEvent;
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.ReceiptRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
+import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ReceiptService;
 import com.expense_management_service.storage.StorageException;
 import com.expense_management_service.storage.StorageService;
@@ -94,6 +96,8 @@ public class ReceiptServiceImpl implements ReceiptService {
     private final CurrentUserService currentUserService;
     private final ReceiptMapper receiptMapper;
     private final ApplicationEventPublisher applicationEventPublisher;
+    private final ApprovalAssignmentRepository approvalAssignmentRepository;
+    private final DelegationService delegationService;
 
     @Value("${receipt.max-file-size-bytes:10485760}")
     private long maxFileSizeBytes;
@@ -326,9 +330,23 @@ public class ReceiptServiceImpl implements ReceiptService {
         if (privileged) {
             return;
         }
+        if (isAssignedApproverOrDelegate(report, caller.employeeId())) {
+            return;
+        }
         if (!report.getEmployeeId().equals(caller.employeeId())) {
             throw new AccessDeniedException("You can only view receipts on your own expense report");
         }
+    }
+
+    private boolean isAssignedApproverOrDelegate(ExpenseReport report, String employeeId) {
+        if (employeeId == null || report == null || report.getReportId() == null || approvalAssignmentRepository == null) {
+            return false;
+        }
+        return approvalAssignmentRepository.findByLevelInstance_Report_ReportId(report.getReportId())
+                .stream()
+                .anyMatch(a -> delegationService == null
+                        ? employeeId.equals(a.getApproverId())
+                        : delegationService.canAct(employeeId, a.getApproverId()));
     }
 
     private boolean hasRole(CurrentUser caller, String role) {

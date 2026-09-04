@@ -45,6 +45,9 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
+import com.expense_management_service.service.DelegationService;
+
 @ExtendWith(MockitoExtension.class)
 class OCRServiceImplTest {
 
@@ -58,6 +61,10 @@ class OCRServiceImplTest {
     private OcrDocumentStrategy ocrDocumentStrategy;
     @Mock
     private CurrentUserService currentUserService;
+    @Mock
+    private ApprovalAssignmentRepository approvalAssignmentRepository;
+    @Mock
+    private DelegationService delegationService;
 
     private OCRServiceImpl ocrService;
 
@@ -68,7 +75,8 @@ class OCRServiceImplTest {
     @BeforeEach
     void setUp() {
         ocrService = new OCRServiceImpl(receiptRepository, receiptOcrRepository, auditLogRepository,
-                List.of(ocrDocumentStrategy), new ReceiptOcrMapper(), currentUserService);
+                List.of(ocrDocumentStrategy), new ReceiptOcrMapper(), currentUserService,
+                approvalAssignmentRepository, delegationService);
         ReflectionTestUtils.setField(ocrService, "confidenceThreshold", new BigDecimal("0.80"));
 
         receiptId = UUID.randomUUID();
@@ -450,7 +458,7 @@ class OCRServiceImplTest {
 
         private OCRServiceImpl newService(List<OcrDocumentStrategy> strategies) {
             OCRServiceImpl service = new OCRServiceImpl(receiptRepository, receiptOcrRepository, auditLogRepository,
-                    strategies, new ReceiptOcrMapper(), currentUserService);
+                    strategies, new ReceiptOcrMapper(), currentUserService, approvalAssignmentRepository, delegationService);
             ReflectionTestUtils.setField(service, "confidenceThreshold", new BigDecimal("0.80"));
             return service;
         }

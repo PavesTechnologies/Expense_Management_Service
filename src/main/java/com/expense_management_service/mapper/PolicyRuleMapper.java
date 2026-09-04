@@ -3,6 +3,8 @@ package com.expense_management_service.mapper;
 import com.expense_management_service.dto.request.PolicyRuleRequest;
 import com.expense_management_service.dto.response.PolicyRuleResponse;
 import com.expense_management_service.entity.PolicyRule;
+import com.expense_management_service.enums.PolicyRuleType;
+import com.expense_management_service.enums.PolicySeverity;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -13,8 +15,7 @@ public class PolicyRuleMapper {
                 .policyName(request.policyName())
                 .ruleType(request.ruleType())
                 .ruleValue(request.ruleValue())
-                .action(request.action())
-                .severity(request.severity())
+                .severity(resolveSeverity(request))
                 .effectiveFrom(request.effectiveFrom())
                 .effectiveTo(request.effectiveTo())
                 .status(request.status())
@@ -25,11 +26,18 @@ public class PolicyRuleMapper {
         entity.setPolicyName(request.policyName());
         entity.setRuleType(request.ruleType());
         entity.setRuleValue(request.ruleValue());
-        entity.setAction(request.action());
-        entity.setSeverity(request.severity());
+        entity.setSeverity(resolveSeverity(request));
         entity.setEffectiveFrom(request.effectiveFrom());
         entity.setEffectiveTo(request.effectiveTo());
         entity.setStatus(request.status());
+    }
+
+    /** DUPLICATE_EXPENSE is the one rule type prone to false positives, so it defaults to the lower INFO tier when the admin doesn't specify a severity; every other type defaults to WARN. */
+    private PolicySeverity resolveSeverity(PolicyRuleRequest request) {
+        if (request.severity() != null) {
+            return request.severity();
+        }
+        return request.ruleType() == PolicyRuleType.DUPLICATE_EXPENSE ? PolicySeverity.INFO : PolicySeverity.WARN;
     }
 
     public PolicyRuleResponse toResponse(PolicyRule entity) {
@@ -40,11 +48,12 @@ public class PolicyRuleMapper {
                 entity.getPolicyName(),
                 entity.getRuleType(),
                 entity.getRuleValue(),
-                entity.getAction(),
                 entity.getSeverity(),
                 entity.getEffectiveFrom(),
                 entity.getEffectiveTo(),
-                entity.getStatus()
+                entity.getStatus(),
+                entity.getCreatedAt(),
+                entity.getUpdatedAt()
         );
     }
 }

@@ -1,5 +1,6 @@
 package com.expense_management_service.entity;
 
+import com.expense_management_service.enums.ReportStatus;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
@@ -53,8 +54,9 @@ public class ExpenseReport {
     @ToString.Exclude
     private CostCenter costCenter;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "report_status", length = 255)
-    private String reportStatus;
+    private ReportStatus reportStatus;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "currency_id", nullable = false)
@@ -73,7 +75,8 @@ public class ExpenseReport {
      * the row with "Field 'version' doesn't have a default value" — surfaced to callers as a
      * generic {@code DataIntegrityViolationException}. Restoring this mapping also protects the
      * report's {@code totalAmount} recalculation (EP02-S3) from lost updates when line items are
-     * saved concurrently.
+     * saved concurrently, and protects against two concurrent approval actions racing on the
+     * same report (EP06).
      */
     @Version
     @Column(name = "version", nullable = false)

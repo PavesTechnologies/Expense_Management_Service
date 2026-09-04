@@ -1,6 +1,7 @@
 package com.expense_management_service.dto.response;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 public record ApprovalDelegationResponse(
@@ -9,6 +10,8 @@ public record ApprovalDelegationResponse(
         String delegateId,
         LocalDate startDate,
         LocalDate endDate,
-        String status
+        String status,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt
 ) {
 }

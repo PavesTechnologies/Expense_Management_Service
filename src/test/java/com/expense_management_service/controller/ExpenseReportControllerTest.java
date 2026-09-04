@@ -4,6 +4,7 @@ import com.expense_management_service.config.SecurityConfig;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.security.JwtAuthConverter;
+import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ExpenseReportService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
@@ -38,8 +39,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 /**
  * Web-layer slice test for {@link ExpenseReportController}: verifies the REST contract and
- * coarse RBAC (401/403/200/201/204). Ownership/status-gating live in the service layer and
- * are covered by {@code ExpenseReportServiceImplTest}, not here.
+ * coarse RBAC (401/403/200/201/204), including the EP06 {@code submit()} action endpoint.
+ * Ownership and status-gating live in the service layer and are covered by
+ * {@code ExpenseReportServiceImplTest}, not here.
  */
 @WebMvcTest(ExpenseReportController.class)
 @Import({SecurityConfig.class, JwtAuthConverter.class})
@@ -55,13 +57,16 @@ class ExpenseReportControllerTest {
     private ExpenseReportService expenseReportService;
 
     @MockitoBean
+    private ApprovalWorkflowService approvalWorkflowService;
+
+    @MockitoBean
     private JwtDecoder jwtDecoder;
 
-    private static ExpenseReportResponse sampleResponse(UUID id) {
+    private static ExpenseReportResponse sampleResponse(UUID id, String status) {
         return new ExpenseReportResponse(id, "EXP-2026-ABCD1234", "5100014", "Client visit - Q1",
                 "Client visit to discuss renewal terms", "2026", UUID.randomUUID(), "Backend Development",
-                "DRAFT", UUID.randomUUID(), "USD", BigDecimal.ZERO, BigDecimal.ZERO, null, null, null,
-                LocalDateTime.now(), LocalDateTime.now(), 0, true, true);
+                status, UUID.randomUUID(), "USD", BigDecimal.ZERO, BigDecimal.ZERO, null, null, null,
+                LocalDateTime.now(), LocalDateTime.now(), 0, true, true, 0, 0);
     }
 
     private static ExpenseReportRequest sampleRequest() {
@@ -69,10 +74,12 @@ class ExpenseReportControllerTest {
                 UUID.randomUUID(), UUID.randomUUID());
     }
 
+    // ---- create ----
+
     @Test
     void create_returns201_forEmployee() throws Exception {
         UUID id = UUID.randomUUID();
-        when(expenseReportService.create(any())).thenReturn(sampleResponse(id));
+        when(expenseReportService.create(any())).thenReturn(sampleResponse(id, "DRAFT"));
 
         mockMvc.perform(post("/xms/employee/expense-reports")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
@@ -121,10 +128,12 @@ class ExpenseReportControllerTest {
                 .andExpect(status().isBadRequest());
     }
 
+    // ---- update ----
+
     @Test
     void update_returns200_forEmployee() throws Exception {
         UUID id = UUID.randomUUID();
-        when(expenseReportService.update(eq(id), any())).thenReturn(sampleResponse(id));
+        when(expenseReportService.update(eq(id), any())).thenReturn(sampleResponse(id, "DRAFT"));
 
         mockMvc.perform(put("/xms/employee/expense-reports/{id}", id)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
@@ -133,10 +142,12 @@ class ExpenseReportControllerTest {
                 .andExpect(status().isOk());
     }
 
+    // ---- getById / getAll ----
+
     @Test
     void getById_returns200_forFinance() throws Exception {
         UUID id = UUID.randomUUID();
-        when(expenseReportService.getById(eq(id))).thenReturn(sampleResponse(id));
+        when(expenseReportService.getById(eq(id))).thenReturn(sampleResponse(id, "DRAFT"));
 
         mockMvc.perform(get("/xms/employee/expense-reports/{id}", id)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
@@ -146,13 +157,15 @@ class ExpenseReportControllerTest {
 
     @Test
     void getAll_returns200_forEmployee() throws Exception {
-        when(expenseReportService.getAll()).thenReturn(List.of(sampleResponse(UUID.randomUUID())));
+        when(expenseReportService.getAll()).thenReturn(List.of(sampleResponse(UUID.randomUUID(), "DRAFT")));
 
         mockMvc.perform(get("/xms/employee/expense-reports")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data[0].reportStatus").value("DRAFT"));
     }
+
+    // ---- delete ----
 
     @Test
     void delete_returns204_forEmployee() throws Exception {
@@ -179,5 +192,35 @@ class ExpenseReportControllerTest {
         mockMvc.perform(delete("/xms/employee/expense-reports/{id}", id)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
                 .andExpect(status().isForbidden());
+    }
+
+    // ---- submit (EP06 plan, Phase 2) ----
+
+    @Test
+    void submit_returns200_forEmployee() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(approvalWorkflowService.submit(eq(id))).thenReturn(sampleResponse(id, "PENDING_APPROVAL"));
+
+        mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/submit", id)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.reportStatus").value("PENDING_APPROVAL"));
+    }
+
+    @Test
+    void submit_returns403_forFinance() throws Exception {
+        UUID id = UUID.randomUUID();
+
+        mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/submit", id)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void submit_returns401_whenUnauthenticated() throws Exception {
+        UUID id = UUID.randomUUID();
+
+        mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/submit", id))
+                .andExpect(status().isUnauthorized());
     }
 }

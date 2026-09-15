@@ -41,6 +41,40 @@ public class CostCenterBudget {
     private BigDecimal availableBudget;
 
     /**
+     * One-time, admin-entered figure recorded when this fiscal year's row is created - never
+     * recalculated afterward. Folded into {@code availableBudget}'s initial value at creation
+     * ({@code availableBudget = budgetAmount + rolloverFromPrevious}); {@code consumeBudget()}
+     * itself is never touched by this field. Null means no rollover was ever entered for this year.
+     */
+    @Column(name = "rollover_from_previous", precision = 19, scale = 4)
+    private BigDecimal rolloverFromPrevious;
+
+    /**
+     * Governance/audit flag only - does NOT trigger any automatic rollover process (none exists).
+     * Records whether this cost center is eligible to have {@code rolloverFromPrevious} entered on
+     * a following year's row.
+     */
+    @Column(name = "allow_rollover", nullable = false)
+    @Builder.Default
+    private Boolean allowRollover = false;
+
+    /**
+     * Fixed absolute ceiling (not a percentage) on how much of a prior year's true unencumbered
+     * remainder this year's row may accept as {@code rolloverFromPrevious}. Null means no cap.
+     */
+    @Column(name = "rollover_cap", precision = 19, scale = 4)
+    private BigDecimal rolloverCap;
+
+    /**
+     * Fixed absolute amount (not a percentage). When post-encumbrance Effective Available Budget
+     * drops below this value while still remaining &gt;= 0, the Cost Center Owner is warned at their
+     * existing approval screen - this never blocks a submission and is unrelated to the hard
+     * insufficient-budget failure at &lt; 0. Null means no warning threshold configured.
+     */
+    @Column(name = "warning_threshold", precision = 19, scale = 4)
+    private BigDecimal warningThreshold;
+
+    /**
      * Optimistic lock - protects against two concurrent Finance approvals against the same cost
      * center racing on a read-modify-write of {@link #availableBudget} (a classic lost-update
      * bug for a financial ledger value). Same pattern as {@code ExpenseReport.version}/{@code

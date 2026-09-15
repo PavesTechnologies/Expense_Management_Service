@@ -1,7 +1,6 @@
 package com.expense_management_service.service.impl;
 
 import java.time.LocalDate;
-import java.time.Year;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
@@ -222,9 +221,27 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
                 .orElseThrow(() -> new ResourceNotFoundException("ExpenseReport not found with id: " + reportId));
     }
 
-    /** Calendar year the report is created in — the fiscal period boundary for title-uniqueness scoping. */
+    /** The fiscal period the report is created in — see {@link #fiscalYearFor}. */
     private String currentFiscalYear() {
-        return String.valueOf(Year.from(LocalDate.now()).getValue());
+        return fiscalYearFor(LocalDate.now());
+    }
+
+    /**
+     * Fiscal year label in "YYYY-YYYY" form for the fiscal period containing {@code date}, using this
+     * organization's April-to-March convention (fiscal year "2026-2027" runs 1 Apr 2026 - 31 Mar 2027).
+     * <p>
+     * Bug fix (production-readiness follow-up): this used to return the bare calendar year (e.g.
+     * "2026"), which could never match a {@code CostCenterBudget.fiscalYear} entered in the required
+     * "2026-2027" format — every submission against a real budget failed with "No budget is configured
+     * for Cost Center ..." even though one existed, because {@code
+     * BudgetEncumbranceServiceImpl.validateAndEncumber} looks the budget up by exact-string {@code
+     * report.getFiscalYear()}, and the two values never matched. Extracted as a pure, package-visible
+     * function (rather than only inline in {@link #currentFiscalYear}) so the April/March boundary
+     * itself is directly unit-testable against fixed dates, without needing to mock "now".
+     */
+    static String fiscalYearFor(LocalDate date) {
+        int startYear = date.getMonthValue() >= 4 ? date.getYear() : date.getYear() - 1;
+        return startYear + "-" + (startYear + 1);
     }
 
     private String generateReportNumber(String fiscalYear) {

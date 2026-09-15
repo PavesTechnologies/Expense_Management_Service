@@ -56,6 +56,13 @@ public class ApprovalWorkflowController {
                 approvalWorkflowService.reviewLineItem(reportId, lineItemId, currentUserService.getEmployeeId(), request));
     }
 
+    @PostMapping("/{reportId}/splits/{splitId}/review")
+    public ApiResponse<ExpenseReportResponse> reviewSplit(@PathVariable UUID reportId, @PathVariable UUID splitId,
+                                                            @Valid @RequestBody LineItemReviewRequest request) {
+        return ApiResponse.success("Split reviewed",
+                approvalWorkflowService.reviewSplit(reportId, splitId, currentUserService.getEmployeeId(), request));
+    }
+
     @PostMapping("/{reportId}/reject")
     public ApiResponse<ExpenseReportResponse> reject(@PathVariable UUID reportId, @Valid @RequestBody RejectReportRequest request) {
         return ApiResponse.success("Report rejected",
@@ -76,6 +83,11 @@ public class ApprovalWorkflowController {
     @GetMapping("/{reportId}/line-item-reviews")
     public ApiResponse<List<LineItemReviewResponse>> getLineItemReviews(@PathVariable UUID reportId) {
         return ApiResponse.success(approvalWorkflowService.getLineItemReviews(reportId, currentUserService.getEmployeeId()));
+    }
+
+    @GetMapping("/{reportId}/split-reviews")
+    public ApiResponse<List<com.expense_management_service.dto.response.SplitReviewResponse>> getSplitReviews(@PathVariable UUID reportId) {
+        return ApiResponse.success(approvalWorkflowService.getSplitReviews(reportId, currentUserService.getEmployeeId()));
     }
 
     @GetMapping("/{reportId}/status")

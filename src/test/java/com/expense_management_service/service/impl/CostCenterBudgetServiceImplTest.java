@@ -6,7 +6,9 @@ import com.expense_management_service.dto.request.CostCenterBudgetRequest;
 import com.expense_management_service.dto.response.CostCenterBudgetResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.CostCenterBudget;
+import com.expense_management_service.enums.BudgetEncumbranceStatus;
 import com.expense_management_service.mapper.CostCenterBudgetMapper;
+import com.expense_management_service.repository.BudgetEncumbranceRepository;
 import com.expense_management_service.repository.CostCenterBudgetRepository;
 import com.expense_management_service.repository.CostCenterRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,6 +38,9 @@ class CostCenterBudgetServiceImplTest {
     @Mock
     private CostCenterRepository costCenterRepository;
 
+    @Mock
+    private BudgetEncumbranceRepository budgetEncumbranceRepository;
+
     private CostCenterBudgetServiceImpl costCenterBudgetService;
 
     private UUID costCenterId;
@@ -44,7 +49,7 @@ class CostCenterBudgetServiceImplTest {
     @BeforeEach
     void setUp() {
         costCenterBudgetService = new CostCenterBudgetServiceImpl(
-                costCenterBudgetRepository, costCenterRepository, new CostCenterBudgetMapper());
+                costCenterBudgetRepository, costCenterRepository, new CostCenterBudgetMapper(), budgetEncumbranceRepository);
         costCenterId = UUID.randomUUID();
         activeCostCenter = CostCenter.builder()
                 .costCenterId(costCenterId).costCenterCode("CC-100").costCenterName("Backend Development")
@@ -53,6 +58,12 @@ class CostCenterBudgetServiceImplTest {
 
     private CostCenterBudgetRequest requestWithAvailable(BigDecimal budgetAmount, BigDecimal availableBudget) {
         return new CostCenterBudgetRequest(costCenterId, "FY2026", budgetAmount, availableBudget);
+    }
+
+    private CostCenterBudgetRequest requestWithRollover(BigDecimal budgetAmount, BigDecimal availableBudget,
+                                                         BigDecimal rolloverFromPrevious, BigDecimal rolloverCap, UUID rolloverSourceBudgetId) {
+        return new CostCenterBudgetRequest(costCenterId, "FY2027", budgetAmount, availableBudget,
+                rolloverFromPrevious, true, rolloverCap, null, rolloverSourceBudgetId);
     }
 
     @Test
@@ -283,5 +294,104 @@ class CostCenterBudgetServiceImplTest {
         costCenterBudgetService.consumeBudget(null, "2026", BigDecimal.valueOf(50000));
 
         verify(costCenterBudgetRepository, never()).save(any());
+    }
+
+    // ---------------------------------------------------------------------
+    // Rollover (Phase 3 / Group 2 Lock) - rolloverFromPrevious must not exceed
+    // MIN(source budget's true unencumbered remainder, rolloverCap)
+    // ---------------------------------------------------------------------
+
+    @Test
+    void create_seedsAvailableBudgetWithRollover_whenAvailableBudgetNotExplicitlySupplied() {
+        UUID sourceBudgetId = UUID.randomUUID();
+        CostCenterBudget sourceBudget = CostCenterBudget.builder()
+                .budgetId(sourceBudgetId).fiscalYear("FY2026").availableBudget(BigDecimal.valueOf(30000)).build();
+
+        when(costCenterRepository.findById(costCenterId)).thenReturn(Optional.of(activeCostCenter));
+        when(costCenterBudgetRepository.findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterId, "FY2027"))
+                .thenReturn(Optional.empty());
+        when(costCenterBudgetRepository.findById(sourceBudgetId)).thenReturn(Optional.of(sourceBudget));
+        when(budgetEncumbranceRepository.sumAmountByBudget_BudgetIdAndStatus(sourceBudgetId, BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(BigDecimal.valueOf(20000)); // true unencumbered remainder = 30000 - 20000 = 10000
+        when(costCenterBudgetRepository.save(any(CostCenterBudget.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        CostCenterBudgetResponse response = costCenterBudgetService.create(
+                requestWithRollover(BigDecimal.valueOf(100000), null, BigDecimal.valueOf(10000), null, sourceBudgetId));
+
+        // availableBudget = budgetAmount + rolloverFromPrevious = 100000 + 10000
+        assertThat(response.availableBudget()).isEqualByComparingTo("110000");
+        assertThat(response.rolloverFromPrevious()).isEqualByComparingTo("10000");
+    }
+
+    @Test
+    void create_rejectsRollover_whenItExceedsSourceBudgetsTrueUnencumberedRemainder() {
+        UUID sourceBudgetId = UUID.randomUUID();
+        CostCenterBudget sourceBudget = CostCenterBudget.builder()
+                .budgetId(sourceBudgetId).fiscalYear("FY2026").availableBudget(BigDecimal.valueOf(30000)).build();
+
+        when(costCenterRepository.findById(costCenterId)).thenReturn(Optional.of(activeCostCenter));
+        when(costCenterBudgetRepository.findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterId, "FY2027"))
+                .thenReturn(Optional.empty());
+        when(costCenterBudgetRepository.findById(sourceBudgetId)).thenReturn(Optional.of(sourceBudget));
+        when(budgetEncumbranceRepository.sumAmountByBudget_BudgetIdAndStatus(sourceBudgetId, BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(BigDecimal.valueOf(20000)); // true unencumbered remainder = 10000
+
+        assertThatThrownBy(() -> costCenterBudgetService.create(
+                requestWithRollover(BigDecimal.valueOf(100000), null, BigDecimal.valueOf(15000), null, sourceBudgetId)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot exceed");
+
+        verify(costCenterBudgetRepository, never()).save(any());
+    }
+
+    @Test
+    void create_rejectsRollover_whenItExceedsRolloverCapEvenIfRemainderIsHigher() {
+        UUID sourceBudgetId = UUID.randomUUID();
+        CostCenterBudget sourceBudget = CostCenterBudget.builder()
+                .budgetId(sourceBudgetId).fiscalYear("FY2026").availableBudget(BigDecimal.valueOf(30000)).build();
+
+        when(costCenterRepository.findById(costCenterId)).thenReturn(Optional.of(activeCostCenter));
+        when(costCenterBudgetRepository.findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterId, "FY2027"))
+                .thenReturn(Optional.empty());
+        when(costCenterBudgetRepository.findById(sourceBudgetId)).thenReturn(Optional.of(sourceBudget));
+        when(budgetEncumbranceRepository.sumAmountByBudget_BudgetIdAndStatus(sourceBudgetId, BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(BigDecimal.ZERO); // true unencumbered remainder = 30000, well above the cap below
+
+        assertThatThrownBy(() -> costCenterBudgetService.create(
+                requestWithRollover(BigDecimal.valueOf(100000), null, BigDecimal.valueOf(5000), BigDecimal.valueOf(2000), sourceBudgetId)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot exceed");
+
+        verify(costCenterBudgetRepository, never()).save(any());
+    }
+
+    @Test
+    void create_requiresRolloverSourceBudgetId_whenRolloverFromPreviousIsPositive() {
+        when(costCenterRepository.findById(costCenterId)).thenReturn(Optional.of(activeCostCenter));
+        when(costCenterBudgetRepository.findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterId, "FY2027"))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> costCenterBudgetService.create(
+                requestWithRollover(BigDecimal.valueOf(100000), null, BigDecimal.valueOf(5000), null, null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("rolloverSourceBudgetId is required");
+
+        verify(costCenterBudgetRepository, never()).save(any());
+    }
+
+    @Test
+    void create_skipsRolloverValidation_whenRolloverFromPreviousIsNull() {
+        when(costCenterRepository.findById(costCenterId)).thenReturn(Optional.of(activeCostCenter));
+        when(costCenterBudgetRepository.findByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterId, "FY2026"))
+                .thenReturn(Optional.empty());
+        when(costCenterBudgetRepository.save(any(CostCenterBudget.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        // Existing (pre-Phase-3) 4-arg constructor call - proves backward compatibility.
+        CostCenterBudgetResponse response = costCenterBudgetService.create(
+                new CostCenterBudgetRequest(costCenterId, "FY2026", BigDecimal.valueOf(10000), null));
+
+        assertThat(response.availableBudget()).isEqualByComparingTo("10000");
+        assertThat(response.rolloverFromPrevious()).isNull();
+        verify(budgetEncumbranceRepository, never()).sumAmountByBudget_BudgetIdAndStatus(any(), any());
     }
 }

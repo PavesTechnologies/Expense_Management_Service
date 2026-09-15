@@ -61,7 +61,7 @@ public class OcrController {
     }
 
     @GetMapping("/xms/employee/receipts/{receiptId}/ocr")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE','AP_EXECUTIVE')")
     @Operation(
             summary = "Get the latest OCR result for a receipt",
             description = "Returns the most recent extraction attempt, for side-by-side review against the "
@@ -105,7 +105,7 @@ public class OcrController {
     }
 
     @GetMapping("/xms/employee/receipts/{receiptId}/ocr/status")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE','AP_EXECUTIVE')")
     @Operation(
             summary = "Get lightweight OCR status for a receipt",
             description = "Meant for polling from the upload workflow's \"Loading\" step without pulling the "

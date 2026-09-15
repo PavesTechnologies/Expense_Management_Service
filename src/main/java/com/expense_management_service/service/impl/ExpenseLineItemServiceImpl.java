@@ -27,10 +27,18 @@ import com.expense_management_service.repository.ExpenseCategoryRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
+import com.expense_management_service.repository.CostCenterRepository;
+import com.expense_management_service.repository.CurrencyRepository;
+import com.expense_management_service.repository.ExpenseCategoryRepository;
+import com.expense_management_service.repository.ExpenseLineItemRepository;
+import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.repository.ProjectCacheRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
+import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
 import com.expense_management_service.service.ExpenseLineItemService;
 import com.expense_management_service.service.PolicyEvaluator;
@@ -64,6 +72,8 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private final PolicyEvaluator policyEvaluator;
     private final PolicyViolationRepository policyViolationRepository;
     private final PolicyViolationMapper policyViolationMapper;
+    private final ApprovalAssignmentRepository approvalAssignmentRepository;
+    private final DelegationService delegationService;
 
     /**
      * The organization's single accounting/base currency (e.g. "INR") — every line item's
@@ -319,9 +329,23 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         if (privileged) {
             return;
         }
+        if (isAssignedApproverOrDelegate(report, caller.employeeId())) {
+            return;
+        }
         if (!report.getEmployeeId().equals(caller.employeeId())) {
             throw new AccessDeniedException("You can only view line items on your own expense report");
         }
+    }
+
+    private boolean isAssignedApproverOrDelegate(ExpenseReport report, String employeeId) {
+        if (employeeId == null || report == null || report.getReportId() == null || approvalAssignmentRepository == null) {
+            return false;
+        }
+        return approvalAssignmentRepository.findByLevelInstance_Report_ReportId(report.getReportId())
+                .stream()
+                .anyMatch(a -> delegationService == null
+                        ? employeeId.equals(a.getApproverId())
+                        : delegationService.canAct(employeeId, a.getApproverId()));
     }
 
     private boolean hasRole(CurrentUser caller, String role) {

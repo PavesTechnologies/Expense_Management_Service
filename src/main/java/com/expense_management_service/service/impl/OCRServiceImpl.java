@@ -11,12 +11,15 @@ import com.expense_management_service.entity.Receipt;
 import com.expense_management_service.entity.ReceiptOcr;
 import com.expense_management_service.enums.OcrStatus;
 import com.expense_management_service.mapper.ReceiptOcrMapper;
+import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.AuditLogRepository;
 import com.expense_management_service.repository.ReceiptOcrRepository;
 import com.expense_management_service.repository.ReceiptRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
+import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.OCRService;
 import com.expense_management_service.service.OcrDocumentStrategy;
 import com.expense_management_service.service.TextractIntegrationException;
@@ -56,6 +59,8 @@ public class OCRServiceImpl implements OCRService {
     private final List<OcrDocumentStrategy> ocrDocumentStrategies;
     private final ReceiptOcrMapper receiptOcrMapper;
     private final CurrentUserService currentUserService;
+    private final ApprovalAssignmentRepository approvalAssignmentRepository;
+    private final DelegationService delegationService;
 
     /** Confidence (0.00-1.00) below which extracted fields are flagged for employee review. */
     @Value("${ocr.confidence-threshold:0.80}")
@@ -213,7 +218,7 @@ public class OCRServiceImpl implements OCRService {
     @Transactional(readOnly = true)
     public ReceiptOcrResponse getLatestResult(UUID receiptId) {
         Receipt receipt = findReceipt(receiptId);
-        assertViewable(receipt.getEmployeeId());
+        assertViewable(receipt);
 
         ReceiptOcr latest = receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receiptId)
                 .orElseThrow(() -> new ResourceNotFoundException("No OCR result yet for receipt: " + receiptId));
@@ -225,7 +230,7 @@ public class OCRServiceImpl implements OCRService {
     @Transactional(readOnly = true)
     public OcrStatusResponse getStatus(UUID receiptId) {
         Receipt receipt = findReceipt(receiptId);
-        assertViewable(receipt.getEmployeeId());
+        assertViewable(receipt);
 
         OcrStatus status = receipt.getOcrStatus() != null ? OcrStatus.valueOf(receipt.getOcrStatus()) : null;
         LocalDateTime lastUpdated = receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receiptId)
@@ -244,9 +249,20 @@ public class OCRServiceImpl implements OCRService {
     public void recordOverride(UUID receiptId, String fieldName, String originalValue, String overriddenValue, String reason) {
         Receipt receipt = findReceipt(receiptId);
         assertOwnerOrAdmin(receipt.getEmployeeId());
-        String detail = fieldName + ": '" + originalValue + "' -> '" + overriddenValue + "'"
-                + (reason != null && !reason.isBlank() ? " (reason: " + reason + ")" : "");
-        logAudit(receipt, "OCR_OVERRIDE", detail);
+
+        String details = "Field overridden: " + fieldName + " (was: " + originalValue + ", now: " + overriddenValue + ")"
+                + (reason != null ? " Reason: " + reason : "");
+
+        auditLogRepository.save(AuditLog.builder()
+                .entityName("Receipt")
+                .entityId(receiptId)
+                .action("OCR_OVERRIDE")
+                .newValue(details)
+                .performedBy(currentUserService.getCurrentUser().employeeId())
+                .performedAt(LocalDateTime.now())
+                .build());
+
+        log.info("Recorded OCR override for receipt {} on field {}", receiptId, fieldName);
     }
 
     private ReceiptOcrResponse toResponseWithFlags(ReceiptOcr ocr, Receipt receipt) {
@@ -358,7 +374,7 @@ public class OCRServiceImpl implements OCRService {
         }
     }
 
-    private void assertViewable(String employeeId) {
+    private void assertViewable(Receipt receipt) {
         CurrentUser caller = currentUserService.getCurrentUser();
         boolean privileged = hasRole(caller, RoleConstants.ADMIN) || hasRole(caller, RoleConstants.FINANCE)
                 || hasRole(caller, RoleConstants.MANAGER) || hasRole(caller, RoleConstants.FINANCE_EXECUTIVE)
@@ -366,9 +382,23 @@ public class OCRServiceImpl implements OCRService {
         if (privileged) {
             return;
         }
-        if (!employeeId.equals(caller.employeeId())) {
+        if (receipt != null && receipt.getReport() != null && isAssignedApproverOrDelegate(receipt.getReport(), caller.employeeId())) {
+            return;
+        }
+        if (receipt != null && !receipt.getEmployeeId().equals(caller.employeeId())) {
             throw new AccessDeniedException("You can only view OCR results on your own expense report");
         }
+    }
+
+    private boolean isAssignedApproverOrDelegate(ExpenseReport report, String employeeId) {
+        if (employeeId == null || report == null || report.getReportId() == null || approvalAssignmentRepository == null) {
+            return false;
+        }
+        return approvalAssignmentRepository.findByLevelInstance_Report_ReportId(report.getReportId())
+                .stream()
+                .anyMatch(a -> delegationService == null
+                        ? employeeId.equals(a.getApproverId())
+                        : delegationService.canAct(employeeId, a.getApproverId()));
     }
 
     private boolean hasRole(CurrentUser caller, String role) {

@@ -21,10 +21,12 @@ import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.enums.PolicyRuleType;
 import com.expense_management_service.enums.PolicySeverity;
 import com.expense_management_service.mapper.PolicyViolationMapper;
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.repository.ProjectCacheRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
+import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
 import com.expense_management_service.service.PolicyEvaluator;
 import org.junit.jupiter.api.BeforeEach;
@@ -74,16 +76,20 @@ class ExpenseLineItemServiceImplTest {
     private PolicyEvaluator policyEvaluator;
     @Mock
     private PolicyViolationRepository policyViolationRepository;
+    @Mock
+    private ApprovalAssignmentRepository approvalAssignmentRepository;
+    @Mock
+    private DelegationService delegationService;
 
     private ExpenseLineItemServiceImpl expenseLineItemService;
 
     private final String employeeId = "5100014";
     private UUID reportId;
     private UUID categoryId;
-    /** The organization base currency's id â€” same UUID as {@link #currency}. Named for what it means to conversion, not for its role on the report. */
+    /** The organization base currency's id — same UUID as {@link #currency}. Named for what it means to conversion, not for its role on the report. */
     private UUID currencyId;
     private ExpenseReport draftReport;
-    /** The Organization Base Currency (INR) â€” every line item converts INTO this, regardless of the report's own currency. */
+    /** The Organization Base Currency (INR) — every line item converts INTO this, regardless of the report's own currency. */
     private Currency currency;
 
     @BeforeEach
@@ -91,7 +97,8 @@ class ExpenseLineItemServiceImplTest {
         expenseLineItemService = new ExpenseLineItemServiceImpl(
                 expenseLineItemRepository, expenseReportRepository, expenseCategoryRepository, currencyRepository,
                 costCenterRepository, projectCacheRepository, exchangeRateService, currentUserService,
-                new ExpenseLineItemMapper(), policyEvaluator, policyViolationRepository, new PolicyViolationMapper());
+                new ExpenseLineItemMapper(), policyEvaluator, policyViolationRepository, new PolicyViolationMapper(),
+                approvalAssignmentRepository, delegationService);
         ReflectionTestUtils.setField(expenseLineItemService, "baseCurrencyCode", "INR");
 
         reportId = UUID.randomUUID();

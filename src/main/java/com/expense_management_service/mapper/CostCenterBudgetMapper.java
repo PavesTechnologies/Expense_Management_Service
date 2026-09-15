@@ -8,17 +8,28 @@ import org.springframework.stereotype.Component;
 @Component
 public class CostCenterBudgetMapper {
 
-    /** {@code availableBudget} is deliberately not mapped here — the service owns its default-fill and cross-field validation against {@code budgetAmount}. */
+    /**
+     * {@code availableBudget} and {@code rolloverFromPrevious} are deliberately not mapped here -
+     * both need cross-field validation (against {@code budgetAmount}, and against the rollover
+     * source budget's true unencumbered remainder / cap, respectively) that only the service can
+     * perform, exactly mirroring how {@code availableBudget} was already excluded before Phase 3.
+     */
     public CostCenterBudget toEntity(CostCenterBudgetRequest request) {
         return CostCenterBudget.builder()
                 .fiscalYear(request.fiscalYear())
                 .budgetAmount(request.budgetAmount())
+                .allowRollover(request.allowRollover() != null ? request.allowRollover() : false)
+                .rolloverCap(request.rolloverCap())
+                .warningThreshold(request.warningThreshold())
                 .build();
     }
 
     public void updateEntity(CostCenterBudget entity, CostCenterBudgetRequest request) {
         entity.setFiscalYear(request.fiscalYear());
         entity.setBudgetAmount(request.budgetAmount());
+        entity.setAllowRollover(request.allowRollover() != null ? request.allowRollover() : false);
+        entity.setRolloverCap(request.rolloverCap());
+        entity.setWarningThreshold(request.warningThreshold());
     }
 
     public CostCenterBudgetResponse toResponse(CostCenterBudget entity) {
@@ -29,6 +40,10 @@ public class CostCenterBudgetMapper {
                 entity.getFiscalYear(),
                 entity.getBudgetAmount(),
                 entity.getAvailableBudget(),
+                entity.getRolloverFromPrevious(),
+                entity.getAllowRollover(),
+                entity.getRolloverCap(),
+                entity.getWarningThreshold(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt()
         );

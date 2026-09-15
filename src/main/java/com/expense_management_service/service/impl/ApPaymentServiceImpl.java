@@ -14,6 +14,7 @@ import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.service.ApPaymentService;
 import com.expense_management_service.service.ApprovalEventPublisher;
 import com.expense_management_service.service.ApprovalWorkflowService;
+import com.expense_management_service.service.BudgetEncumbranceService;
 import com.expense_management_service.service.CostCenterBudgetService;
 import com.expense_management_service.service.ExpenseLineItemService;
 import lombok.RequiredArgsConstructor;
@@ -46,6 +47,7 @@ public class ApPaymentServiceImpl implements ApPaymentService {
     private final AuditLogRepository auditLogRepository;
     private final ExpenseReportResponseFactory expenseReportResponseFactory;
     private final CostCenterBudgetService costCenterBudgetService;
+    private final BudgetEncumbranceService budgetEncumbranceService;
 
     @Override
     @Transactional(readOnly = true)
@@ -93,9 +95,9 @@ public class ApPaymentServiceImpl implements ApPaymentService {
         // routing decision. The guard above already makes this call unreachable on a duplicate
         // completion attempt (a second call sees previous == PAYMENT_COMPLETED and throws before
         // ever reaching this line), and this whole method runs in one @Transactional boundary, so a
-        // failure here (e.g. a concurrent-update conflict on the budget row) rolls back the
+        // failure here (e.g. a concurrent-update conflict on a budget row) rolls back the
         // paymentRoutingStatus/paymentCompletedBy/paymentCompletedAt writes below with it.
-        costCenterBudgetService.consumeBudget(report.getCostCenter(), report.getFiscalYear(), report.getTotalAmount());
+        consumeBudgetAtPayment(report);
 
         LocalDateTime now = LocalDateTime.now();
         report.setPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED);
@@ -117,6 +119,22 @@ public class ApPaymentServiceImpl implements ApPaymentService {
 
         log.info("Payment completed for report {} by {}", reportId, actingEmployeeId);
         return expenseReportResponseFactory.toResponse(findReport(reportId));
+    }
+
+    /**
+     * Phase 6: consumes budget via whichever {@code BudgetEncumbrance} rows exist for the report's
+     * current submission cycle - split-aware, per-Cost-Center consumption for any report submitted
+     * after Phase 5's encumbrance wiring went live. Falls back to the original, pre-Phase-3 direct
+     * whole-report {@code consumeBudget} call ONLY when the report has zero encumbrances at all (an
+     * in-flight report that reached APPROVED_FOR_PAYMENT before this wiring existed) - the two paths
+     * are mutually exclusive, so budget is still never consumed twice.
+     */
+    private void consumeBudgetAtPayment(ExpenseReport report) {
+        int cycle = approvalWorkflowService.getCurrentSubmissionCycle(report.getReportId());
+        boolean consumedViaEncumbrances = budgetEncumbranceService.consumeActiveForReport(report.getReportId(), cycle);
+        if (!consumedViaEncumbrances) {
+            costCenterBudgetService.consumeBudget(report.getCostCenter(), report.getFiscalYear(), report.getTotalAmount());
+        }
     }
 
     private ExpenseReport findReport(UUID reportId) {

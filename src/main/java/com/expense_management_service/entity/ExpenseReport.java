@@ -46,7 +46,13 @@ public class ExpenseReport {
     @Column(name = "business_purpose")
     private String businessPurpose;
 
-    /** Calendar-year fiscal period the report was created in, e.g. "2026" — used to scope title uniqueness per FR: "unique per employee per fiscal period". */
+    /**
+     * April-to-March fiscal period the report was created in, in "YYYY-YYYY" form (e.g. "2026-2027"
+     * for 1 Apr 2026 - 31 Mar 2027) — used to scope title uniqueness per FR: "unique per employee per
+     * fiscal period", and matched verbatim against {@code CostCenterBudget.fiscalYear} by {@code
+     * BudgetEncumbranceServiceImpl.validateAndEncumber}, so it must always agree with however budgets
+     * are labeled. See {@code ExpenseReportServiceImpl.fiscalYearFor}.
+     */
     @Column(name = "fiscal_year", length = 10, nullable = false)
     private String fiscalYear;
 

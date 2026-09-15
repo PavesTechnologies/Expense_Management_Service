@@ -109,6 +109,12 @@ public class ExpenseLineItem {
     @ToString.Exclude
     private List<CostAllocation> costAllocations = new ArrayList<>();
 
+    /** Empty for a NORMAL line item (uses {@code costCenter} above / {@code report.costCenter} directly); two or more rows for a SPLIT line item. See {@code ExpenseSplit}'s own javadoc. */
+    @OneToMany(mappedBy = "lineItem", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    @ToString.Exclude
+    private List<ExpenseSplit> expenseSplits = new ArrayList<>();
+
     @OneToMany(mappedBy = "lineItem", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     @ToString.Exclude

@@ -7,6 +7,7 @@ import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.LineItemReviewResponse;
 import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.dto.response.SplitReviewResponse;
 import org.springframework.data.domain.Pageable;
 
 import java.util.List;
@@ -31,6 +32,15 @@ public interface ApprovalWorkflowService {
     /** Approve or flag one line item at the report's currently-active level (§4.7). */
     ExpenseReportResponse reviewLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, LineItemReviewRequest request);
 
+    /**
+     * Approve or flag one {@code ExpenseSplit}'s Cost Center Owner responsibility at the report's
+     * currently-active Approval level (Phase 4) - the split-aware counterpart of {@link
+     * #reviewLineItem}, keyed by {@code (split, assignment)} rather than a level-wide shared row.
+     * One owner rejecting their own split never blocks a different owner's (or the normal track's)
+     * ability to act at the same level.
+     */
+    ExpenseReportResponse reviewSplit(UUID reportId, UUID splitId, String actingEmployeeId, LineItemReviewRequest request);
+
     /** Whole-report, terminal Reject (§6) - distinct from line-level Needs Correction. */
     ExpenseReportResponse rejectReport(UUID reportId, String actingEmployeeId, RejectReportRequest request);
 
@@ -52,6 +62,14 @@ public interface ApprovalWorkflowService {
      * this report; throws {@code AccessDeniedException} otherwise.
      */
     List<LineItemReviewResponse> getLineItemReviews(UUID reportId, String actingEmployeeId);
+
+    /**
+     * Split-aware sibling of {@link #getLineItemReviews} (Phase 7): current-submission-cycle review
+     * status for every {@code ExpenseSplit}, across every Cost Center Owner assignment on the report.
+     * Same visibility rule as {@link #getLineItemReviews} - the report owner, or anyone who has ever
+     * been (or is a delegate of) an assignee on this report.
+     */
+    List<SplitReviewResponse> getSplitReviews(UUID reportId, String actingEmployeeId);
 
     /** The read model behind a meaningful status pill and Recall/Cancel button enablement. */
     ApprovalStatusResponse getApprovalStatus(UUID reportId);
@@ -75,4 +93,12 @@ public interface ApprovalWorkflowService {
      * level with another entry still pending its own pass).
      */
     void advanceAfterLevelReviewed(UUID reportId, UUID instanceId, String completingApproverId);
+
+    /**
+     * The report's current (highest) submission cycle - 0 if it has never been through the approval
+     * engine at all. Exposed for AP completion (Phase 6) to know which cycle's budget encumbrances
+     * to consume, without leaking {@code ApprovalLevelInstanceRepository} into {@code
+     * ApPaymentServiceImpl}.
+     */
+    int getCurrentSubmissionCycle(UUID reportId);
 }

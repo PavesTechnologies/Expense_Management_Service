@@ -121,7 +121,7 @@ class ApprovalWorkflowControllerTest {
         when(currentUserService.getEmployeeId()).thenReturn("5100002");
         ApprovalQueueItemResponse item =
                 new ApprovalQueueItemResponse(UUID.randomUUID(), "EXP-0001", "5100001", new BigDecimal("1000"), "INR",
-                        "Engineering", "PENDING_APPROVAL", LocalDateTime.now(), 1, List.of(), true);
+                        "Engineering", "PENDING_APPROVAL", LocalDateTime.now(), 1, List.of(), List.of(), true);
         when(approvalWorkflowService.getMyQueue(eq("5100002"), any(Pageable.class)))
                 .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
 

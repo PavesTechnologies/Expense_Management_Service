@@ -9,20 +9,26 @@ import com.expense_management_service.entity.ApprovalLevel;
 import com.expense_management_service.entity.ApprovalLevelApprover;
 import com.expense_management_service.entity.ApprovalLevelInstance;
 import com.expense_management_service.entity.ApprovalLineItemReview;
+import com.expense_management_service.entity.ApprovalSplitReview;
+import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.ExpenseSplit;
 import com.expense_management_service.entity.FinanceVerificationReview;
 import com.expense_management_service.enums.ApproverSourceType;
 import com.expense_management_service.enums.AssignmentStatus;
 import com.expense_management_service.enums.FinanceVerificationStatus;
 import com.expense_management_service.enums.LevelInstanceStatus;
 import com.expense_management_service.enums.LevelQuorum;
+import com.expense_management_service.enums.LevelType;
 import com.expense_management_service.enums.LineItemReviewStatus;
 import com.expense_management_service.enums.ReportStatus;
+import com.expense_management_service.enums.SplitType;
 import com.expense_management_service.mapper.ExpenseReportMapper;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
 import com.expense_management_service.repository.ApprovalLineItemReviewRepository;
+import com.expense_management_service.repository.ApprovalSplitReviewRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.ApprovalEventPublisher;
@@ -56,6 +62,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -72,10 +79,12 @@ class ApprovalWorkflowServiceImplTest {
     @Mock private ApprovalLevelInstanceRepository approvalLevelInstanceRepository;
     @Mock private ApprovalAssignmentRepository approvalAssignmentRepository;
     @Mock private ApprovalLineItemReviewRepository approvalLineItemReviewRepository;
+    @Mock private ApprovalSplitReviewRepository approvalSplitReviewRepository;
     @Mock private PolicyViolationRepository policyViolationRepository;
     @Mock private ApprovalFlowResolutionService approvalFlowResolutionService;
     @Mock private ApproverSourceResolver approverSourceResolver;
     @Mock private ChainCorrectnessService chainCorrectnessService;
+    @Mock private com.expense_management_service.service.BudgetEncumbranceService budgetEncumbranceService;
     @Mock private DelegationService delegationService;
     @Mock private PolicyEvaluationGateway policyEvaluationGateway;
     @Mock private ApprovalEventPublisher approvalEventPublisher;
@@ -95,12 +104,13 @@ class ApprovalWorkflowServiceImplTest {
     private final List<ApprovalLevelInstance> savedInstances = new ArrayList<>();
     private final List<ApprovalAssignment> savedAssignments = new ArrayList<>();
     private final List<ApprovalLineItemReview> savedReviews = new ArrayList<>();
+    private final List<ApprovalSplitReview> savedSplitReviews = new ArrayList<>();
 
     @BeforeEach
     void setUp() {
         service = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
-                approvalAssignmentRepository, approvalLineItemReviewRepository, policyViolationRepository,
-                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, delegationService,
+                approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
+                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository)),
@@ -112,11 +122,16 @@ class ApprovalWorkflowServiceImplTest {
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
         when(slaPolicyService.resolveSlaBusinessDays()).thenReturn(3);
         when(delegationService.canAct(any(), any())).thenAnswer(inv -> inv.getArgument(0).equals(inv.getArgument(1)));
+        when(budgetEncumbranceService.validateAndEncumber(any(), anyInt()))
+                .thenReturn(new com.expense_management_service.dto.response.BudgetEncumbranceOutcome(List.of(), List.of()));
 
         when(approvalLevelInstanceRepository.save(any(ApprovalLevelInstance.class))).thenAnswer(inv -> {
             ApprovalLevelInstance i = inv.getArgument(0);
             if (i.getInstanceId() == null) {
                 i.setInstanceId(UUID.randomUUID());
+            }
+            if (i.getCreatedAt() == null) {
+                i.setCreatedAt(java.time.LocalDateTime.now()); // simulates @CreationTimestamp - resumeInPlace's reconciliation reads this
             }
             savedInstances.removeIf(existing -> existing.getInstanceId().equals(i.getInstanceId()));
             savedInstances.add(i);
@@ -203,6 +218,24 @@ class ApprovalWorkflowServiceImplTest {
                 .thenAnswer(inv -> savedInstances.stream().mapToInt(ApprovalLevelInstance::getSubmissionCycle).max().orElse(0));
         when(approvalLevelInstanceRepository.findById(any()))
                 .thenAnswer(inv -> savedInstances.stream().filter(i -> i.getInstanceId().equals(inv.getArgument(0))).findFirst());
+
+        when(approvalSplitReviewRepository.save(any(ApprovalSplitReview.class))).thenAnswer(inv -> {
+            ApprovalSplitReview r = inv.getArgument(0);
+            if (r.getReviewId() == null) {
+                r.setReviewId(UUID.randomUUID());
+            }
+            savedSplitReviews.removeIf(existing -> existing.getReviewId().equals(r.getReviewId()));
+            savedSplitReviews.add(r);
+            return r;
+        });
+        when(approvalSplitReviewRepository.findByAssignment_AssignmentId(any()))
+                .thenAnswer(inv -> savedSplitReviews.stream()
+                        .filter(r -> r.getAssignment().getAssignmentId().equals(inv.getArgument(0))).toList());
+        when(approvalSplitReviewRepository.findBySplit_SplitIdAndAssignment_AssignmentId(any(), any()))
+                .thenAnswer(inv -> savedSplitReviews.stream()
+                        .filter(r -> r.getSplit().getSplitId().equals(inv.getArgument(0)))
+                        .filter(r -> r.getAssignment().getAssignmentId().equals(inv.getArgument(1)))
+                        .findFirst());
     }
 
     private ExpenseLineItem lineItem() {
@@ -288,8 +321,8 @@ class ApprovalWorkflowServiceImplTest {
                         .filter(r -> r.getLevelInstance().getInstanceId().equals(inv.getArgument(0))).toList());
 
         ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
-                approvalAssignmentRepository, approvalLineItemReviewRepository, policyViolationRepository,
-                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, delegationService,
+                approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
+                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
@@ -333,8 +366,8 @@ class ApprovalWorkflowServiceImplTest {
                         .filter(r -> r.getLevelInstance().getInstanceId().equals(inv.getArgument(0))).toList());
 
         ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
-                approvalAssignmentRepository, approvalLineItemReviewRepository, policyViolationRepository,
-                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, delegationService,
+                approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
+                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
@@ -723,5 +756,491 @@ class ApprovalWorkflowServiceImplTest {
         var queue = service.getMyQueue("delegate-of-approver", PageRequest.of(0, 20));
 
         assertThat(queue.content()).hasSize(1);
+    }
+
+    // ---------------------------------------------------------------------
+    // Split-aware Cost Center Owner resolution (Phase 4)
+    // ---------------------------------------------------------------------
+
+    private static final String HEADER_OWNER = "5100060";
+    private static final String OWNER_A = "5100061";
+    private static final String OWNER_B = "5100062";
+
+    private CostCenter costCenterOwnedBy(String ownerEmployeeId) {
+        return CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("CC-" + ownerEmployeeId)
+                .ownerEmployeeId(ownerEmployeeId).build();
+    }
+
+    private ExpenseSplit split(ExpenseLineItem lineItem, CostCenter costCenter, String amount, int order) {
+        return ExpenseSplit.builder().splitId(UUID.randomUUID()).lineItem(lineItem).costCenter(costCenter)
+                .splitType(SplitType.FIXED_AMOUNT).allocatedAmount(new java.math.BigDecimal(amount)).splitOrder(order).build();
+    }
+
+    /** One APPROVAL level with a single COST_CENTER_OWNER entry - {@code quorum} only governs the header (normal-track) entry; split-owner assignments always activate in parallel regardless (Phase 4 Decision 1). */
+    private ApprovalFlow costCenterOwnerOnlyFlow(LevelQuorum quorum) {
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(flowId).name("Cost Center Owner").isCatchAll(false).build();
+        ApprovalLevel level = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(1)
+                .quorum(quorum).levelType(LevelType.APPROVAL).build();
+        level.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(level)
+                .sourceType(ApproverSourceType.COST_CENTER_OWNER).build());
+        flow.getLevels().add(level);
+        return flow;
+    }
+
+    /** SEQUENTIAL level: entryOrder=1 NAMED_USER (approverId) THEN a COST_CENTER_OWNER entry (entryOrder null, sorts last under nullsLast) - proves split-owner assignments jump ahead of the normal SEQUENTIAL order. */
+    private ApprovalFlow namedUserThenCostCenterOwnerSequentialFlow() {
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(flowId).name("Named user then Cost Center Owner").isCatchAll(false).build();
+        ApprovalLevel level = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(1)
+                .quorum(LevelQuorum.SEQUENTIAL).levelType(LevelType.APPROVAL).build();
+        level.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(level)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference(approverId).build());
+        level.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(level)
+                .sourceType(ApproverSourceType.COST_CENTER_OWNER).build());
+        flow.getLevels().add(level);
+        return flow;
+    }
+
+    private ApprovalAssignment assignmentFor(String ownerEmployeeId) {
+        return savedAssignments.stream().filter(a -> a.getApproverId().equals(ownerEmployeeId)).findFirst().orElseThrow();
+    }
+
+    @Test
+    void submit_splitReport_createsHeaderAssignmentPlusOneCombinedAssignmentPerDistinctSplitOwner() {
+        ExpenseReport report = draftReport();
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        ExpenseSplit splitA = split(lineItem, costCenterOwnedBy(OWNER_A), "600", 1);
+        ExpenseSplit splitB = split(lineItem, costCenterOwnedBy(OWNER_B), "400", 2);
+        lineItem.setExpenseSplits(List.of(splitA, splitB));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(costCenterOwnerOnlyFlow(LevelQuorum.ANY_OF));
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(HEADER_OWNER));
+
+        service.submit(reportId);
+
+        assertThat(savedAssignments).hasSize(3);
+        assertThat(savedAssignments).extracting(ApprovalAssignment::getApproverId)
+                .containsExactlyInAnyOrder(HEADER_OWNER, OWNER_A, OWNER_B);
+        assertThat(savedAssignments).allMatch(a -> a.getStatus() == AssignmentStatus.ACTIVE);
+        assertThat(assignmentFor(HEADER_OWNER).getSplitReviews()).isEmpty();
+        assertThat(assignmentFor(OWNER_A).getSplitReviews()).hasSize(1);
+        assertThat(assignmentFor(OWNER_B).getSplitReviews()).hasSize(1);
+        assertThat(savedSplitReviews).hasSize(2).allMatch(r -> r.getStatus() == LineItemReviewStatus.PENDING);
+    }
+
+    @Test
+    void submit_splitsResolvingToTheSameOwner_combineIntoOneAssignmentWithMultipleSplitReviews() {
+        ExpenseReport report = draftReport();
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        CostCenter ccOwnedByA1 = costCenterOwnedBy(OWNER_A);
+        CostCenter ccOwnedByA2 = costCenterOwnedBy(OWNER_A);
+        ExpenseSplit split1 = split(lineItem, ccOwnedByA1, "600", 1);
+        ExpenseSplit split2 = split(lineItem, ccOwnedByA2, "400", 2);
+        lineItem.setExpenseSplits(List.of(split1, split2));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(costCenterOwnerOnlyFlow(LevelQuorum.ANY_OF));
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(HEADER_OWNER));
+
+        service.submit(reportId);
+
+        assertThat(savedAssignments).hasSize(2); // header + ONE combined assignment for owner A, not two
+        assertThat(assignmentFor(OWNER_A).getSplitReviews()).hasSize(2);
+    }
+
+    @Test
+    void activateLevel_splitOwnerAssignmentsActivateImmediately_evenWhenSequentialEntryOrderWouldDeferThem() {
+        ExpenseReport report = draftReport();
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        ExpenseSplit splitA = split(lineItem, costCenterOwnedBy(OWNER_A), "1000", 1);
+        lineItem.setExpenseSplits(List.of(splitA));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(namedUserThenCostCenterOwnerSequentialFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenAnswer(inv -> {
+            ApprovalLevelApprover entry = inv.getArgument(0);
+            return entry.getSourceType() == ApproverSourceType.NAMED_USER
+                    ? Optional.of(entry.getSourceReference()) : Optional.of(HEADER_OWNER);
+        });
+
+        service.submit(reportId);
+
+        // approverId is entryOrder=1 -> activates now (SEQUENTIAL, as always). The header
+        // COST_CENTER_OWNER entry has no entryOrder, sorts last, and stays PENDING until approverId
+        // completes - unaffected by Phase 4. But the split-owner assignment for OWNER_A must already
+        // be ACTIVE despite SEQUENTIAL quorum, per Decision 1.
+        assertThat(assignmentFor(approverId).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+        assertThat(assignmentFor(HEADER_OWNER).getStatus()).isEqualTo(AssignmentStatus.PENDING);
+        assertThat(assignmentFor(OWNER_A).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+    }
+
+    private ExpenseReport submittedSplitReport(String ownerAAmount, String ownerBAmount) {
+        ExpenseReport report = draftReport();
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        ExpenseSplit splitA = split(lineItem, costCenterOwnedBy(OWNER_A), ownerAAmount, 1);
+        ExpenseSplit splitB = split(lineItem, costCenterOwnedBy(OWNER_B), ownerBAmount, 2);
+        lineItem.setExpenseSplits(List.of(splitA, splitB));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(costCenterOwnerOnlyFlow(LevelQuorum.ANY_OF));
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(HEADER_OWNER));
+        service.submit(reportId);
+        return report;
+    }
+
+    private UUID splitIdFor(String ownerEmployeeId) {
+        return assignmentFor(ownerEmployeeId).getSplitReviews().get(0).getSplit().getSplitId();
+    }
+
+    @Test
+    void reviewSplit_completesOwnAssignment_butLevelWaitsUntilLineItemsAndAllOwnersAreDone() {
+        ExpenseReport report = submittedSplitReport("600", "400");
+
+        service.reviewSplit(reportId, splitIdFor(OWNER_A), OWNER_A, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        assertThat(assignmentFor(OWNER_A).getStatus()).isEqualTo(AssignmentStatus.COMPLETED);
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL); // owner B and the header's line item still outstanding
+
+        service.reviewSplit(reportId, splitIdFor(OWNER_B), OWNER_B, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL); // header's own line item review still pending
+
+        service.reviewLineItem(reportId, lineItemId, HEADER_OWNER, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+    }
+
+    @Test
+    void reviewSplit_needsCorrection_doesNotBlockADifferentOwnersAbilityToReviewTheirOwnSplit() {
+        submittedSplitReport("600", "400");
+
+        service.reviewSplit(reportId, splitIdFor(OWNER_A), OWNER_A,
+                new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "wrong cost center"));
+
+        assertThat(assignmentFor(OWNER_A).getStatus()).isEqualTo(AssignmentStatus.ACTIVE); // not force-completed by a rejection
+
+        // Owner B must still be able to act on their own split even though the report is now
+        // AWAITING_CORRECTION because of owner A's unrelated rejection (the "don't block another
+        // approver's action" rule).
+        ExpenseReportResponse response = service.reviewSplit(reportId, splitIdFor(OWNER_B), OWNER_B,
+                new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        assertThat(response).isNotNull();
+        assertThat(assignmentFor(OWNER_B).getStatus()).isEqualTo(AssignmentStatus.COMPLETED);
+    }
+
+    @Test
+    void reviewSplit_throwsAccessDenied_whenActorIsNotThatSplitsOwner() {
+        submittedSplitReport("600", "400");
+
+        assertThatThrownBy(() -> service.reviewSplit(reportId, splitIdFor(OWNER_A), OWNER_B,
+                new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null)))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+    }
+
+    @Test
+    void reviewSplit_rejectsAlreadyReviewedSplit() {
+        // Owner A needs a SECOND outstanding split so their combined assignment stays ACTIVE after
+        // the first split is approved - otherwise the assignment completes immediately and the
+        // second attempt hits "not an active approver" first, never reaching the re-review check.
+        ExpenseReport report = draftReport();
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        ExpenseSplit splitA1 = split(lineItem, costCenterOwnedBy(OWNER_A), "300", 1);
+        ExpenseSplit splitA2 = split(lineItem, costCenterOwnedBy(OWNER_A), "300", 2);
+        ExpenseSplit splitB = split(lineItem, costCenterOwnedBy(OWNER_B), "400", 3);
+        lineItem.setExpenseSplits(List.of(splitA1, splitA2, splitB));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(costCenterOwnerOnlyFlow(LevelQuorum.ANY_OF));
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(HEADER_OWNER));
+        service.submit(reportId);
+
+        UUID firstSplitId = splitA1.getSplitId();
+        service.reviewSplit(reportId, firstSplitId, OWNER_A, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        assertThat(assignmentFor(OWNER_A).getStatus()).isEqualTo(AssignmentStatus.ACTIVE); // splitA2 still pending
+
+        assertThatThrownBy(() -> service.reviewSplit(reportId, firstSplitId, OWNER_A,
+                new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("already been reviewed");
+    }
+
+    @Test
+    void reviewSplit_requiresComment_whenFlaggingNeedsCorrection() {
+        submittedSplitReport("600", "400");
+
+        assertThatThrownBy(() -> service.reviewSplit(reportId, splitIdFor(OWNER_A), OWNER_A,
+                new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, null)))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("comment is required");
+    }
+
+    @Test
+    void isEntireInstanceDone_waivesASkippedSplitOwnerAssignmentsOwnSplits() {
+        ExpenseReport report = submittedSplitReport("600", "400");
+
+        // Simulate what ChainCorrectnessServiceImpl's (unmodified) duplicate-approver pass would have
+        // done had it run for real in this mocked test - owner A's combined assignment auto-skipped
+        // because they already appear earlier in the chain. Their split review is left PENDING
+        // forever (nobody can act on a SKIPPED assignment's task), so it must be waived, not block.
+        assignmentFor(OWNER_A).setStatus(AssignmentStatus.SKIPPED);
+
+        service.reviewSplit(reportId, splitIdFor(OWNER_B), OWNER_B, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        service.reviewLineItem(reportId, lineItemId, HEADER_OWNER, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+    }
+
+    @Test
+    void submit_normalReportWithNoSplits_resolvesOnlyTheSingleHeaderCostCenterOwnerAssignment_unchangedBehavior() {
+        ExpenseReport report = draftReport(); // no splits on the line item at all
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(costCenterOwnerOnlyFlow(LevelQuorum.ANY_OF));
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(HEADER_OWNER));
+
+        service.submit(reportId);
+
+        assertThat(savedAssignments).hasSize(1);
+        assertThat(savedAssignments.get(0).getApproverId()).isEqualTo(HEADER_OWNER);
+        assertThat(savedSplitReviews).isEmpty();
+    }
+
+    // ---------------------------------------------------------------------
+    // Budget encumbrance wiring (Phase 5) - creation on submit/full-restart, release on
+    // recall/cancel/reject/the old cycle of a full restart. resumeInPlace touches neither.
+    // ---------------------------------------------------------------------
+
+    @Test
+    void submit_validatesAndEncumbersTheNewCycle_beforeMaterializingTheChain() {
+        submittedReport();
+
+        verify(budgetEncumbranceService).validateAndEncumber(any(ExpenseReport.class), eq(1));
+    }
+
+    @Test
+    void submit_propagatesInsufficientBudgetFailure_andCreatesNoApprovalChainAtAll() {
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
+        when(budgetEncumbranceService.validateAndEncumber(any(), anyInt()))
+                .thenThrow(new IllegalArgumentException("Insufficient budget"));
+
+        assertThatThrownBy(() -> service.submit(reportId))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("Insufficient budget");
+
+        assertThat(savedInstances).isEmpty();
+        assertThat(savedAssignments).isEmpty();
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.DRAFT); // never even reached PENDING_APPROVAL
+    }
+
+    @Test
+    void recall_releasesActiveEncumbrancesForTheCurrentCycle() {
+        submittedReport();
+
+        service.recall(reportId, submitterId);
+
+        verify(budgetEncumbranceService).releaseActiveForCycle(reportId, 1);
+    }
+
+    @Test
+    void cancel_releasesActiveEncumbrancesForTheCurrentCycle() {
+        submittedReport();
+
+        service.cancel(reportId, submitterId);
+
+        verify(budgetEncumbranceService).releaseActiveForCycle(reportId, 1);
+    }
+
+    @Test
+    void rejectReport_releasesActiveEncumbrancesForTheCurrentCycle() {
+        submittedReport();
+
+        service.rejectReport(reportId, approverId, new RejectReportRequest("Duplicate submission"));
+
+        verify(budgetEncumbranceService).releaseActiveForCycle(reportId, 1);
+    }
+
+    @Test
+    void resubmit_resumesInPlace_neitherReleasesNorReEncumbers() {
+        ExpenseReport report = submittedReport(); // cycle 1 already validated+encumbered once
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "fix it"));
+        report.setReportStatus(ReportStatus.AWAITING_CORRECTION);
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
+
+        service.submit(reportId);
+
+        verify(budgetEncumbranceService, never()).releaseActiveForCycle(any(), anyInt());
+        verify(budgetEncumbranceService, org.mockito.Mockito.times(1)).validateAndEncumber(any(), anyInt()); // still just the original cycle-1 call
+    }
+
+    @Test
+    void resubmit_fullyRestarts_releasesOldCycleBeforeEncumberingTheNewOne() {
+        ExpenseReport report = submittedReport(); // cycle 1
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "fix it"));
+        report.setReportStatus(ReportStatus.AWAITING_CORRECTION);
+        ApprovalFlow differentFlow = singleLevelFlow();
+        differentFlow.setFlowId(UUID.randomUUID());
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(differentFlow);
+
+        service.submit(reportId);
+
+        var inOrder = org.mockito.Mockito.inOrder(budgetEncumbranceService);
+        inOrder.verify(budgetEncumbranceService).releaseActiveForCycle(reportId, 1);
+        inOrder.verify(budgetEncumbranceService).validateAndEncumber(any(ExpenseReport.class), eq(2));
+    }
+
+    // ---------------------------------------------------------------------
+    // Existing feature integration for splits: queue, review-status, bulk approve (Phase 7)
+    // ---------------------------------------------------------------------
+
+    @Test
+    void getMyQueue_forASplitOwner_showsOnlyTheirOwnPendingSplits_notADifferentOwners() {
+        submittedSplitReport("600", "400");
+
+        var queue = service.getMyQueue(OWNER_A, PageRequest.of(0, 20));
+
+        assertThat(queue.content()).hasSize(1);
+        var item = queue.content().get(0);
+        assertThat(item.pendingSplits()).hasSize(1);
+        assertThat(item.pendingSplits().get(0).splitId()).isEqualTo(splitIdFor(OWNER_A));
+        assertThat(item.pendingSplits().get(0).allocatedAmount()).isEqualByComparingTo("600");
+    }
+
+    @Test
+    void getMyQueue_forADifferentOwner_neverShowsAnotherOwnersSplits() {
+        submittedSplitReport("600", "400");
+
+        var queue = service.getMyQueue(OWNER_B, PageRequest.of(0, 20));
+
+        var item = queue.content().get(0);
+        assertThat(item.pendingSplits()).hasSize(1);
+        assertThat(item.pendingSplits().get(0).splitId()).isEqualTo(splitIdFor(OWNER_B));
+    }
+
+    /**
+     * Regression test (bug report: "split approval is visible in Engineering owner's queue but not
+     * in HR owner's queue" - real report {@code 0458a800-246b-48a3-b759-4de2ce6ea743}) for one line
+     * item split across two Cost Centers with two different owners. Root-cause finding: {@code
+     * getMyQueue}/{@code matchingAssignments}/{@code createSplitOwnerAssignments} were traced
+     * end-to-end and found correct - confirmed here and by the two tests above, which already prove
+     * each owner independently sees their own split via a flow with a COST_CENTER_OWNER level entry.
+     * The reported report's real issue was that its matched flow's Level 1 had ONLY a
+     * REPORTING_MANAGER entry and zero COST_CENTER_OWNER entries, so {@code
+     * createSplitOwnerAssignments}'s {@code hasCostCenterOwnerEntry} gate never fired for either
+     * split - the Engineering owner's apparent success was a coincidental Reporting-Manager identity
+     * overlap (a whole-line-item {@code pendingLineItems} entry, not a genuine {@code pendingSplits}
+     * one), not the split-approval mechanism actually running. No code change was warranted; this
+     * test asserts BOTH owners see their OWN split, from the SAME submitted report, in one place -
+     * guarding the code path itself against ever regressing once a flow is correctly configured.
+     */
+    @Test
+    void getMyQueue_bothCostCenterOwners_seeTheirOwnSplitFromTheSameOneLineItemReport() {
+        submittedSplitReport("5000", "5000");
+
+        var ownerAQueue = service.getMyQueue(OWNER_A, PageRequest.of(0, 20));
+        var ownerBQueue = service.getMyQueue(OWNER_B, PageRequest.of(0, 20));
+
+        assertThat(ownerAQueue.content()).as("Owner A (first Cost Center) must see the report in their queue").hasSize(1);
+        assertThat(ownerBQueue.content()).as("Owner B (second Cost Center) must ALSO see the report in their queue").hasSize(1);
+
+        var ownerAItem = ownerAQueue.content().get(0);
+        var ownerBItem = ownerBQueue.content().get(0);
+        assertThat(ownerAItem.reportId()).isEqualTo(ownerBItem.reportId()); // same report, both owners
+
+        assertThat(ownerAItem.pendingSplits()).hasSize(1);
+        assertThat(ownerAItem.pendingSplits().get(0).splitId()).isEqualTo(splitIdFor(OWNER_A));
+        assertThat(ownerAItem.pendingSplits().get(0).allocatedAmount()).isEqualByComparingTo("5000");
+
+        assertThat(ownerBItem.pendingSplits()).hasSize(1);
+        assertThat(ownerBItem.pendingSplits().get(0).splitId()).isEqualTo(splitIdFor(OWNER_B));
+        assertThat(ownerBItem.pendingSplits().get(0).allocatedAmount()).isEqualByComparingTo("5000");
+    }
+
+    @Test
+    void getSplitReviews_returnsCurrentCycleStatus_forEverySplitAcrossAllOwners() {
+        submittedSplitReport("600", "400");
+
+        var reviews = service.getSplitReviews(reportId, submitterId);
+
+        assertThat(reviews).hasSize(2).allMatch(r -> r.status() == LineItemReviewStatus.PENDING);
+
+        service.reviewSplit(reportId, splitIdFor(OWNER_A), OWNER_A, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        var afterApproval = service.getSplitReviews(reportId, submitterId);
+        var ownerAReview = afterApproval.stream().filter(r -> r.splitId().equals(splitIdFor(OWNER_A))).findFirst().orElseThrow();
+        var ownerBReview = afterApproval.stream().filter(r -> r.splitId().equals(splitIdFor(OWNER_B))).findFirst().orElseThrow();
+        assertThat(ownerAReview.status()).isEqualTo(LineItemReviewStatus.APPROVED);
+        assertThat(ownerBReview.status()).isEqualTo(LineItemReviewStatus.PENDING);
+    }
+
+    @Test
+    void bulkApprove_alsoApprovesTheCallersOwnPendingSplits_butNeverADifferentOwners() {
+        submittedSplitReport("600", "400");
+
+        service.bulkApprove(reportId, OWNER_A);
+
+        assertThat(assignmentFor(OWNER_A).getStatus()).isEqualTo(AssignmentStatus.COMPLETED);
+        assertThat(assignmentFor(OWNER_A).getSplitReviews().get(0).getStatus()).isEqualTo(LineItemReviewStatus.APPROVED);
+        // Owner B's own split is untouched - bulk-approving as owner A must never reach into it.
+        assertThat(assignmentFor(OWNER_B).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+        assertThat(assignmentFor(OWNER_B).getSplitReviews().get(0).getStatus()).isEqualTo(LineItemReviewStatus.PENDING);
+    }
+
+    // ---------------------------------------------------------------------
+    // Dual-role queue and bulk approve (production-readiness audit, Part 4): a caller who is BOTH
+    // the normal-track approver AND a split-owner on the same report at the same level.
+    // ---------------------------------------------------------------------
+
+    /**
+     * A single ANY_OF, COST_CENTER_OWNER-only level - deliberately NOT the SEQUENTIAL NAMED_USER
+     * fixture, which would cascade into a SEQUENTIAL-advance-to-the-header-entry interaction
+     * unrelated to what this is testing. {@code approverId} is both the report's HEADER Cost Center
+     * owner (resolved via the entries loop - the "normal track") AND the split's own Cost Center
+     * owner (resolved via createSplitOwnerAssignments - the "split track") - two separate
+     * ApprovalAssignment rows for the same person, at the same level, active simultaneously.
+     */
+    private ExpenseReport submittedDualRoleReport() {
+        ExpenseReport report = draftReport();
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        ExpenseSplit split = split(lineItem, costCenterOwnedBy(approverId), "1000", 1);
+        lineItem.setExpenseSplits(List.of(split));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(costCenterOwnerOnlyFlow(LevelQuorum.ANY_OF));
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(approverId));
+        service.submit(reportId);
+        return report;
+    }
+
+    @Test
+    void getMyQueue_forADualRoleCaller_returnsBothPendingLineItemsAndPendingSplitsInOneRow() {
+        submittedDualRoleReport();
+
+        var queue = service.getMyQueue(approverId, PageRequest.of(0, 20));
+
+        assertThat(queue.content()).hasSize(1); // one row for the one report, not split across two
+        var item = queue.content().get(0);
+        assertThat(item.pendingLineItems()).hasSize(1); // the shared line-item review (their NAMED_USER role)
+        assertThat(item.pendingSplits()).hasSize(1); // their own split (their Cost Center Owner role)
+    }
+
+    @Test
+    void getMyQueue_forADifferentCaller_neverSeesTheDualRolePersonsResponsibilities() {
+        submittedDualRoleReport();
+
+        var queue = service.getMyQueue("someone-else-entirely", PageRequest.of(0, 20));
+
+        assertThat(queue.content()).isEmpty();
+    }
+
+    @Test
+    void bulkApprove_withDualRole_approvesBothTheNormalLineItemAndTheOwnSplit() {
+        submittedDualRoleReport();
+
+        service.bulkApprove(reportId, approverId);
+
+        assertThat(savedReviews).allMatch(r -> r.getStatus() == LineItemReviewStatus.APPROVED);
+        assertThat(savedSplitReviews).allMatch(r -> r.getStatus() == LineItemReviewStatus.APPROVED);
+    }
+
+    @Test
+    void bulkApprove_completesNormalApproval_whileSplitRemainsPending_ifOnlyLineItemIsApprovedIndividually() {
+        submittedDualRoleReport();
+
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        assertThat(savedReviews).allMatch(r -> r.getStatus() == LineItemReviewStatus.APPROVED);
+        assertThat(savedSplitReviews).allMatch(r -> r.getStatus() == LineItemReviewStatus.PENDING);
     }
 }

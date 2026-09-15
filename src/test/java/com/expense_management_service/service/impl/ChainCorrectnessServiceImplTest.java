@@ -2,11 +2,13 @@ package com.expense_management_service.service.impl;
 
 import com.expense_management_service.entity.ApprovalAssignment;
 import com.expense_management_service.entity.ApprovalLevelInstance;
+import com.expense_management_service.entity.ApprovalSplitReview;
 import com.expense_management_service.entity.EmployeeCache;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.SystemConfiguration;
 import com.expense_management_service.enums.AssignmentStatus;
 import com.expense_management_service.enums.LevelType;
+import com.expense_management_service.enums.LineItemReviewStatus;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
 import com.expense_management_service.repository.EmployeeCacheRepository;
@@ -164,5 +166,102 @@ class ChainCorrectnessServiceImplTest {
 
         assertThat(managerAssignment.getStatus()).isEqualTo(AssignmentStatus.PENDING);
         assertThat(financeAssignment.getStatus()).isEqualTo(AssignmentStatus.SKIPPED);
+    }
+
+    /**
+     * Regression test (bug report: an employee who already approved at Level 1 as REPORTING_MANAGER
+     * could not see/act on their pending Level 2 COST_CENTER_OWNER split review). Root cause: {@code
+     * applyDuplicateApproverPass} treated the Level 2 split-owner assignment as a "duplicate" of the
+     * Level 1 normal-track assignment for the same employee and auto-skipped it - even though the
+     * split review itself stayed genuinely PENDING, the SKIPPED assignment made {@code
+     * matchingAssignments}' {@code status == ACTIVE} filter silently exclude it from {@code
+     * getMyQueue}. A split-owner assignment (one with split reviews) must never be skipped by this
+     * pass, and must never count as an "earlier appearance" either.
+     */
+    @Test
+    void applyCorrectnessPasses_neverSkipsASplitOwnerAssignment_whenSameEmployeeAlreadyApprovedAnEarlierNormalTrackLevel() {
+        ExpenseReport report = reportBy("5100001");
+        ApprovalAssignment reportingManagerAssignment = ApprovalAssignment.builder()
+                .assignmentId(UUID.randomUUID()).approverId("5100002").status(AssignmentStatus.PENDING).build();
+        ApprovalSplitReview splitReview = ApprovalSplitReview.builder()
+                .reviewId(UUID.randomUUID()).status(LineItemReviewStatus.PENDING).build();
+        ApprovalAssignment costCenterOwnerSplitAssignment = ApprovalAssignment.builder()
+                .assignmentId(UUID.randomUUID()).approverId("5100002").status(AssignmentStatus.PENDING)
+                .splitReviews(new java.util.ArrayList<>(List.of(splitReview))).build();
+
+        ApprovalLevelInstance level1 = ApprovalLevelInstance.builder().instanceId(UUID.randomUUID()).levelOrder(1).build();
+        ApprovalLevelInstance level2 = ApprovalLevelInstance.builder().instanceId(UUID.randomUUID()).levelOrder(2).build();
+        when(approvalAssignmentRepository.findByLevelInstance_InstanceId(level1.getInstanceId())).thenReturn(List.of(reportingManagerAssignment));
+        when(approvalAssignmentRepository.findByLevelInstance_InstanceId(level2.getInstanceId())).thenReturn(List.of(costCenterOwnerSplitAssignment));
+        when(approvalLevelInstanceRepository.findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), 1))
+                .thenReturn(List.of(level1, level2));
+
+        service.applyCorrectnessPasses(report, 1);
+
+        assertThat(reportingManagerAssignment.getStatus()).isEqualTo(AssignmentStatus.PENDING);
+        assertThat(costCenterOwnerSplitAssignment.getStatus())
+                .as("A split-owner assignment must never be auto-skipped as a 'duplicate' of an earlier normal-track assignment for the same employee")
+                .isEqualTo(AssignmentStatus.PENDING);
+    }
+
+    /**
+     * Regression test for the exact real-database follow-up: the report's header Cost Center happens
+     * to BE the same Cost Center as one of its own splits, so Level 2 resolves THREE assignments - a
+     * redundant normal-track COST_CENTER_OWNER entry for the header (no split reviews, since the line
+     * item is fully split and there is no unsplit remainder for it to review), a genuine split-owner
+     * assignment for that SAME person's own split, and a genuine split-owner assignment for a
+     * different owner's split. The redundant header entry IS a real cross-level duplicate of Level 1's
+     * Reporting Manager assignment for the same person and correctly gets skipped - but that skip must
+     * NOT cascade into also skipping the genuine, still-pending split-owner assignment for the same
+     * person at the same level, which was the residual bug in the first fix attempt (it recorded the
+     * header entry into "seen at this level" before checking whether the header entry itself survived).
+     */
+    @Test
+    void applyCorrectnessPasses_stillProtectsAGenuineSplitOwnerAssignment_whenARedundantSameLevelNormalTrackDuplicateIsSkipped() {
+        ExpenseReport report = reportBy("5100001");
+        String repeatedApprover = "5100023"; // Reporting Manager at Level 1, also Engineering's owner
+        String otherOwner = "5100022"; // HR's owner - a genuinely distinct person
+
+        ApprovalAssignment reportingManagerAssignment = ApprovalAssignment.builder()
+                .assignmentId(UUID.randomUUID()).approverId(repeatedApprover).status(AssignmentStatus.PENDING).build();
+
+        // Level 2's redundant normal-track entry - resolves to the report's header Cost Center owner,
+        // who happens to be the same person as Level 1's Reporting Manager. No split reviews: the
+        // line item is fully split, so there is genuinely nothing "unsplit" left for this to review.
+        ApprovalAssignment redundantHeaderAssignment = ApprovalAssignment.builder()
+                .assignmentId(UUID.randomUUID()).approverId(repeatedApprover).entryOrder(1).status(AssignmentStatus.PENDING).build();
+
+        ApprovalSplitReview engineeringReview = ApprovalSplitReview.builder()
+                .reviewId(UUID.randomUUID()).status(LineItemReviewStatus.PENDING).build();
+        ApprovalAssignment engineeringSplitAssignment = ApprovalAssignment.builder()
+                .assignmentId(UUID.randomUUID()).approverId(repeatedApprover).status(AssignmentStatus.PENDING)
+                .splitReviews(new java.util.ArrayList<>(List.of(engineeringReview))).build();
+
+        ApprovalSplitReview hrReview = ApprovalSplitReview.builder()
+                .reviewId(UUID.randomUUID()).status(LineItemReviewStatus.PENDING).build();
+        ApprovalAssignment hrSplitAssignment = ApprovalAssignment.builder()
+                .assignmentId(UUID.randomUUID()).approverId(otherOwner).status(AssignmentStatus.PENDING)
+                .splitReviews(new java.util.ArrayList<>(List.of(hrReview))).build();
+
+        ApprovalLevelInstance level1 = ApprovalLevelInstance.builder().instanceId(UUID.randomUUID()).levelOrder(1).build();
+        ApprovalLevelInstance level2 = ApprovalLevelInstance.builder().instanceId(UUID.randomUUID()).levelOrder(2).build();
+        when(approvalAssignmentRepository.findByLevelInstance_InstanceId(level1.getInstanceId())).thenReturn(List.of(reportingManagerAssignment));
+        // Materialization order: the entries loop (redundant header entry) always runs before
+        // createSplitOwnerAssignments - matching real insertion order.
+        when(approvalAssignmentRepository.findByLevelInstance_InstanceId(level2.getInstanceId()))
+                .thenReturn(List.of(redundantHeaderAssignment, engineeringSplitAssignment, hrSplitAssignment));
+        when(approvalLevelInstanceRepository.findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), 1))
+                .thenReturn(List.of(level1, level2));
+
+        service.applyCorrectnessPasses(report, 1);
+
+        assertThat(reportingManagerAssignment.getStatus()).isEqualTo(AssignmentStatus.PENDING);
+        assertThat(redundantHeaderAssignment.getStatus())
+                .as("The redundant header entry IS a genuine cross-level duplicate and should be skipped")
+                .isEqualTo(AssignmentStatus.SKIPPED);
+        assertThat(engineeringSplitAssignment.getStatus())
+                .as("The genuine Engineering split-owner assignment must survive - it must never be skipped merely because an already-eliminated duplicate happened to share its approver")
+                .isEqualTo(AssignmentStatus.PENDING);
+        assertThat(hrSplitAssignment.getStatus()).isEqualTo(AssignmentStatus.PENDING);
     }
 }

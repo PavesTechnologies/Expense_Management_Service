@@ -41,7 +41,7 @@ import org.springframework.web.bind.annotation.*;
 @RequiredArgsConstructor
 public class FinanceVerificationController {
 
-    private static final String CAN_ACT_AS_FINANCE = "hasRole('FINANCE_EXECUTIVE')";
+    private static final String CAN_ACT_AS_FINANCE = "hasAnyRole('FINANCE_EXECUTIVE','FINANCE','ADMIN')";
 
     private final FinanceVerificationService financeVerificationService;
     private final ApprovalWorkflowService approvalWorkflowService;

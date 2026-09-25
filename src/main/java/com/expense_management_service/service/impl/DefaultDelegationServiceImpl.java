@@ -1,11 +1,14 @@
 package com.expense_management_service.service.impl;
 
 import com.expense_management_service.entity.ApprovalDelegation;
+import com.expense_management_service.entity.EmployeeCache;
 import com.expense_management_service.enums.DelegationStatus;
 import com.expense_management_service.repository.ApprovalDelegationRepository;
+import com.expense_management_service.repository.EmployeeCacheRepository;
 import com.expense_management_service.service.DelegationService;
 import lombok.RequiredArgsConstructor;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -16,11 +19,23 @@ import java.util.Optional;
 import java.util.Set;
 
 @Service
-@RequiredArgsConstructor
 @Transactional
 public class DefaultDelegationServiceImpl implements DelegationService {
 
     private final ApprovalDelegationRepository approvalDelegationRepository;
+    private final EmployeeCacheRepository employeeCacheRepository;
+
+    public DefaultDelegationServiceImpl(ApprovalDelegationRepository approvalDelegationRepository) {
+        this.approvalDelegationRepository = approvalDelegationRepository;
+        this.employeeCacheRepository = null;
+    }
+
+    @Autowired
+    public DefaultDelegationServiceImpl(ApprovalDelegationRepository approvalDelegationRepository,
+                                       EmployeeCacheRepository employeeCacheRepository) {
+        this.approvalDelegationRepository = approvalDelegationRepository;
+        this.employeeCacheRepository = employeeCacheRepository;
+    }
 
     @Override
     @Transactional(readOnly = true)
@@ -28,11 +43,22 @@ public class DefaultDelegationServiceImpl implements DelegationService {
         if (actingEmployeeId == null || approverId == null) {
             return false;
         }
-        if (actingEmployeeId.equals(approverId)) {
+        if (actingEmployeeId.equalsIgnoreCase(approverId)) {
             return true;
         }
+        Set<String> actingUserIds = expandEmployeeIds(actingEmployeeId);
+        Set<String> targetApproverIds = expandEmployeeIds(approverId);
+
+        for (String actId : actingUserIds) {
+            for (String apprId : targetApproverIds) {
+                if (actId.equalsIgnoreCase(apprId)) {
+                    return true;
+                }
+            }
+        }
+
         return resolveActiveDelegate(approverId)
-                .map(actingEmployeeId::equals)
+                .map(del -> actingUserIds.stream().anyMatch(del::equalsIgnoreCase))
                 .orElse(false);
     }
 
@@ -50,18 +76,35 @@ public class DefaultDelegationServiceImpl implements DelegationService {
     @Transactional(readOnly = true)
     public Set<String> resolveApproverIdsActingFor(String actingEmployeeId) {
         Set<String> approverIds = new HashSet<>();
-        approverIds.add(actingEmployeeId);
+        if (actingEmployeeId == null) {
+            return approverIds;
+        }
+        approverIds.addAll(expandEmployeeIds(actingEmployeeId));
 
         LocalDate today = LocalDate.now();
-        approvalDelegationRepository.findByDelegateIdAndStatusNot(actingEmployeeId, DelegationStatus.CANCELLED).stream()
-                .filter(d -> isInEffect(d, today))
-                .map(ApprovalDelegation::getDelegatorId)
-                // resolveActiveDelegate re-applies the "most recently created wins" precedence rule,
-                // so a delegator with a newer delegation naming someone else is correctly excluded here.
-                .filter(delegatorId -> resolveActiveDelegate(delegatorId).map(actingEmployeeId::equals).orElse(false))
-                .forEach(approverIds::add);
+        Set<String> queryIds = new HashSet<>(approverIds);
+        for (String qId : queryIds) {
+            approvalDelegationRepository.findByDelegateIdAndStatusNot(qId, DelegationStatus.CANCELLED).stream()
+                    .filter(d -> isInEffect(d, today))
+                    .map(ApprovalDelegation::getDelegatorId)
+                    .filter(delegatorId -> resolveActiveDelegate(delegatorId).map(del -> queryIds.stream().anyMatch(del::equalsIgnoreCase)).orElse(false))
+                    .forEach(delegatorId -> approverIds.addAll(expandEmployeeIds(delegatorId)));
+        }
 
         return approverIds;
+    }
+
+    private Set<String> expandEmployeeIds(String empId) {
+        Set<String> ids = new HashSet<>();
+        if (empId == null || empId.isBlank()) {
+            return ids;
+        }
+        ids.add(empId);
+        if (employeeCacheRepository != null) {
+            employeeCacheRepository.findByEmployeeId(empId).map(EmployeeCache::getEmployeeUuid).ifPresent(ids::add);
+            employeeCacheRepository.findByEmployeeUuid(empId).map(EmployeeCache::getEmployeeId).ifPresent(ids::add);
+        }
+        return ids;
     }
 
     private boolean isInEffect(ApprovalDelegation delegation, LocalDate today) {

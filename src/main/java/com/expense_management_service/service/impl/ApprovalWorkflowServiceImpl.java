@@ -29,8 +29,17 @@ import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
 import com.expense_management_service.repository.ApprovalLineItemReviewRepository;
+import com.expense_management_service.repository.CashAdvanceAdjustmentRepository;
+import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
+import com.expense_management_service.entity.FinanceVerificationReview;
+import com.expense_management_service.enums.FinanceVerificationStatus;
+import com.expense_management_service.repository.FinanceVerificationReviewRepository;
+import com.expense_management_service.service.FinanceVerificationService;
+
+import com.expense_management_service.entity.CashAdvance;
+import com.expense_management_service.entity.CashAdvanceAdjustment;
 import com.expense_management_service.service.ApprovalEventPublisher;
 import com.expense_management_service.service.ApprovalFlowResolutionService;
 import com.expense_management_service.service.ApprovalWorkflowService;
@@ -53,6 +62,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
@@ -94,6 +104,16 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
     private final ApprovalLineItemReviewRepository approvalLineItemReviewRepository;
     private final PolicyViolationRepository policyViolationRepository;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private CashAdvanceRepository cashAdvanceRepository;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private FinanceVerificationReviewRepository financeVerificationReviewRepository;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    @org.springframework.context.annotation.Lazy
+    private FinanceVerificationService financeVerificationService;
+
     private final ApprovalFlowResolutionService approvalFlowResolutionService;
     private final ApproverSourceResolver approverSourceResolver;
     private final ChainCorrectnessService chainCorrectnessService;
@@ -141,6 +161,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
         activateNextEligibleLevel(report, cycle, null);
         approvalEventPublisher.publish("REPORT_SUBMITTED", reportId, "flow=" + flow.getFlowId() + " cycle=" + cycle);
+        updateCashAdvanceStatusForReportSubmission(report);
 
         log.info("Submitted expense report {} for approval (cycle {}, flow {})", reportId, cycle, flow.getFlowId());
         return toResponse(findReport(reportId));
@@ -291,6 +312,13 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 .findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, cycle, LevelInstanceStatus.ACTIVE)
                 .orElseThrow(() -> new IllegalArgumentException("Report " + reportId + " has no level currently active for review"));
         if (activeInstance.getLevelType() != LevelType.APPROVAL) {
+            if (activeInstance.getLevelType() == LevelType.FINANCE_VERIFICATION && financeVerificationService != null) {
+                if (request.decision() == LineItemReviewStatus.APPROVED) {
+                    return financeVerificationService.verifyLineItem(reportId, lineItemId, actingEmployeeId);
+                } else if (request.decision() == LineItemReviewStatus.NEEDS_CORRECTION) {
+                    return financeVerificationService.queryLineItem(reportId, lineItemId, actingEmployeeId, request.comment());
+                }
+            }
             throw new IllegalArgumentException("Report " + reportId + "'s active level is a Finance Verification level - "
                     + "use the Finance Verification API, not the generic approval review endpoint");
         }
@@ -441,6 +469,18 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 .findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, cycle, LevelInstanceStatus.ACTIVE)
                 .orElseThrow(() -> new IllegalArgumentException("Report " + reportId + " has no level currently active for review"));
 
+        if (activeInstance.getLevelType() == LevelType.FINANCE_VERIFICATION) {
+            if (financeVerificationReviewRepository != null && financeVerificationService != null) {
+                var pendingFinanceReviews = financeVerificationReviewRepository
+                        .findByLevelInstance_InstanceIdAndStatus(activeInstance.getInstanceId(), FinanceVerificationStatus.PENDING);
+                for (FinanceVerificationReview review : pendingFinanceReviews) {
+                    financeVerificationService.verifyLineItem(reportId, review.getLineItem().getLineItemId(), actingEmployeeId);
+                }
+            }
+            log.info("Bulk-approved finance verification level on report {} by {}", reportId, actingEmployeeId);
+            return toResponse(findReport(reportId));
+        }
+
         var pendingReviews = approvalLineItemReviewRepository
                 .findByLevelInstance_InstanceIdAndStatus(activeInstance.getInstanceId(), LineItemReviewStatus.PENDING);
         if (pendingReviews.stream().anyMatch(r -> !policyViolationRepository.findByLineItem_LineItemId(r.getLineItem().getLineItemId()).isEmpty())) {
@@ -576,6 +616,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                     .materializedGlAccountFingerprint(glAccountFingerprint)
                     .build();
             ApprovalLevelInstance savedInstance = approvalLevelInstanceRepository.save(instance);
+        updateCashAdvanceStatusForReportReview(report);
 
             List<ApprovalLevelApprover> entries = level.getApprovers().stream()
                     .sorted(Comparator.comparing(ApprovalLevelApprover::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
@@ -713,8 +754,78 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         report.setApprovedAt(LocalDateTime.now());
         applyPaymentRouting(report);
         expenseReportRepository.save(report);
+        processCashAdvanceAdjustmentsForReport(report);
         approvalEventPublisher.publish("REPORT_APPROVED", report.getReportId(), "handoff=reimbursement-tracking");
         log.info("Report {} fully approved - handed off to Reimbursement Tracking", report.getReportId());
+    }
+
+    private void updateCashAdvanceStatusForReportSubmission(ExpenseReport report) {
+        if (cashAdvanceAdjustmentRepository == null || cashAdvanceRepository == null || report == null) return;
+        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId());
+        if (adjustments == null || adjustments.isEmpty()) return;
+        for (CashAdvanceAdjustment adjustment : adjustments) {
+            CashAdvance advance = adjustment.getCashAdvance();
+            if (advance != null) {
+                String st = advance.getStatus() != null ? advance.getStatus().toUpperCase() : "";
+                if (List.of("DISBURSED", "IN_PROGRESS", "IN PROGRESS", "RECONCILIATION_PENDING", "RECONCILIATION PENDING").contains(st)) {
+                    advance.setStatus("SUBMITTED_FOR_REVIEW");
+                    cashAdvanceRepository.save(advance);
+                }
+            }
+        }
+    }
+
+    private void updateCashAdvanceStatusForReportReview(ExpenseReport report) {
+        if (cashAdvanceAdjustmentRepository == null || cashAdvanceRepository == null || report == null) return;
+        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId());
+        if (adjustments == null || adjustments.isEmpty()) return;
+        for (CashAdvanceAdjustment adjustment : adjustments) {
+            CashAdvance advance = adjustment.getCashAdvance();
+            if (advance != null) {
+                String st = advance.getStatus() != null ? advance.getStatus().toUpperCase() : "";
+                if (List.of("DISBURSED", "IN_PROGRESS", "IN PROGRESS", "RECONCILIATION_PENDING", "RECONCILIATION PENDING", "SUBMITTED_FOR_REVIEW", "SUBMITTED FOR REVIEW").contains(st)) {
+                    advance.setStatus("UNDER_REVIEW");
+                    cashAdvanceRepository.save(advance);
+                }
+            }
+        }
+    }
+
+    private void processCashAdvanceAdjustmentsForReport(ExpenseReport report) {
+        if (cashAdvanceAdjustmentRepository == null || cashAdvanceRepository == null) return;
+        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId());
+        if (adjustments == null || adjustments.isEmpty()) return;
+
+        BigDecimal verifiedAmount = report.getReimbursableAmount() != null ? report.getReimbursableAmount() : report.getTotalAmount();
+
+        for (CashAdvanceAdjustment adjustment : adjustments) {
+            CashAdvance advance = adjustment.getCashAdvance();
+            if (advance == null) continue;
+
+            if (verifiedAmount != null) {
+                adjustment.setAdjustedAmount(verifiedAmount);
+                cashAdvanceAdjustmentRepository.save(adjustment);
+            }
+
+            List<CashAdvanceAdjustment> allAdjustments = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId());
+            BigDecimal totalAdjusted = allAdjustments.stream()
+                    .map(a -> a.getAdjustedAmount() != null ? a.getAdjustedAmount() : java.math.BigDecimal.ZERO)
+                    .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
+
+            BigDecimal totalRepaid = advance.getRepayments() != null 
+                    ? advance.getRepayments().stream().map(r -> r.getAmount() != null ? r.getAmount() : java.math.BigDecimal.ZERO).reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add)
+                    : java.math.BigDecimal.ZERO;
+
+            BigDecimal newBalance = advance.getAmount().subtract(totalAdjusted).subtract(totalRepaid);
+            advance.setOutstandingBalance(newBalance);
+            if (newBalance.compareTo(java.math.BigDecimal.ZERO) == 0) {
+                advance.setStatus("CLOSED");
+            } else {
+                advance.setStatus("SETTLEMENT_PENDING");
+            }
+            cashAdvanceRepository.save(advance);
+            approvalEventPublisher.publish("CASH_ADVANCE_ADJUSTED", advance.getAdvanceId(), "reportId=" + report.getReportId() + " amount=" + verifiedAmount);
+        }
     }
 
     /**

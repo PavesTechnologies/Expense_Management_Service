@@ -28,7 +28,6 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDate;
-import java.time.Year;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -74,7 +73,7 @@ class ExpenseReportServiceImplTest {
 
         costCenterId = UUID.randomUUID();
         currencyId = UUID.randomUUID();
-        fiscalYear = String.valueOf(Year.now().getValue());
+        fiscalYear = ExpenseReportServiceImpl.fiscalYearFor(LocalDate.now());
     }
 
     private CurrentUser employeeCaller() {
@@ -99,6 +98,37 @@ class ExpenseReportServiceImplTest {
         Currency currency = Currency.builder().currencyId(currencyId).currencyCode("USD").status("ACTIVE").build();
         lenient().when(costCenterRepository.findById(costCenterId)).thenReturn(Optional.of(costCenter));
         lenient().when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+    }
+
+    // ---------------------------------------------------------------------
+    // fiscalYearFor - the April-to-March boundary (bug fix: budget lookup requires "YYYY-YYYY")
+    // ---------------------------------------------------------------------
+
+    @Test
+    void fiscalYearFor_aprilFirst_startsTheNewFiscalYear() {
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2026, 4, 1))).isEqualTo("2026-2027");
+    }
+
+    @Test
+    void fiscalYearFor_marchThirtyFirst_stillBelongsToThePriorFiscalYear() {
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2027, 3, 31))).isEqualTo("2026-2027");
+    }
+
+    @Test
+    void fiscalYearFor_januaryDate_resolvesToTheFiscalYearThatStartedTheApriBefore() {
+        // A report/expense dated 2027-01-15 is NOT fiscal year "2027" or "2027-2028" - it's still
+        // within the fiscal year that started 1 Apr 2026, exactly the mismatch that caused the bug.
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2027, 1, 15))).isEqualTo("2026-2027");
+    }
+
+    @Test
+    void fiscalYearFor_decemberDate_belongsToTheFiscalYearThatStartedThatCalendarYearsApril() {
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2026, 12, 31))).isEqualTo("2026-2027");
+    }
+
+    @Test
+    void fiscalYearFor_aprilFirstOfTheFollowingYear_rollsOverToTheNextFiscalYear() {
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2027, 4, 1))).isEqualTo("2027-2028");
     }
 
     @Test

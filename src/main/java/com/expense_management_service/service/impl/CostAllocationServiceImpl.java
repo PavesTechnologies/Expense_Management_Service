@@ -12,6 +12,7 @@ import com.expense_management_service.mapper.CostAllocationMapper;
 import com.expense_management_service.repository.CostAllocationRepository;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
+import com.expense_management_service.repository.ExpenseSplitRepository;
 import com.expense_management_service.service.CostAllocationService;
 import lombok.RequiredArgsConstructor;
 
@@ -28,10 +29,18 @@ public class CostAllocationServiceImpl implements CostAllocationService {
     private final CostAllocationRepository costAllocationRepository;
     private final ExpenseLineItemRepository expenseLineItemRepository;
     private final CostCenterRepository costCenterRepository;
+    private final ExpenseSplitRepository expenseSplitRepository;
     private final CostAllocationMapper costAllocationMapper;
 
     @Override
     public CostAllocationResponse create(CostAllocationRequest request) {
+        // Production-readiness audit (Part 5): the reverse of ExpenseSplitServiceImpl's own guard -
+        // a line item must use Cost Allocation (legacy) or Expense Split (new), never both.
+        if (!expenseSplitRepository.findByLineItem_LineItemIdAndRemovedAtIsNullOrderBySplitOrderAsc(request.lineItemId()).isEmpty()) {
+            throw new IllegalArgumentException(
+                    "This line item already has an Expense Split allocation - remove it before creating a legacy Cost Allocation entry. "
+                            + "A line item may use Cost Allocation or Expense Split, never both.");
+        }
         CostAllocation entity = costAllocationMapper.toEntity(request);
         entity.setLineItem(findLineItem(request.lineItemId()));
         entity.setCostCenter(findCostCenter(request.costCenterId()));

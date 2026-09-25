@@ -11,6 +11,10 @@ public record CostCenterBudgetResponse(
         String fiscalYear,
         BigDecimal budgetAmount,
         BigDecimal availableBudget,
+        BigDecimal rolloverFromPrevious,
+        Boolean allowRollover,
+        BigDecimal rolloverCap,
+        BigDecimal warningThreshold,
         LocalDateTime createdAt,
         LocalDateTime updatedAt
 ) {

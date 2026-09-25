@@ -17,6 +17,7 @@ public record ApprovalQueueItemResponse(
         LocalDateTime submittedAt,
         Integer levelOrder,
         List<PendingLineItemResponse> pendingLineItems,
+        List<PendingSplitResponse> pendingSplits,
         boolean eligibleForBulkApprove
 ) {
 }

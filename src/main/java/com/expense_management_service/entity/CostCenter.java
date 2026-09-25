@@ -56,6 +56,18 @@ public class CostCenter {
     @Column(name = "status", length = 255)
     private String status;
 
+    /**
+     * Governs behavior when NO {@code CostCenterBudget} row exists at all for this cost center's
+     * applicable fiscal year - deliberately lives here, not on {@code CostCenterBudget}, precisely
+     * because that is the one row this flag must still be readable without. {@code true} allows a
+     * submission to proceed with a {@code BudgetEncumbrance} flagged {@code unbudgeted = true}
+     * instead of hard-failing; it never overrides a genuine insufficient-budget failure on a cost
+     * center that DOES have a budget row.
+     */
+    @Column(name = "allow_unbudgeted", nullable = false)
+    @Builder.Default
+    private Boolean allowUnbudgeted = false;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

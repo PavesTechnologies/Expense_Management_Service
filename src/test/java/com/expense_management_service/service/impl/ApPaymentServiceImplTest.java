@@ -13,6 +13,7 @@ import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ApprovalEventPublisher;
+import com.expense_management_service.service.BudgetEncumbranceService;
 import com.expense_management_service.service.CostCenterBudgetService;
 import com.expense_management_service.service.ExpenseLineItemService;
 import org.junit.jupiter.api.BeforeEach;
@@ -50,6 +51,7 @@ class ApPaymentServiceImplTest {
     @Mock private AuditLogRepository auditLogRepository;
     @Mock private PolicyViolationRepository policyViolationRepository;
     @Mock private CostCenterBudgetService costCenterBudgetService;
+    @Mock private BudgetEncumbranceService budgetEncumbranceService;
 
     private ApPaymentServiceImpl service;
 
@@ -59,7 +61,7 @@ class ApPaymentServiceImplTest {
     void setUp() {
         var factory = new ExpenseReportResponseFactory(new com.expense_management_service.mapper.ExpenseReportMapper(), policyViolationRepository);
         service = new ApPaymentServiceImpl(expenseReportRepository, expenseLineItemService, approvalWorkflowService,
-                approvalEventPublisher, auditLogRepository, factory, costCenterBudgetService);
+                approvalEventPublisher, auditLogRepository, factory, costCenterBudgetService, budgetEncumbranceService);
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
     }
 
@@ -166,6 +168,42 @@ class ApPaymentServiceImplTest {
                 .isInstanceOf(IllegalArgumentException.class);
 
         verify(costCenterBudgetService, times(1)).consumeBudget(any(), any(), any());
+    }
+
+    // ---------------------------------------------------------------------
+    // markPaymentCompleted - budget consumption via BudgetEncumbrance (Phase 6)
+    // ---------------------------------------------------------------------
+
+    @Test
+    void markPaymentCompleted_consumesViaEncumbrances_andSkipsTheFallbackDirectConsumeBudgetCall_whenAnyExist() {
+        ExpenseReport report = approvedForPaymentReportWithBudgetFields();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(2);
+        when(budgetEncumbranceService.consumeActiveForReport(reportId, 2)).thenReturn(true);
+
+        service.markPaymentCompleted(reportId, "5100099");
+
+        verify(budgetEncumbranceService).consumeActiveForReport(reportId, 2);
+        verify(costCenterBudgetService, never()).consumeBudget(any(), any(), any());
+    }
+
+    @Test
+    void markPaymentCompleted_fallsBackToDirectConsumeBudget_whenReportHasNoEncumbrancesAtAll() {
+        // Models an in-flight report that reached APPROVED_FOR_PAYMENT before Phase 5's encumbrance
+        // wiring existed - consumeActiveForReport correctly finds nothing (returns false), and budget
+        // must still be consumed exactly once via the original, pre-Phase-3 direct path.
+        ExpenseReport report = approvedForPaymentReportWithBudgetFields();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
+        when(budgetEncumbranceService.consumeActiveForReport(reportId, 1)).thenReturn(false);
+
+        service.markPaymentCompleted(reportId, "5100099");
+
+        verify(budgetEncumbranceService).consumeActiveForReport(reportId, 1);
+        verify(costCenterBudgetService, times(1))
+                .consumeBudget(report.getCostCenter(), "2026", new BigDecimal("12500.00"));
     }
 
     // ---------------------------------------------------------------------

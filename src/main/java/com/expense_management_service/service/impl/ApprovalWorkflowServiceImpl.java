@@ -4,19 +4,27 @@ import com.expense_management_service.common.exception.ResourceNotFoundException
 import com.expense_management_service.dto.request.LineItemReviewRequest;
 import com.expense_management_service.dto.request.RejectReportRequest;
 import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
+import com.expense_management_service.dto.response.BudgetEncumbranceOutcome;
+import com.expense_management_service.dto.response.BudgetWarning;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.LineItemReviewResponse;
 import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.dto.response.PendingLineItemResponse;
+import com.expense_management_service.dto.response.PendingSplitResponse;
+import com.expense_management_service.dto.response.SplitReviewResponse;
 import com.expense_management_service.entity.ApprovalAssignment;
 import com.expense_management_service.entity.ApprovalFlow;
 import com.expense_management_service.entity.ApprovalLevel;
 import com.expense_management_service.entity.ApprovalLevelApprover;
 import com.expense_management_service.entity.ApprovalLevelInstance;
 import com.expense_management_service.entity.ApprovalLineItemReview;
+import com.expense_management_service.entity.ApprovalSplitReview;
+import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.ExpenseSplit;
+import com.expense_management_service.enums.ApproverSourceType;
 import com.expense_management_service.enums.AssignmentStatus;
 import com.expense_management_service.enums.LevelInstanceStatus;
 import com.expense_management_service.enums.LevelQuorum;
@@ -44,6 +52,7 @@ import com.expense_management_service.service.ApprovalEventPublisher;
 import com.expense_management_service.service.ApprovalFlowResolutionService;
 import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ApproverSourceResolver;
+import com.expense_management_service.service.BudgetEncumbranceService;
 import com.expense_management_service.service.ChainCorrectnessService;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.LevelReviewStrategy;
@@ -64,14 +73,15 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 /**
  * The new Approval Flow Engine orchestrator. Replaces EP06's {@code ApprovalWorkflowServiceImpl}
@@ -103,6 +113,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private final ApprovalLevelInstanceRepository approvalLevelInstanceRepository;
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
     private final ApprovalLineItemReviewRepository approvalLineItemReviewRepository;
+    private final ApprovalSplitReviewRepository approvalSplitReviewRepository;
     private final PolicyViolationRepository policyViolationRepository;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
@@ -117,6 +128,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private final ApprovalFlowResolutionService approvalFlowResolutionService;
     private final ApproverSourceResolver approverSourceResolver;
     private final ChainCorrectnessService chainCorrectnessService;
+    private final BudgetEncumbranceService budgetEncumbranceService;
     private final DelegationService delegationService;
     private final PolicyEvaluationGateway policyEvaluationGateway;
     private final ApprovalEventPublisher approvalEventPublisher;
@@ -152,6 +164,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         ApprovalFlow flow = approvalFlowResolutionService.resolveMatchingFlow(report);
         int cycle = nextSubmissionCycle(reportId);
 
+        logBudgetWarnings(budgetEncumbranceService.validateAndEncumber(report, cycle));
         materializeChain(report, flow, cycle);
         chainCorrectnessService.applyCorrectnessPasses(report, cycle);
 
@@ -212,7 +225,19 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 .orElseThrow(() -> new IllegalStateException(
                         "Report " + report.getReportId() + " is AWAITING_CORRECTION but has no ACTIVE level instance"));
 
+        // Production-readiness audit, Parts 1-3: this is the ONLY correction path that can change
+        // budget-impacting data (amounts, Cost Centers, added/removed splits) without going through
+        // fullRestart's materialize-a-new-cycle path - resolveMatchingFlow re-matching the same flow
+        // says nothing about whether the underlying splits changed. Must run BEFORE the existing
+        // NEEDS_CORRECTION-only reset below, so a review reset here for a material change is not
+        // then skipped by that narrower check.
+        budgetEncumbranceService.reconcileForCycle(report, cycle);
+        if (activeInstance.getLevelType() == LevelType.APPROVAL) {
+            reconcileSplitOwnerApprovals(report, activeInstance);
+        }
+
         resolveStrategy(activeInstance.getLevelType()).resumeCorrectedReviews(activeInstance);
+        resumeCorrectedSplitReviews(activeInstance);
 
         report.setReportStatus(activeInstance.getLevelType() == LevelType.FINANCE_VERIFICATION
                 ? ReportStatus.PENDING_FINANCE_VERIFICATION : ReportStatus.PENDING_APPROVAL);
@@ -231,6 +256,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         cancelAllOpenInstances(report, oldCycle);
 
         int newCycle = oldCycle + 1;
+        logBudgetWarnings(budgetEncumbranceService.validateAndEncumber(report, newCycle));
         materializeChain(report, newFlow, newCycle);
         chainCorrectnessService.applyCorrectnessPasses(report, newCycle);
 
@@ -323,9 +349,16 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                     + "use the Finance Verification API, not the generic approval review endpoint");
         }
 
+        // Split-owner assignments (Phase 4) are deliberately excluded here - they exist ONLY to
+        // track a Cost Center Owner's own splits, never as a stand-in completer for the shared
+        // line-item review, even when the same person's approverId also happens to be resolvable
+        // there. Without this exclusion, a split-owner reviewing an (also-shared) line item would
+        // have completeLevelOrAdvanceSequential wrongly mark their OWN split-owner assignment
+        // COMPLETED, even though their actual splits are still untouched.
         ApprovalAssignment authorizing = approvalAssignmentRepository.findByLevelInstance_InstanceId(activeInstance.getInstanceId())
                 .stream()
                 .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
+                .filter(a -> a.getSplitReviews().isEmpty())
                 .filter(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()))
                 .findFirst()
                 .orElseThrow(() -> new AccessDeniedException(
@@ -355,6 +388,76 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
         if (isInstanceFullyApproved(activeInstance)) {
             completeLevelOrAdvanceSequential(report, activeInstance, authorizing, cycle);
+        }
+        return toResponse(findReport(reportId));
+    }
+
+    // ---------------------------------------------------------------------
+    // Split review (Phase 4) - the Cost Center Owner's per-split decision, independent of
+    // reviewLineItem. Keyed by (split, assignment) rather than a level-wide shared row, so one
+    // owner's rejection of their own split can never block a different owner's (or the normal
+    // track's) ability to act at the same level.
+    // ---------------------------------------------------------------------
+
+    @Override
+    public ExpenseReportResponse reviewSplit(UUID reportId, UUID splitId, String actingEmployeeId, LineItemReviewRequest request) {
+        if (request.decision() == LineItemReviewStatus.PENDING) {
+            throw new IllegalArgumentException("decision must be APPROVED or NEEDS_CORRECTION");
+        }
+        if (request.decision() == LineItemReviewStatus.NEEDS_CORRECTION
+                && (request.comment() == null || request.comment().isBlank())) {
+            throw new IllegalArgumentException("A comment is required when flagging a split as Needs Correction");
+        }
+
+        ExpenseReport report = findReport(reportId);
+        int cycle = currentSubmissionCycle(reportId);
+        ApprovalLevelInstance activeInstance = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, cycle, LevelInstanceStatus.ACTIVE)
+                .orElseThrow(() -> new IllegalArgumentException("Report " + reportId + " has no level currently active for review"));
+        if (activeInstance.getLevelType() != LevelType.APPROVAL) {
+            throw new IllegalArgumentException("Report " + reportId + "'s active level is a Finance Verification level - "
+                    + "splits are only reviewable at an Approval level");
+        }
+
+        ApprovalAssignment authorizing = approvalAssignmentRepository.findByLevelInstance_InstanceId(activeInstance.getInstanceId())
+                .stream()
+                .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
+                .filter(a -> !a.getSplitReviews().isEmpty())
+                .filter(a -> a.getSplitReviews().stream().anyMatch(r -> r.getSplit().getSplitId().equals(splitId)))
+                .filter(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()))
+                .findFirst()
+                .orElseThrow(() -> new AccessDeniedException(
+                        "You are not the active Cost Center Owner (or delegate) for this split at this report's current level"));
+
+        ApprovalSplitReview review = approvalSplitReviewRepository
+                .findBySplit_SplitIdAndAssignment_AssignmentId(splitId, authorizing.getAssignmentId())
+                .orElseThrow(() -> new ResourceNotFoundException("No pending review for split " + splitId + " at this level"));
+        if (review.getSplit().getRemovedAt() != null) {
+            throw new IllegalArgumentException("This split was removed from the allocation during correction and no longer needs review.");
+        }
+        if (review.getStatus() != LineItemReviewStatus.PENDING) {
+            throw new IllegalArgumentException("This split has already been reviewed at this level: " + review.getStatus());
+        }
+
+        review.setStatus(request.decision());
+        review.setComment(request.comment());
+        review.setActedBy(actingEmployeeId.equals(authorizing.getApproverId()) ? null : actingEmployeeId);
+        review.setActionedAt(LocalDateTime.now());
+        approvalSplitReviewRepository.save(review);
+        approvalEventPublisher.publish("SPLIT_REVIEWED", reportId,
+                "split=" + splitId + " decision=" + request.decision() + " by=" + actingEmployeeId);
+
+        if (request.decision() == LineItemReviewStatus.NEEDS_CORRECTION) {
+            report.setReportStatus(ReportStatus.AWAITING_CORRECTION);
+            expenseReportRepository.save(report);
+            approvalEventPublisher.publish("REPORT_AWAITING_CORRECTION", reportId, "split=" + splitId);
+            return toResponse(findReport(reportId));
+        }
+
+        boolean assignmentDone = approvalSplitReviewRepository.findByAssignment_AssignmentId(authorizing.getAssignmentId())
+                .stream().allMatch(r -> r.getStatus() == LineItemReviewStatus.APPROVED);
+        if (assignmentDone) {
+            completeSplitOwnerAssignment(report, activeInstance, authorizing, cycle);
         }
         return toResponse(findReport(reportId));
     }
@@ -404,24 +507,30 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 .findDistinctReportIdsByStatusAndApproverIdIn(AssignmentStatus.ACTIVE, approverIds, pageable);
 
         List<ApprovalQueueItemResponse> items = reportIdsPage.getContent().stream()
-                .map(reportId -> representativeAssignment(reportId, approverIds))
-                .flatMap(Optional::stream)
+                .map(reportId -> matchingAssignments(reportId, approverIds))
+                .filter(assignments -> !assignments.isEmpty())
                 .map(this::toQueueItem)
                 .toList();
 
         return PageResponse.of(new PageImpl<>(items, pageable, reportIdsPage.getTotalElements()));
     }
 
-    /** The one ACTIVE assignment a queue row is built from for a given report - first match, same tie-break as the pre-pagination in-memory version. */
-    private Optional<ApprovalAssignment> representativeAssignment(UUID reportId, Set<String> approverIds) {
+    /**
+     * Every ACTIVE assignment this caller (or a delegator they act for) currently holds on a given
+     * report - production-readiness audit, Part 4: a caller can hold BOTH a normal-track assignment
+     * AND one or more split-owner assignments on the same report at the same level, and the queue
+     * row must surface every one of them, not just whichever came first. Previously only the first
+     * match was used, silently hiding a dual-role caller's other responsibility.
+     */
+    private List<ApprovalAssignment> matchingAssignments(UUID reportId, Set<String> approverIds) {
         return approvalAssignmentRepository.findByLevelInstance_Report_ReportId(reportId).stream()
                 .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
                 .filter(a -> approverIds.contains(a.getApproverId()))
-                .findFirst();
+                .toList();
     }
 
-    private ApprovalQueueItemResponse toQueueItem(ApprovalAssignment assignment) {
-        ApprovalLevelInstance instance = assignment.getLevelInstance();
+    private ApprovalQueueItemResponse toQueueItem(List<ApprovalAssignment> assignments) {
+        ApprovalLevelInstance instance = assignments.get(0).getLevelInstance();
         ExpenseReport report = instance.getReport();
 
         var pendingReviews = approvalLineItemReviewRepository
@@ -442,6 +551,27 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 })
                 .toList();
 
+        // Scoped to the caller's OWN matched assignments, not the whole level - unlike
+        // pendingLineItems (a level-wide shared review), split ownership is assignment-specific: a
+        // different Cost Center Owner's splits must never appear in this caller's queue item. A
+        // dual-role caller's normal-track assignment contributes none (empty splitReviews), so this
+        // naturally aggregates only the split-owner assignment(s) among `assignments`.
+        List<PendingSplitResponse> pendingSplits = assignments.stream()
+                .flatMap(a -> a.getSplitReviews().stream())
+                .filter(review -> review.getStatus() == LineItemReviewStatus.PENDING)
+                .filter(review -> review.getSplit().getRemovedAt() == null)
+                .map(review -> {
+                    ExpenseSplit split = review.getSplit();
+                    CostCenter costCenter = split.getCostCenter();
+                    return new PendingSplitResponse(
+                            split.getSplitId(), review.getReviewId(), split.getLineItem().getLineItemId(),
+                            costCenter != null ? costCenter.getCostCenterId() : null,
+                            costCenter != null ? costCenter.getCostCenterCode() : null,
+                            costCenter != null ? costCenter.getCostCenterName() : null,
+                            split.getAllocatedAmount());
+                })
+                .toList();
+
         boolean eligibleForBulkApprove = policyViolationRepository.findByLineItem_Report_ReportId(report.getReportId()).isEmpty();
 
         return new ApprovalQueueItemResponse(
@@ -450,7 +580,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
                 report.getReportStatus() != null ? report.getReportStatus().name() : null,
                 report.getSubmittedAt(),
-                instance.getLevelOrder(), pendingLineItems, eligibleForBulkApprove);
+                instance.getLevelOrder(), pendingLineItems, pendingSplits, eligibleForBulkApprove);
     }
 
     // ---------------------------------------------------------------------
@@ -463,7 +593,6 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             throw new IllegalArgumentException("Report " + reportId + " has policy violations and is not eligible for bulk approval");
         }
 
-        ExpenseReport report = findReport(reportId);
         int cycle = currentSubmissionCycle(reportId);
         ApprovalLevelInstance activeInstance = approvalLevelInstanceRepository
                 .findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, cycle, LevelInstanceStatus.ACTIVE)
@@ -530,6 +659,41 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     @Override
     @Transactional(readOnly = true)
+    public List<SplitReviewResponse> getSplitReviews(UUID reportId, String actingEmployeeId) {
+        ExpenseReport report = findReport(reportId);
+        assertCanViewLineItemReviews(report, actingEmployeeId);
+
+        int cycle = currentSubmissionCycle(reportId);
+        var instances = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(reportId, cycle);
+
+        List<SplitReviewResponse> result = new java.util.ArrayList<>();
+        for (ApprovalLevelInstance instance : instances) {
+            for (ApprovalAssignment assignment : approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId())) {
+                for (ApprovalSplitReview review : assignment.getSplitReviews()) {
+                    ExpenseSplit split = review.getSplit();
+                    CostCenter costCenter = split.getCostCenter();
+                    result.add(new SplitReviewResponse(
+                            split.getSplitId(),
+                            review.getReviewId(),
+                            split.getLineItem().getLineItemId(),
+                            costCenter != null ? costCenter.getCostCenterId() : null,
+                            costCenter != null ? costCenter.getCostCenterCode() : null,
+                            review.getStatus(),
+                            review.getComment(),
+                            review.getActedBy(),
+                            review.getActionedAt(),
+                            instance.getLevelOrder(),
+                            instance.getLevelName(),
+                            ApprovalFlowMapper.resolveDisplayName(instance.getLevelName(), instance.getLevelOrder())));
+                }
+            }
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public ApprovalStatusResponse getApprovalStatus(UUID reportId) {
         ExpenseReport report = findReport(reportId);
         int cycle = currentSubmissionCycle(reportId);
@@ -586,6 +750,12 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         completeLevelOrAdvanceSequential(report, instance, completingAssignment, currentSubmissionCycle(reportId));
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public int getCurrentSubmissionCycle(UUID reportId) {
+        return currentSubmissionCycle(reportId);
+    }
+
     // ---------------------------------------------------------------------
     // Chain materialisation & activation
     // ---------------------------------------------------------------------
@@ -633,10 +803,73 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                                 .build()));
             }
 
+            boolean hasCostCenterOwnerEntry = entries.stream().anyMatch(e -> e.getSourceType() == ApproverSourceType.COST_CENTER_OWNER);
+            if (hasCostCenterOwnerEntry && level.getLevelType() == LevelType.APPROVAL) {
+                createSplitOwnerAssignments(report, savedInstance);
+            }
+
             if (approvalAssignmentRepository.findByLevelInstance_InstanceId(savedInstance.getInstanceId()).isEmpty()) {
                 throw new IllegalStateException("Level " + level.getLevelOrder() + " of flow " + flow.getFlowId()
                         + " resolved zero approvers - check its approver-source configuration (e.g. a DEPARTMENT_OWNER "
                         + "with no DepartmentApprover mapping, or a COST_CENTER_OWNER with no owner set)");
+            }
+        }
+    }
+
+    /**
+     * Split-aware {@code COST_CENTER_OWNER} resolution (Phase 4), Approval levels only. A no-op for
+     * any report with zero {@code ExpenseSplit} rows - the level's normal, single header-cost-center
+     * resolution (already handled by the entries loop above) is completely unaffected. When the
+     * report DOES have splits, resolves one owner per distinct split cost center, combines every
+     * split that resolves to the same owner (whether from the same line item or different ones)
+     * into ONE {@code ApprovalAssignment}, and gives it one {@code ApprovalSplitReview} child per
+     * split - additive alongside the header-cost-center assignment the entries loop may have also
+     * created (covering any of this report's line items that are NOT split).
+     */
+    /** Every currently-active (non-removed) ExpenseSplit across the report's line items - a soft-deleted split (removedAt != null) is excluded from all live resolution, kept only so its historical ApprovalSplitReview can still resolve its FK. */
+    private List<ExpenseSplit> activeSplits(ExpenseReport report) {
+        return report.getExpenseLineItems() == null ? List.of()
+                : report.getExpenseLineItems().stream()
+                        .flatMap(li -> li.getExpenseSplits().stream())
+                        .filter(s -> s.getRemovedAt() == null)
+                        .toList();
+    }
+
+    private void createSplitOwnerAssignments(ExpenseReport report, ApprovalLevelInstance instance) {
+        List<ExpenseSplit> allSplits = activeSplits(report);
+        if (allSplits.isEmpty()) {
+            return;
+        }
+
+        Map<String, List<ExpenseSplit>> splitsByOwner = new LinkedHashMap<>();
+        for (ExpenseSplit split : allSplits) {
+            String ownerId = split.getCostCenter() != null ? split.getCostCenter().getOwnerEmployeeId() : null;
+            if (ownerId == null || ownerId.isBlank()) {
+                log.warn("Split {} cost center {} has no ownerEmployeeId configured - skipping its Cost Center Owner assignment",
+                        split.getSplitId(), split.getCostCenter() != null ? split.getCostCenter().getCostCenterId() : null);
+                continue;
+            }
+            splitsByOwner.computeIfAbsent(ownerId, k -> new ArrayList<>()).add(split);
+        }
+
+        for (Map.Entry<String, List<ExpenseSplit>> ownerEntry : splitsByOwner.entrySet()) {
+            ApprovalAssignment assignment = approvalAssignmentRepository.save(ApprovalAssignment.builder()
+                    .levelInstance(instance)
+                    .approverId(ownerEntry.getKey())
+                    .sourceType(ApproverSourceType.COST_CENTER_OWNER)
+                    .status(AssignmentStatus.PENDING)
+                    .build());
+            for (ExpenseSplit split : ownerEntry.getValue()) {
+                ApprovalSplitReview review = approvalSplitReviewRepository.save(ApprovalSplitReview.builder()
+                        .split(split)
+                        .assignment(assignment)
+                        .status(LineItemReviewStatus.PENDING)
+                        .build());
+                // Keep both sides of the association in sync in-memory - materializeChain and
+                // activateNextEligibleLevel run in the SAME transaction as this save, and the
+                // inverse mappedBy collection on `assignment` would otherwise still read back
+                // empty for the rest of this call chain (JPA does not do this automatically).
+                assignment.getSplitReviews().add(review);
             }
         }
     }
@@ -666,16 +899,24 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 ? ReportStatus.PENDING_FINANCE_VERIFICATION : ReportStatus.PENDING_APPROVAL);
         expenseReportRepository.save(report);
 
-        var assignments = approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+        var openAssignments = approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
                 .filter(a -> a.getStatus() != AssignmentStatus.SKIPPED)
+                .toList();
+
+        // Split-owner assignments (Phase 4) always activate immediately and act in parallel,
+        // independent of the level's configured quorum - each owns a disjoint slice of the report
+        // (their own splits), so there is nothing to sequence or race between them.
+        var splitOwnerAssignments = openAssignments.stream().filter(a -> !a.getSplitReviews().isEmpty()).toList();
+        var normalAssignments = openAssignments.stream().filter(a -> a.getSplitReviews().isEmpty())
                 .sorted(Comparator.comparing(ApprovalAssignment::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
                 .toList();
 
         if (instance.getQuorum() == LevelQuorum.SEQUENTIAL) {
-            assignments.stream().findFirst().ifPresent(this::activateAssignment);
+            normalAssignments.stream().findFirst().ifPresent(this::activateAssignment);
         } else {
-            assignments.forEach(this::activateAssignment);
+            normalAssignments.forEach(this::activateAssignment);
         }
+        splitOwnerAssignments.forEach(this::activateAssignment);
 
         resolveStrategy(instance.getLevelType()).createPendingReviews(instance, report.getExpenseLineItems());
         approvalEventPublisher.publish("LEVEL_ACTIVATED", report.getReportId(), "level=" + instance.getLevelOrder());
@@ -730,12 +971,34 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 return;
             }
         } else {
+            // Split-owner assignments (Phase 4) are deliberately excluded here - the documented
+            // ANY_OF/ALL_OF simplification ("one pass finishes -> the shared line-item review is
+            // done for everyone") applies only to the normal track. Each split-owner assignment
+            // completes independently, only when its OWN split reviews are all approved (see
+            // completeSplitOwnerAssignment / reviewSplit) - it must never be force-completed just
+            // because a different, unrelated normal-track approver finished their own pass.
             approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
                     .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE || a.getStatus() == AssignmentStatus.PENDING)
+                    .filter(a -> a.getSplitReviews().isEmpty())
                     .forEach(a -> {
                         a.setStatus(AssignmentStatus.COMPLETED);
                         approvalAssignmentRepository.save(a);
                     });
+        }
+
+        finishInstanceIfFullyDone(report, instance, cycle);
+    }
+
+    /**
+     * The normal (line-item) track has finished its own pass, or a split-owner assignment has just
+     * finished its own splits - either way, only actually completes the level instance and advances
+     * to the next level once BOTH tracks are done (Phase 4). For any level with no split-owner
+     * assignments (the overwhelming majority, and every level before Phase 4), this reduces to
+     * exactly the check the normal track already used, so behavior is unchanged.
+     */
+    private void finishInstanceIfFullyDone(ExpenseReport report, ApprovalLevelInstance instance, int cycle) {
+        if (!isEntireInstanceDone(instance)) {
+            return;
         }
 
         instance.setStatus(LevelInstanceStatus.COMPLETED);
@@ -746,6 +1009,157 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
 
         activateNextEligibleLevel(report, cycle, instance.getLevelOrder());
+    }
+
+    /**
+     * Normal track's final pass done AND every non-skipped split-owner assignment's own splits are
+     * all approved. A review whose split has since been removed from the allocation (production-
+     * readiness audit, Part 2/3: {@code removedAt != null}) is excluded from this requirement,
+     * exactly like a SKIPPED assignment's splits are - the split no longer exists to be approved.
+     * <p>
+     * Bug fix (production-readiness follow-up): the normal track's {@code isLevelComplete} gate
+     * (every {@code ApprovalLineItemReview} at this level APPROVED - a level-wide shared review every
+     * line item gets, split or not, deliberately requiring the normal-track approver to also sign off
+     * a split line item's shared review alongside its split-owners' own allocation reviews) is only
+     * even consulted when at least one normal-track assignment (one with no split reviews) at this
+     * level actually SURVIVES (not SKIPPED). When a level's only normal-track assignment gets
+     * legitimately skipped as a cross-level duplicate approver (§2.6) - e.g. the report's header Cost
+     * Center happens to be one of its own split's Cost Centers, and that owner already appeared at an
+     * earlier level - nobody remains who could ever satisfy that shared review, which would otherwise
+     * block this level (and the whole chain) from ever completing no matter how many split reviews get
+     * approved. With nobody left holding the normal track's responsibility, it imposes no requirement,
+     * and completion depends purely on the split track - mirroring the split track's own established
+     * "a SKIPPED assignment's splits are waived" rule, just applied to the normal track's assignments.
+     */
+    private boolean isEntireInstanceDone(ApprovalLevelInstance instance) {
+        List<ApprovalAssignment> assignments = approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId());
+
+        boolean anyNormalTrackAssignmentSurvives = assignments.stream()
+                .anyMatch(a -> a.getStatus() != AssignmentStatus.SKIPPED && a.getSplitReviews().isEmpty());
+        if (anyNormalTrackAssignmentSurvives && !resolveStrategy(instance.getLevelType()).isLevelComplete(instance)) {
+            return false;
+        }
+
+        return assignments.stream()
+                .filter(a -> a.getStatus() != AssignmentStatus.SKIPPED)
+                .filter(a -> !a.getSplitReviews().isEmpty())
+                .allMatch(a -> a.getSplitReviews().stream()
+                        .filter(r -> r.getSplit().getRemovedAt() == null)
+                        .allMatch(r -> r.getStatus() == LineItemReviewStatus.APPROVED));
+    }
+
+    /** A split-owner assignment has just approved all of its own splits - mirrors completeLevelOrAdvanceSequential's tail for the normal track. */
+    private void completeSplitOwnerAssignment(ExpenseReport report, ApprovalLevelInstance instance, ApprovalAssignment splitOwnerAssignment, int cycle) {
+        splitOwnerAssignment.setStatus(AssignmentStatus.COMPLETED);
+        approvalAssignmentRepository.save(splitOwnerAssignment);
+        finishInstanceIfFullyDone(report, instance, cycle);
+    }
+
+    /**
+     * Production-readiness audit, Parts 2-3: re-evaluates every split-owner assignment's own
+     * reviews against the CURRENT live split state, and creates/extends assignments for any
+     * newly-added split Cost Center. Runs once per {@code resumeInPlace} call, comparing against
+     * this SAME cycle's original materialization - not against whatever the previous correction
+     * looked like, so any number of successive corrections keep reconciling correctly.
+     * <p>
+     * A split whose Cost Center is unchanged but whose amount/mode changed is detected via {@code
+     * ExpenseSplit.updatedAt} having moved past this instance's own {@code createdAt} - Hibernate's
+     * dirty-checking only bumps {@code updatedAt} when a field actually changed (see {@code
+     * ExpenseSplitServiceImpl}'s reconcile-in-place javadoc), so an untouched split's review is never
+     * disturbed. Its review is reset to PENDING regardless of prior status - a stale APPROVED review
+     * must never stand in for a materially different allocation (the locked example: Owner A approved
+     * CC-A at 50%; after correction CC-A is 20% - that old approval cannot cover the new 20% figure).
+     * A split whose Cost Center was removed from the set is never revisited here - {@code
+     * isEntireInstanceDone} already excludes a removed split's review from the completion gate, the
+     * same way it already excludes a SKIPPED assignment's splits.
+     */
+    private void reconcileSplitOwnerApprovals(ExpenseReport report, ApprovalLevelInstance instance) {
+        List<ExpenseSplit> currentSplits = activeSplits(report);
+        if (currentSplits.isEmpty()) {
+            return;
+        }
+
+        var splitOwnerAssignments = approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                .filter(a -> !a.getSplitReviews().isEmpty())
+                .toList();
+
+        Set<UUID> coveredSplitIds = new java.util.HashSet<>();
+        for (ApprovalAssignment assignment : splitOwnerAssignments) {
+            boolean anyReactivated = false;
+            for (ApprovalSplitReview review : assignment.getSplitReviews()) {
+                coveredSplitIds.add(review.getSplit().getSplitId());
+                boolean changedSinceMaterialization = review.getSplit().getUpdatedAt() != null
+                        && review.getSplit().getUpdatedAt().isAfter(instance.getCreatedAt());
+                if (changedSinceMaterialization && review.getStatus() != LineItemReviewStatus.PENDING) {
+                    review.setStatus(LineItemReviewStatus.PENDING);
+                    review.setComment(null);
+                    review.setActedBy(null);
+                    review.setActionedAt(null);
+                    approvalSplitReviewRepository.save(review);
+                    anyReactivated = true;
+                }
+            }
+            // A stale review reset above may belong to an assignment that already finished (or was
+            // superseded by an earlier cancellation pass) - it must become actionable again so the
+            // owner can actually re-approve it.
+            if (anyReactivated && assignment.getStatus() == AssignmentStatus.COMPLETED) {
+                assignment.setStatus(AssignmentStatus.ACTIVE);
+                approvalAssignmentRepository.save(assignment);
+            }
+        }
+
+        // Any currently-active split with no existing review at all is newly added this correction.
+        Map<String, List<ExpenseSplit>> newSplitsByOwner = new LinkedHashMap<>();
+        for (ExpenseSplit split : currentSplits) {
+            if (coveredSplitIds.contains(split.getSplitId())) {
+                continue;
+            }
+            String ownerId = split.getCostCenter() != null ? split.getCostCenter().getOwnerEmployeeId() : null;
+            if (ownerId == null || ownerId.isBlank()) {
+                log.warn("New split {} (Cost Center {}) added during correction has no ownerEmployeeId configured - skipping its Cost Center Owner assignment",
+                        split.getSplitId(), split.getCostCenter() != null ? split.getCostCenter().getCostCenterId() : null);
+                continue;
+            }
+            newSplitsByOwner.computeIfAbsent(ownerId, k -> new ArrayList<>()).add(split);
+        }
+
+        for (Map.Entry<String, List<ExpenseSplit>> entry : newSplitsByOwner.entrySet()) {
+            ApprovalAssignment assignment = splitOwnerAssignments.stream()
+                    .filter(a -> a.getApproverId().equals(entry.getKey()))
+                    .findFirst()
+                    .orElse(null);
+            if (assignment == null) {
+                assignment = approvalAssignmentRepository.save(ApprovalAssignment.builder()
+                        .levelInstance(instance)
+                        .approverId(entry.getKey())
+                        .sourceType(ApproverSourceType.COST_CENTER_OWNER)
+                        .status(AssignmentStatus.PENDING)
+                        .build());
+                activateAssignment(assignment); // the level is already ACTIVE - a brand-new owner starts acting immediately (Phase 4's parallel-activation rule)
+            } else if (assignment.getStatus() == AssignmentStatus.COMPLETED) {
+                assignment.setStatus(AssignmentStatus.ACTIVE);
+                approvalAssignmentRepository.save(assignment);
+            }
+            for (ExpenseSplit split : entry.getValue()) {
+                ApprovalSplitReview review = approvalSplitReviewRepository.save(ApprovalSplitReview.builder()
+                        .split(split)
+                        .assignment(assignment)
+                        .status(LineItemReviewStatus.PENDING)
+                        .build());
+                assignment.getSplitReviews().add(review);
+            }
+        }
+    }
+
+    /** Split-review counterpart of {@code LevelReviewStrategy.resumeCorrectedReviews} - resets only this instance's NEEDS_CORRECTION split reviews back to PENDING; a no-op for any instance with no split reviews at all. */
+    private void resumeCorrectedSplitReviews(ApprovalLevelInstance instance) {
+        approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                .flatMap(a -> a.getSplitReviews().stream())
+                .filter(r -> r.getStatus() == LineItemReviewStatus.NEEDS_CORRECTION)
+                .forEach(r -> {
+                    r.setStatus(LineItemReviewStatus.PENDING);
+                    approvalSplitReviewRepository.save(r);
+                });
     }
 
     /** §11.1: Reimbursement Tracking only ever receives one, single, fully-approved whole report. */
@@ -871,7 +1285,15 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
     }
 
+    /**
+     * Releases the cycle's ACTIVE budget encumbrances (Phase 5) BEFORE touching any level instance -
+     * this single choke point is reached by recall, cancel, rejectReport, and fullRestart's old-cycle
+     * teardown, so none of those call sites need their own release call. A no-op if nothing is ACTIVE
+     * for this report/cycle (e.g. a report that was never actually submitted, or normal reports
+     * predating Phase 3/5's budget wiring).
+     */
     private void cancelAllOpenInstances(ExpenseReport report, int cycle) {
+        budgetEncumbranceService.releaseActiveForCycle(report.getReportId(), cycle);
         approvalLevelInstanceRepository
                 .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), cycle)
                 .forEach(instance -> {
@@ -897,6 +1319,17 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     // ---------------------------------------------------------------------
     // Guards & helpers
     // ---------------------------------------------------------------------
+
+    /** Warnings never block submission (Decision 6/Phase 3's "warn only" rule) - just surfaced to the log for now; Phase 7 owns exposing them on the response itself. */
+    private void logBudgetWarnings(BudgetEncumbranceOutcome outcome) {
+        if (outcome == null) {
+            return;
+        }
+        for (BudgetWarning warning : outcome.warnings()) {
+            log.warn("Cost center {} Effective Available Budget fell below its warning threshold ({}) after this submission's encumbrance: now {}",
+                    warning.costCenterCode(), warning.warningThreshold(), warning.effectiveAvailableAfterEncumbrance());
+        }
+    }
 
     private void assertDraft(ExpenseReport report) {
         if (report.getReportStatus() != ReportStatus.DRAFT) {

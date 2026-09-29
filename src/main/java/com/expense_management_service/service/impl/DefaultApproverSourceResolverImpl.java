@@ -36,6 +36,7 @@ public class DefaultApproverSourceResolverImpl implements ApproverSourceResolver
             case NAMED_USER -> nonBlank(entry.getSourceReference());
 
             case REPORTING_MANAGER -> employeeCacheRepository.findByEmployeeId(report.getEmployeeId())
+                    .or(() -> employeeCacheRepository.findByEmployeeUuid(report.getEmployeeId()))
                     .map(EmployeeCache::getManagerEmployeeId)
                     .filter(DefaultApproverSourceResolverImpl::isNonBlank)
                     .or(() -> {
@@ -46,6 +47,7 @@ public class DefaultApproverSourceResolverImpl implements ApproverSourceResolver
             // Resolves against the SUBMITTER's own department, not the cost center's department -
             // consistent with REPORTING_MANAGER also being submitter-relative.
             case DEPARTMENT_OWNER -> employeeCacheRepository.findByEmployeeId(report.getEmployeeId())
+                    .or(() -> employeeCacheRepository.findByEmployeeUuid(report.getEmployeeId()))
                     .map(EmployeeCache::getDepartmentUuid)
                     .filter(DefaultApproverSourceResolverImpl::isNonBlank)
                     .flatMap(this::resolveDepartmentApprover)

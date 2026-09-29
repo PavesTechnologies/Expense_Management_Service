@@ -4,7 +4,11 @@ import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
-/** One report in AP_EXECUTIVE's payment queue - internal expenses awaiting external payment confirmation (never client-billable, those route to INVOICE_HANDOFF_PENDING instead). */
+/**
+ * One report in AP_EXECUTIVE's payment queue - every approved report awaiting external payment
+ * confirmation, client-billable included. {@code invoiceHandoffStatus} is informational only for AP
+ * (whether the invoice team also has this report), it never gates payment.
+ */
 public record ApPaymentQueueItemResponse(
         UUID reportId,
         String reportNumber,
@@ -16,6 +20,10 @@ public record ApPaymentQueueItemResponse(
         String costCenterName,
         LocalDateTime approvedAt,
         String reportStatus,
-        String paymentRoutingStatus
+        String paymentRoutingStatus,
+        String invoiceHandoffStatus,
+        /** Set once AP confirms the payment (PAYMENT_COMPLETED), else null. */
+        LocalDateTime paymentCompletedAt,
+        String paymentCompletedBy
 ) {
 }

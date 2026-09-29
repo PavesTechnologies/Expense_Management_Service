@@ -575,20 +575,29 @@ class BudgetEncumbranceServiceImplTest {
     // ---------------------------------------------------------------------
 
     // ---------------------------------------------------------------------
-    // reconcileForCycle (production-readiness audit, Part 1) - resumeInPlace's budget reconciliation
+    // reconcileForCycle (production-readiness audit, Part 1; bug fix follow-up below) -
+    // resumeInPlace's budget reconciliation
     // ---------------------------------------------------------------------
 
-    private BudgetEncumbrance activeEncumbrance(UUID budgetId, ExpenseSplit split, BigDecimal amount) {
+    /**
+     * {@code budget} must be the SAME {@link CostCenterBudget} instance (or at least the same
+     * {@code budgetId}) the test later locks via {@code findWithLockByCostCenter_...} - in a real
+     * database this "existing" row and that lookup always resolve to the identical row (it's
+     * literally still ACTIVE, untouched, at the moment reconciliation runs), so a fixture using two
+     * disconnected budget objects would let a mocked test pass while masking a real bug (this is
+     * exactly how the pre-fix duplicate-key bug slipped past every existing test here: Mockito has
+     * no unique constraint to violate).
+     */
+    private BudgetEncumbrance activeEncumbrance(CostCenterBudget budget, ExpenseSplit split, BigDecimal amount) {
         return BudgetEncumbrance.builder().encumbranceId(UUID.randomUUID())
-                .budget(budgetId == null ? null : CostCenterBudget.builder().budgetId(budgetId).costCenter(headerCostCenter).build())
-                .report(report).split(split).submissionCycle(1).amount(amount)
-                .status(BudgetEncumbranceStatus.ACTIVE).unbudgeted(false).build();
+                .budget(budget).report(report).split(split).submissionCycle(1).amount(amount)
+                .status(BudgetEncumbranceStatus.ACTIVE).unbudgeted(budget == null).build();
     }
 
     @Test
     void reconcileForCycle_noBudgetImpactingChange_leavesActiveEncumbranceUntouched() {
         report.setExpenseLineItems(List.of(normalLineItem(BigDecimal.valueOf(10000))));
-        BudgetEncumbrance existing = activeEncumbrance(UUID.randomUUID(), null, BigDecimal.valueOf(10000));
+        BudgetEncumbrance existing = activeEncumbrance(budgetWith(headerCostCenter, BigDecimal.valueOf(50000), null), null, BigDecimal.valueOf(10000));
         when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
                 .thenReturn(List.of(existing));
 
@@ -598,48 +607,100 @@ class BudgetEncumbranceServiceImplTest {
         verify(costCenterBudgetRepository, never()).findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(any(), any());
     }
 
+    /**
+     * Bug fix regression: the reported scenario. A split line item's amount is corrected (Cost
+     * Center unchanged, so {@code ExpenseSplitServiceImpl#reconcileOne} preserves the same splitId -
+     * see class javadoc). Reconciliation must UPDATE the existing row's amount in place - never
+     * release it and insert a second row for the same (report, cycle, split) key, which is exactly
+     * what used to throw {@code Duplicate entry ... uk_budget_encumbrance_report_cycle_split}.
+     */
     @Test
-    void reconcileForCycle_amountIncreased_releasesStaleAndCreatesFreshEncumbrance() {
+    void reconcileForCycle_splitAmountCorrected_sameSplitId_updatesExistingEncumbranceInPlace_neverInsertsADuplicate() {
+        ExpenseSplit correctedSplit = split(costCenterA, BigDecimal.valueOf(7000)); // same splitId as before, new amount
+        report.setExpenseLineItems(List.of(splitLineItem(correctedSplit)));
+        CostCenterBudget budgetA = budgetWith(costCenterA, BigDecimal.valueOf(20000), null);
+        BudgetEncumbrance existing = activeEncumbrance(budgetA, split(costCenterA, BigDecimal.valueOf(6000)), BigDecimal.valueOf(6000));
+        // Same splitId as the corrected split - the whole point of this test.
+        existing.getSplit().setSplitId(correctedSplit.getSplitId());
+        when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(List.of(existing));
+        when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterA.getCostCenterId(), "FY2026"))
+                .thenReturn(Optional.of(budgetA));
+        // The existing 6000 row is still ACTIVE (untouched) at validation time - exactly like a real DB.
+        when(budgetEncumbranceRepository.findForUpdateByBudget_BudgetIdAndStatus(budgetA.getBudgetId(), BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(List.of(existing));
+        when(budgetEncumbranceRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.reconcileForCycle(report, 1);
+
+        assertThat(existing.getStatus()).isEqualTo(BudgetEncumbranceStatus.ACTIVE); // never released
+        assertThat(existing.getAmount()).isEqualByComparingTo("7000"); // updated in place
+        var saved = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(budgetEncumbranceRepository).saveAll(saved.capture());
+        assertThat(saved.getValue()).hasSize(1).containsExactly(existing); // exactly one row touched, no new row created
+    }
+
+    @Test
+    void reconcileForCycle_splitAmountReduced_sameSplitId_updatesExistingEncumbranceInPlace() {
+        ExpenseSplit correctedSplit = split(costCenterA, BigDecimal.valueOf(3000)); // reduced from 6000
+        report.setExpenseLineItems(List.of(splitLineItem(correctedSplit)));
+        CostCenterBudget budgetA = budgetWith(costCenterA, BigDecimal.valueOf(20000), null);
+        BudgetEncumbrance existing = activeEncumbrance(budgetA, split(costCenterA, BigDecimal.valueOf(6000)), BigDecimal.valueOf(6000));
+        existing.getSplit().setSplitId(correctedSplit.getSplitId());
+        when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(List.of(existing));
+        when(budgetEncumbranceRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.reconcileForCycle(report, 1);
+
+        // A reduction never needs re-validation (incremental <= 0) - no lock/lookup at all.
+        verify(costCenterBudgetRepository, never()).findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(any(), any());
+        assertThat(existing.getStatus()).isEqualTo(BudgetEncumbranceStatus.ACTIVE);
+        assertThat(existing.getAmount()).isEqualByComparingTo("3000");
+    }
+
+    /** The header/"unsplit remainder" (null-split) counterpart of the same in-place-update fix. */
+    @Test
+    void reconcileForCycle_normalAmountIncreased_updatesExistingEncumbranceInPlace_neverDuplicates() {
         report.setExpenseLineItems(List.of(normalLineItem(BigDecimal.valueOf(15000)))); // corrected from 10000 -> 15000
-        BudgetEncumbrance existing = activeEncumbrance(UUID.randomUUID(), null, BigDecimal.valueOf(10000));
+        CostCenterBudget budget = budgetWith(headerCostCenter, BigDecimal.valueOf(50000), null);
+        BudgetEncumbrance existing = activeEncumbrance(budget, null, BigDecimal.valueOf(10000));
         when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
                 .thenReturn(List.of(existing));
-        CostCenterBudget budget = budgetWith(headerCostCenter, BigDecimal.valueOf(50000), null);
         when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(headerCostCenter.getCostCenterId(), "FY2026"))
                 .thenReturn(Optional.of(budget));
         when(budgetEncumbranceRepository.findForUpdateByBudget_BudgetIdAndStatus(budget.getBudgetId(), BudgetEncumbranceStatus.ACTIVE))
-                .thenReturn(List.of()); // the stale 10000 was already released by the time validateAndEncumber re-checks
+                .thenReturn(List.of(existing)); // still ACTIVE (untouched) at validation time
         when(budgetEncumbranceRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
 
         service.reconcileForCycle(report, 1);
 
-        assertThat(existing.getStatus()).isEqualTo(BudgetEncumbranceStatus.RELEASED);
-        verify(costCenterBudgetRepository).findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(headerCostCenter.getCostCenterId(), "FY2026");
+        assertThat(existing.getStatus()).isEqualTo(BudgetEncumbranceStatus.ACTIVE);
+        assertThat(existing.getAmount()).isEqualByComparingTo("15000");
     }
 
     @Test
-    void reconcileForCycle_amountDecreased_releasesExcessReservation() {
+    void reconcileForCycle_normalAmountDecreased_updatesExistingEncumbranceInPlace() {
         report.setExpenseLineItems(List.of(normalLineItem(BigDecimal.valueOf(6000)))); // corrected from 10000 down to 6000
-        BudgetEncumbrance existing = activeEncumbrance(UUID.randomUUID(), null, BigDecimal.valueOf(10000));
+        CostCenterBudget budget = budgetWith(headerCostCenter, BigDecimal.valueOf(50000), null);
+        BudgetEncumbrance existing = activeEncumbrance(budget, null, BigDecimal.valueOf(10000));
         when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
                 .thenReturn(List.of(existing));
-        CostCenterBudget budget = budgetWith(headerCostCenter, BigDecimal.valueOf(50000), null);
-        when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(headerCostCenter.getCostCenterId(), "FY2026"))
-                .thenReturn(Optional.of(budget));
-        when(budgetEncumbranceRepository.findForUpdateByBudget_BudgetIdAndStatus(budget.getBudgetId(), BudgetEncumbranceStatus.ACTIVE))
-                .thenReturn(List.of());
         when(budgetEncumbranceRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
 
         service.reconcileForCycle(report, 1);
 
-        assertThat(existing.getStatus()).isEqualTo(BudgetEncumbranceStatus.RELEASED);
+        assertThat(existing.getStatus()).isEqualTo(BudgetEncumbranceStatus.ACTIVE);
+        assertThat(existing.getAmount()).isEqualByComparingTo("6000");
     }
 
+    /** A genuine identity change (the split's Cost Center itself changed - ExpenseSplitServiceImpl models this as remove+recreate, a new splitId) still correctly releases the old row and creates a fresh one - this is safe because the new splitId never had a row for this report/cycle. */
     @Test
-    void reconcileForCycle_splitCostCenterChanged_releasesOldAndValidatesNewAllocation() {
+    void reconcileForCycle_splitCostCenterChanged_releasesOldAndCreatesNewAllocation() {
         ExpenseSplit newSplitForCcA = split(costCenterA, BigDecimal.valueOf(4000));
         report.setExpenseLineItems(List.of(splitLineItem(newSplitForCcA))); // was previously encumbered against a DIFFERENT (now-removed) split
-        BudgetEncumbrance staleEncumbrance = activeEncumbrance(UUID.randomUUID(), split(costCenterB, BigDecimal.valueOf(4000)), BigDecimal.valueOf(4000));
+        CostCenterBudget budgetB = budgetWith(costCenterB, BigDecimal.valueOf(20000), null);
+        BudgetEncumbrance staleEncumbrance = activeEncumbrance(budgetB, split(costCenterB, BigDecimal.valueOf(4000)), BigDecimal.valueOf(4000));
         when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
                 .thenReturn(List.of(staleEncumbrance));
         CostCenterBudget budgetA = budgetWith(costCenterA, BigDecimal.valueOf(20000), null);
@@ -655,24 +716,88 @@ class BudgetEncumbranceServiceImplTest {
     }
 
     @Test
-    void reconcileForCycle_correctedAmountExceedsAvailableBudget_throwsAndNeverLeavesAPartialState() {
+    void reconcileForCycle_correctedAmountExceedsAvailableBudget_throwsBeforeTouchingAnyRow() {
         report.setExpenseLineItems(List.of(normalLineItem(BigDecimal.valueOf(15000))));
-        BudgetEncumbrance existing = activeEncumbrance(UUID.randomUUID(), null, BigDecimal.valueOf(10000));
+        CostCenterBudget budget = budgetWith(headerCostCenter, BigDecimal.valueOf(12000), null); // only 12000 total; incremental need is 5000, but only 2000 headroom remains
+        BudgetEncumbrance existing = activeEncumbrance(budget, null, BigDecimal.valueOf(10000));
         when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
                 .thenReturn(List.of(existing));
-        CostCenterBudget budget = budgetWith(headerCostCenter, BigDecimal.valueOf(12000), null); // only 12000 total, corrected need is 15000
         when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(headerCostCenter.getCostCenterId(), "FY2026"))
                 .thenReturn(Optional.of(budget));
+        // The existing 10000 is still ACTIVE against this exact budget at validation time -
+        // effectiveAvailable = 12000 - 10000 = 2000, so the 5000 incremental need correctly fails.
         when(budgetEncumbranceRepository.findForUpdateByBudget_BudgetIdAndStatus(budget.getBudgetId(), BudgetEncumbranceStatus.ACTIVE))
-                .thenReturn(List.of());
-        when(budgetEncumbranceRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+                .thenReturn(List.of(existing));
 
-        // The service layer itself cannot roll back the release it already issued (no DB here) -
-        // atomicity is the caller's @Transactional boundary (resumeInPlace), which reverts the
-        // release alongside this failure since both happen in the same transaction in production.
         assertThatThrownBy(() -> service.reconcileForCycle(report, 1))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Insufficient budget");
+
+        // Atomic: validation fails before any row is touched, unlike the old release-then-recreate design.
+        verify(budgetEncumbranceRepository, never()).saveAll(anyList());
+        assertThat(existing.getStatus()).isEqualTo(BudgetEncumbranceStatus.ACTIVE);
+    }
+
+    /** Idempotency: calling reconcileForCycle twice with no state change between calls must be a no-op the second time - matches releaseActiveForCycle/consumeActiveForReport's existing idempotency guarantee. */
+    @Test
+    void reconcileForCycle_calledTwiceWithNoFurtherChange_secondCallIsANoOp() {
+        report.setExpenseLineItems(List.of(normalLineItem(BigDecimal.valueOf(15000))));
+        CostCenterBudget budget = budgetWith(headerCostCenter, BigDecimal.valueOf(50000), null);
+        BudgetEncumbrance existing = activeEncumbrance(budget, null, BigDecimal.valueOf(10000));
+        when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
+                .thenAnswer(inv -> List.of(existing)); // re-queried fresh on each call, reflecting the just-updated amount
+        when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(headerCostCenter.getCostCenterId(), "FY2026"))
+                .thenReturn(Optional.of(budget));
+        when(budgetEncumbranceRepository.findForUpdateByBudget_BudgetIdAndStatus(budget.getBudgetId(), BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(List.of(existing));
+        when(budgetEncumbranceRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.reconcileForCycle(report, 1); // first call: 10000 -> 15000, updates in place
+        assertThat(existing.getAmount()).isEqualByComparingTo("15000");
+
+        service.reconcileForCycle(report, 1); // second call: report unchanged since - must be a pure no-op
+
+        assertThat(existing.getStatus()).isEqualTo(BudgetEncumbranceStatus.ACTIVE);
+        assertThat(existing.getAmount()).isEqualByComparingTo("15000");
+        verify(budgetEncumbranceRepository, times(1)).saveAll(anyList()); // only the first call ever wrote anything
+    }
+
+    /**
+     * Split allocation count/amounts remain correct after a correction that touches one split but
+     * leaves a sibling split (on a different line item) untouched - the untouched split's row must
+     * never be released or duplicated, and the total encumbered amount across both splits must
+     * reflect exactly the corrected + unchanged figures.
+     */
+    @Test
+    void reconcileForCycle_oneSplitCorrected_siblingSplitOnAnotherLineItemUntouched_bothRemainCorrect() {
+        ExpenseSplit correctedSplit = split(costCenterA, BigDecimal.valueOf(9000)); // corrected from 6000
+        ExpenseSplit unchangedSplit = split(costCenterB, BigDecimal.valueOf(4000)); // untouched
+        report.setExpenseLineItems(List.of(splitLineItem(correctedSplit), splitLineItem(unchangedSplit)));
+
+        CostCenterBudget budgetA = budgetWith(costCenterA, BigDecimal.valueOf(20000), null);
+        CostCenterBudget budgetB = budgetWith(costCenterB, BigDecimal.valueOf(20000), null);
+        BudgetEncumbrance existingA = activeEncumbrance(budgetA, split(costCenterA, BigDecimal.valueOf(6000)), BigDecimal.valueOf(6000));
+        existingA.getSplit().setSplitId(correctedSplit.getSplitId());
+        BudgetEncumbrance existingB = activeEncumbrance(budgetB, split(costCenterB, BigDecimal.valueOf(4000)), BigDecimal.valueOf(4000));
+        existingB.getSplit().setSplitId(unchangedSplit.getSplitId());
+        when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(List.of(existingA, existingB));
+        when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterA.getCostCenterId(), "FY2026"))
+                .thenReturn(Optional.of(budgetA));
+        when(budgetEncumbranceRepository.findForUpdateByBudget_BudgetIdAndStatus(budgetA.getBudgetId(), BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(List.of(existingA));
+        when(budgetEncumbranceRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+
+        service.reconcileForCycle(report, 1);
+
+        assertThat(existingA.getStatus()).isEqualTo(BudgetEncumbranceStatus.ACTIVE);
+        assertThat(existingA.getAmount()).isEqualByComparingTo("9000"); // corrected
+        assertThat(existingB.getStatus()).isEqualTo(BudgetEncumbranceStatus.ACTIVE);
+        assertThat(existingB.getAmount()).isEqualByComparingTo("4000"); // untouched - never released, never duplicated
+        verify(costCenterBudgetRepository, never()).findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(eq(costCenterB.getCostCenterId()), any());
+        var saved = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(budgetEncumbranceRepository).saveAll(saved.capture());
+        assertThat(saved.getValue()).hasSize(1).containsExactly(existingA); // only the actually-changed row is touched
     }
 
     @Test

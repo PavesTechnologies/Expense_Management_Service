@@ -4,8 +4,10 @@ import com.expense_management_service.config.SecurityConfig;
 import com.expense_management_service.dto.request.FinanceQueryRequest;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.FinanceHistoryItemResponse;
 import com.expense_management_service.dto.response.FinanceQueueItemResponse;
 import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.enums.FinanceVerificationStatus;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.JwtAuthConverter;
 import com.expense_management_service.service.ApprovalWorkflowService;
@@ -89,7 +91,7 @@ class FinanceVerificationControllerTest {
 
     private ExpenseReportResponse sampleReportResponse(String status) {
         return new ExpenseReportResponse(UUID.randomUUID(), "EXP-0001", "5100001", "Trip", "Client visit", "2026",
-                UUID.randomUUID(), "Engineering", status, "NONE", UUID.randomUUID(), "INR", new BigDecimal("1000"), new BigDecimal("1000"),
+                UUID.randomUUID(), "Engineering", status, "NONE", "NOT_APPLICABLE", UUID.randomUUID(), "INR", new BigDecimal("1000"), new BigDecimal("1000"),
                 LocalDateTime.now(), null, null, LocalDateTime.now(), LocalDateTime.now(), 1, true, false, 0, 0);
     }
 
@@ -238,5 +240,31 @@ class FinanceVerificationControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.currentLevelOrder").value(2))
                 .andExpect(jsonPath("$.data.canRecall").value(false));
+    }
+
+    @Test
+    void getHistory_returns200_forFinanceExecutive() throws Exception {
+        FinanceHistoryItemResponse item = new FinanceHistoryItemResponse(
+                UUID.randomUUID(), "EXP-0001", "5100001", new BigDecimal("1000"), "INR", "Engineering",
+                "APPROVED", "VERIFIED", 2, "5100050", LocalDateTime.now(), null,
+                "APPROVED_FOR_PAYMENT", null, "NOT_APPLICABLE");
+        when(financeVerificationService.getFinanceHistory(eq(FinanceVerificationStatus.VERIFIED), any(Pageable.class)))
+                .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
+
+        mockMvc.perform(get("/xms/finance-verification/history").param("status", "VERIFIED").with(financeExecutive()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.content[0].verificationStatus").value("VERIFIED"));
+    }
+
+    @Test
+    void getHistory_returns403_forGeneralRole() throws Exception {
+        mockMvc.perform(get("/xms/finance-verification/history").param("status", "VERIFIED").with(general()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void getHistory_returns401_whenUnauthenticated() throws Exception {
+        mockMvc.perform(get("/xms/finance-verification/history").param("status", "VERIFIED"))
+                .andExpect(status().isUnauthorized());
     }
 }

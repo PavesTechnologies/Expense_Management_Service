@@ -247,4 +247,80 @@ class FinanceVerificationServiceImplTest {
         assertThat(result.get(0).status()).isEqualTo(FinanceVerificationStatus.VERIFIED);
         assertThat(result.get(0).levelOrder()).isEqualTo(2);
     }
+
+    // ---------------------------------------------------------------------
+    // getFinanceHistory
+    // ---------------------------------------------------------------------
+
+    @Test
+    void getFinanceHistory_throws_whenStatusIsPending() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getFinanceHistory(FinanceVerificationStatus.PENDING, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getFinanceHistory_throws_whenStatusIsNull() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getFinanceHistory(null, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getFinanceHistory_verified_usesCompletedInstances_andThelatestReviewAsRepresentative() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        ApprovalLevelInstance instance = ApprovalLevelInstance.builder().instanceId(instanceId)
+                .levelType(LevelType.FINANCE_VERIFICATION).status(LevelInstanceStatus.COMPLETED)
+                .levelOrder(2).report(pendingFinanceReport()).build();
+        when(approvalLevelInstanceRepository.findCompletedFinanceVerificationInstances(pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(instance), pageable, 1));
+        FinanceVerificationReview earlier = FinanceVerificationReview.builder().status(FinanceVerificationStatus.VERIFIED)
+                .actedBy("5100050").actionedAt(java.time.LocalDateTime.now().minusHours(1)).build();
+        FinanceVerificationReview latest = FinanceVerificationReview.builder().status(FinanceVerificationStatus.VERIFIED)
+                .actedBy("5100051").actionedAt(java.time.LocalDateTime.now()).build();
+        when(financeVerificationReviewRepository.findByLevelInstance_InstanceId(instanceId)).thenReturn(List.of(earlier, latest));
+
+        var page = service.getFinanceHistory(FinanceVerificationStatus.VERIFIED, pageable);
+
+        assertThat(page.totalElements()).isEqualTo(1);
+        assertThat(page.content().get(0).reportId()).isEqualTo(reportId);
+        assertThat(page.content().get(0).verificationStatus()).isEqualTo("VERIFIED");
+        assertThat(page.content().get(0).levelOrder()).isEqualTo(2);
+        assertThat(page.content().get(0).actedBy()).isEqualTo("5100051");
+    }
+
+    @Test
+    void getFinanceHistory_queried_picksTheQueriedReviewAsRepresentative_evenWhenALaterVerifiedReviewExists() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        ApprovalLevelInstance instance = ApprovalLevelInstance.builder().instanceId(instanceId)
+                .levelType(LevelType.FINANCE_VERIFICATION).status(LevelInstanceStatus.ACTIVE)
+                .levelOrder(2).report(pendingFinanceReport()).build();
+        when(approvalLevelInstanceRepository.findQueriedFinanceVerificationInstances(pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(instance), pageable, 1));
+        FinanceVerificationReview queried = FinanceVerificationReview.builder().status(FinanceVerificationStatus.QUERIED)
+                .actedBy("5100052").comment("Missing receipt").actionedAt(java.time.LocalDateTime.now().minusMinutes(5)).build();
+        FinanceVerificationReview laterVerified = FinanceVerificationReview.builder().status(FinanceVerificationStatus.VERIFIED)
+                .actedBy("5100050").actionedAt(java.time.LocalDateTime.now()).build();
+        when(financeVerificationReviewRepository.findByLevelInstance_InstanceId(instanceId)).thenReturn(List.of(laterVerified, queried));
+
+        var page = service.getFinanceHistory(FinanceVerificationStatus.QUERIED, pageable);
+
+        assertThat(page.content()).hasSize(1);
+        assertThat(page.content().get(0).verificationStatus()).isEqualTo("QUERIED");
+        assertThat(page.content().get(0).actedBy()).isEqualTo("5100052");
+        assertThat(page.content().get(0).comment()).isEqualTo("Missing receipt");
+    }
+
+    @Test
+    void getPaymentSummary_countsReportsStillWithApAndAlreadyPaid() {
+        when(expenseReportRepository.countByPaymentRoutingStatus(com.expense_management_service.enums.PaymentRoutingStatus.APPROVED_FOR_PAYMENT)).thenReturn(4L);
+        when(expenseReportRepository.countByPaymentRoutingStatus(com.expense_management_service.enums.PaymentRoutingStatus.PAYMENT_COMPLETED)).thenReturn(9L);
+
+        var summary = service.getPaymentSummary();
+
+        org.assertj.core.api.Assertions.assertThat(summary.awaitingPaymentCount()).isEqualTo(4);
+        org.assertj.core.api.Assertions.assertThat(summary.paidCount()).isEqualTo(9);
+    }
 }

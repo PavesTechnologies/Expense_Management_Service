@@ -11,6 +11,7 @@ import com.expense_management_service.enums.CriterionOperator;
 import com.expense_management_service.repository.ApprovalFlowRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.EmployeeCacheRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.ApprovalFlowResolutionService;
 import com.expense_management_service.service.ExchangeRateService;
 import lombok.RequiredArgsConstructor;
@@ -43,6 +44,7 @@ public class DefaultApprovalFlowResolutionServiceImpl implements ApprovalFlowRes
     private final EmployeeCacheRepository employeeCacheRepository;
     private final CurrencyRepository currencyRepository;
     private final ExchangeRateService exchangeRateService;
+    private final PolicyViolationRepository policyViolationRepository;
 
     @Value("${exchange.rate.base-currency}")
     private String baseCurrencyCode;
@@ -83,7 +85,19 @@ public class DefaultApprovalFlowResolutionServiceImpl implements ApprovalFlowRes
             case CATEGORY -> evaluateCategory(criterion, report);
             case DEPARTMENT -> evaluateDepartment(criterion, report);
             case COST_CENTER -> evaluateCostCenter(criterion, report);
+            case HAS_POLICY_VIOLATION -> evaluateHasPolicyViolation(criterion, report);
         };
+    }
+
+    /**
+     * Evaluated fresh at flow-resolution time - by the time {@code resolveMatchingFlow} runs inside
+     * {@code ApprovalWorkflowServiceImpl.submit()}, {@code PolicyEvaluationGateway.evaluate()} has
+     * already recomputed and persisted this cycle's violations, so this always reflects the report as
+     * just submitted, not a stale prior cycle's flags.
+     */
+    private boolean evaluateHasPolicyViolation(ApprovalFlowCriterion criterion, ExpenseReport report) {
+        boolean hasViolation = policyViolationRepository.existsByLineItem_Report_ReportId(report.getReportId());
+        return applyEqualityOperator(criterion.getOperator(), hasViolation);
     }
 
     private boolean evaluateAmount(ApprovalFlowCriterion criterion, BigDecimal baseCurrencyAmount) {

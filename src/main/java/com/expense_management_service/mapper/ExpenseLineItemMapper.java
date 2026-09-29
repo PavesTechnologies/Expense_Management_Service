@@ -60,6 +60,8 @@ public class ExpenseLineItemMapper {
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterName() : null,
                 entity.getProject() != null ? entity.getProject().getProjectId() : null,
                 entity.getProject() != null ? entity.getProject().getProjectName() : null,
+                entity.getResolvedClientId(),
+                entity.getResolvedClientName(),
                 entity.getClientBillable(),
                 entity.getLineStatus(),
                 entity.getCreatedAt(),

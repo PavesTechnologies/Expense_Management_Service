@@ -74,7 +74,15 @@ public class ApprovalFlow {
     @ToString.Exclude
     private List<ApprovalFlowCriterion> criteria = new ArrayList<>();
 
+    /**
+     * Business order is {@code levelOrder}, not insertion/PK order - {@code level_id} is a random
+     * UUID, so a plain {@code SELECT} with no {@code ORDER BY} returns rows in whatever order MySQL
+     * feels like (effectively random) on every fresh fetch. Without this, a flow saved with the
+     * correct order would still come back scrambled the next time it's loaded in a new persistence
+     * context (e.g. any GET after the save's own response).
+     */
     @OneToMany(mappedBy = "flow", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("levelOrder ASC")
     @Builder.Default
     @ToString.Exclude
     private List<ApprovalLevel> levels = new ArrayList<>();

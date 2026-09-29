@@ -152,6 +152,19 @@ class PolicyRuleServiceImplTest {
     }
 
     @Test
+    void create_defaultsSeverityToInfo_forCrossEmployeeDuplicateExpenseWhenUnspecified() {
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory));
+        when(policyRuleRepository.save(any(PolicyRule.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PolicyRuleRequest request = new PolicyRuleRequest(null, categoryId, "Possible shared bill", PolicyRuleType.CROSS_EMPLOYEE_DUPLICATE_EXPENSE,
+                null, null, null, null, null, "ACTIVE", null);
+
+        PolicyRuleResponse response = policyRuleService.create(request);
+
+        assertThat(response.severity()).isEqualTo(PolicySeverity.INFO);
+    }
+
+    @Test
     void create_defaultsSeverityToWarn_whenUnspecifiedForOtherTypes() {
         when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory));
         when(policyRuleRepository.save(any(PolicyRule.class))).thenAnswer(inv -> inv.getArgument(0));

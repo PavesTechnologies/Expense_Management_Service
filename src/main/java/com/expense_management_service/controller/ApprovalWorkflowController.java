@@ -5,6 +5,7 @@ import java.util.UUID;
 
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.security.CurrentUserService;
+import com.expense_management_service.dto.request.ApproverExceptionRequest;
 import com.expense_management_service.dto.request.LineItemReviewRequest;
 import com.expense_management_service.dto.request.RejectReportRequest;
 import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
@@ -12,7 +13,9 @@ import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.LineItemReviewResponse;
 import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.dto.response.PolicyWarningResponse;
 import com.expense_management_service.service.ApprovalWorkflowService;
+import com.expense_management_service.service.PolicyViolationService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
@@ -32,6 +35,7 @@ import org.springframework.web.bind.annotation.*;
 public class ApprovalWorkflowController {
 
     private final ApprovalWorkflowService approvalWorkflowService;
+    private final PolicyViolationService policyViolationService;
     private final CurrentUserService currentUserService;
 
     @PostMapping("/{reportId}/submit")
@@ -54,6 +58,20 @@ public class ApprovalWorkflowController {
                                                               @Valid @RequestBody LineItemReviewRequest request) {
         return ApiResponse.success("Line item reviewed",
                 approvalWorkflowService.reviewLineItem(reportId, lineItemId, currentUserService.getEmployeeId(), request));
+    }
+
+    /**
+     * A SEPARATE, approver-side authorization of a policy exception — distinct from the employee's
+     * own {@code POST .../policy-warnings/{violationId}/justify}. Open at the URL level like every
+     * other action endpoint here; the real authorization (must be an active approver or delegate at
+     * the report's current Approval level) is enforced inside {@code PolicyViolationServiceImpl}.
+     */
+    @PostMapping("/{reportId}/line-items/{lineItemId}/policy-warnings/{violationId}/approve-exception")
+    public ApiResponse<PolicyWarningResponse> approveException(@PathVariable UUID reportId, @PathVariable UUID lineItemId,
+                                                                 @PathVariable UUID violationId,
+                                                                 @Valid @RequestBody ApproverExceptionRequest request) {
+        return ApiResponse.success("Exception approved",
+                policyViolationService.approveException(reportId, lineItemId, violationId, currentUserService.getEmployeeId(), request));
     }
 
     @PostMapping("/{reportId}/splits/{splitId}/review")

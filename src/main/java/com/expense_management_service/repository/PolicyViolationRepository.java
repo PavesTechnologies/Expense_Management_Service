@@ -15,6 +15,9 @@ public interface PolicyViolationRepository extends JpaRepository<PolicyViolation
 
     List<PolicyViolation> findByLineItem_Report_ReportId(UUID reportId);
 
+    /** Fast-path existence check for {@code CriterionField.HAS_POLICY_VIOLATION} flow matching — any violation, of any enforcement type/severity. */
+    boolean existsByLineItem_Report_ReportId(UUID reportId);
+
     /** Batched lookup for approver queue triage — avoids an N+1 query per task in {@code getMyQueue}. */
     List<PolicyViolation> findByLineItem_Report_ReportIdIn(Collection<UUID> reportIds);
 

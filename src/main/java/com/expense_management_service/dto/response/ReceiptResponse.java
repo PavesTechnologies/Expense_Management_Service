@@ -20,6 +20,10 @@ public record ReceiptResponse(
         Integer fileSize,
         String uploadedBy,
         LocalDateTime uploadedAt,
-        OcrStatus ocrStatus
+        OcrStatus ocrStatus,
+        /** Advisory only, never blocks anything — true when this exact file's bytes were already uploaded as a different receipt (by anyone, on any report). */
+        boolean possibleDuplicateFileReuse,
+        /** The other receipt this one's file bytes match, when {@link #possibleDuplicateFileReuse} is true — null otherwise. */
+        UUID duplicateOfReceiptId
 ) {
 }

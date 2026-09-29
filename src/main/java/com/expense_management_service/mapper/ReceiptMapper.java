@@ -5,10 +5,16 @@ import com.expense_management_service.entity.Receipt;
 import com.expense_management_service.enums.OcrStatus;
 import org.springframework.stereotype.Component;
 
+import java.util.UUID;
+
 @Component
 public class ReceiptMapper {
 
     public ReceiptResponse toResponse(Receipt entity) {
+        return toResponse(entity, false, null);
+    }
+
+    public ReceiptResponse toResponse(Receipt entity, boolean possibleDuplicateFileReuse, UUID duplicateOfReceiptId) {
         return new ReceiptResponse(
                 entity.getReceiptId(),
                 entity.getReport() != null ? entity.getReport().getReportId() : null,
@@ -18,7 +24,9 @@ public class ReceiptMapper {
                 entity.getFileSize(),
                 entity.getUploadedBy(),
                 entity.getUploadedAt(),
-                entity.getOcrStatus() != null ? OcrStatus.valueOf(entity.getOcrStatus()) : null
+                entity.getOcrStatus() != null ? OcrStatus.valueOf(entity.getOcrStatus()) : null,
+                possibleDuplicateFileReuse,
+                duplicateOfReceiptId
         );
     }
 }

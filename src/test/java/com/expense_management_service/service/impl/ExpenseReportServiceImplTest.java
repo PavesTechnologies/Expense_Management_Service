@@ -77,11 +77,11 @@ class ExpenseReportServiceImplTest {
     }
 
     private CurrentUser employeeCaller() {
-        return new CurrentUser(employeeUuid, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
+        return new CurrentUser(employeeUuid, null, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
     }
 
     private CurrentUser adminCaller() {
-        return new CurrentUser(UUID.randomUUID(), "9999999", "admin@example.com", "Admin", List.of("ADMIN"), List.of());
+        return new CurrentUser(UUID.randomUUID(), null, "9999999", "admin@example.com", "Admin", List.of("ADMIN"), List.of());
     }
 
     private ExpenseReportRequest validRequest() {
@@ -273,7 +273,7 @@ class ExpenseReportServiceImplTest {
                 .reportStatus(ReportStatus.APPROVED).fiscalYear(fiscalYear).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(
-                new CurrentUser(UUID.randomUUID(), "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+                new CurrentUser(UUID.randomUUID(), null, "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
 
         ExpenseReportResponse response = expenseReportService.getById(reportId);
 
@@ -287,7 +287,7 @@ class ExpenseReportServiceImplTest {
                 .reportStatus(ReportStatus.PENDING_APPROVAL).fiscalYear(fiscalYear).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(
-                new CurrentUser(UUID.randomUUID(), "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+                new CurrentUser(UUID.randomUUID(), null, "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
 
         ExpenseReportResponse response = expenseReportService.getById(reportId);
 
@@ -337,17 +337,19 @@ class ExpenseReportServiceImplTest {
     }
 
     @Test
-    void getAll_returnsEveryReport_forFinanceRole() {
-        CurrentUser finance = new CurrentUser(UUID.randomUUID(), "financeUser", "f@example.com", "Finance", List.of("FINANCE"), List.of());
-        when(currentUserService.getCurrentUser()).thenReturn(finance);
-        when(expenseReportRepository.findAll()).thenReturn(List.of(
-                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("a").reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build(),
-                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("b").reportStatus(ReportStatus.PENDING_APPROVAL).fiscalYear(fiscalYear).build()));
+    void getAll_scopesToOwnReports_evenForAdminAndFinanceRoles() {
+        for (String role : List.of("ADMIN", "FINANCE", "MANAGER")) {
+            CurrentUser privileged = new CurrentUser(UUID.randomUUID(), null, "user-" + role, "u@example.com", role, List.of(role), List.of());
+            when(currentUserService.getCurrentUser()).thenReturn(privileged);
+            when(expenseReportRepository.findByEmployeeId("user-" + role)).thenReturn(List.of(
+                    ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("user-" + role).reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build()));
 
-        List<ExpenseReportResponse> result = expenseReportService.getAll();
+            List<ExpenseReportResponse> result = expenseReportService.getAll();
 
-        assertThat(result).hasSize(2);
-        verify(expenseReportRepository, never()).findByEmployeeId(any());
+            assertThat(result).hasSize(1);
+            assertThat(result.get(0).employeeId()).isEqualTo("user-" + role);
+        }
+        verify(expenseReportRepository, never()).findAll();
     }
 
     @Test

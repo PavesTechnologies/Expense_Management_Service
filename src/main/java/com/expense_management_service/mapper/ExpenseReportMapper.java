@@ -45,6 +45,7 @@ public class ExpenseReportMapper {
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterName() : null,
                 entity.getReportStatus() != null ? entity.getReportStatus().name() : null,
                 entity.getPaymentRoutingStatus() != null ? entity.getPaymentRoutingStatus().name() : null,
+                entity.getInvoiceHandoffStatus() != null ? entity.getInvoiceHandoffStatus().name() : null,
                 entity.getCurrency() != null ? entity.getCurrency().getCurrencyId() : null,
                 entity.getCurrency() != null ? entity.getCurrency().getCurrencyCode() : null,
                 entity.getTotalAmount(),

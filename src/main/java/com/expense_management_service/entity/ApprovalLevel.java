@@ -53,7 +53,9 @@ public class ApprovalLevel {
     @Builder.Default
     private LevelType levelType = LevelType.APPROVAL;
 
+    /** Same rationale as {@code ApprovalFlow.levels}' {@code @OrderBy} - {@code entry_id} is a random UUID, so this must be explicit or a SEQUENTIAL level's approver order can come back scrambled on a fresh fetch. Nulls (ANY_OF/ALL_OF entries, where order is meaningless) sort first under MySQL's default ASC null ordering, which is harmless since nothing depends on their relative order. */
     @OneToMany(mappedBy = "level", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("entryOrder ASC")
     @Builder.Default
     @ToString.Exclude
     private List<ApprovalLevelApprover> approvers = new ArrayList<>();

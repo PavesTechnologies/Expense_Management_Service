@@ -4,6 +4,8 @@ import com.expense_management_service.dto.response.ApPaymentDetailsResponse;
 import com.expense_management_service.dto.response.ApPaymentQueueItemResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.enums.PaymentRoutingStatus;
+import com.expense_management_service.dto.response.ApPaymentSummaryResponse;
 import org.springframework.data.domain.Pageable;
 
 import java.util.UUID;
@@ -32,4 +34,14 @@ public interface ApPaymentService {
      * anything itself, this only records the confirmation.
      */
     ExpenseReportResponse markPaymentCompleted(UUID reportId, String actingEmployeeId);
+
+    /**
+     * AP Payment history tabs - any {@code paymentRoutingStatus} other than {@code
+     * APPROVED_FOR_PAYMENT} (that one is the pending queue, see {@link #getApQueue}) or {@code
+     * NONE} (not a real payment-routing outcome).
+     */
+    PageResponse<ApPaymentQueueItemResponse> getApHistory(PaymentRoutingStatus status, Pageable pageable);
+
+    /** Pending / paid this month / paid all time / handoff failed counts for the page's summary cards. */
+    ApPaymentSummaryResponse getSummary();
 }

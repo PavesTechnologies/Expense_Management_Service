@@ -30,6 +30,12 @@ public record PolicyWarningResponse(
         String currencyCode,
         String justification,
         LocalDateTime justifiedAt,
+        /** Who added {@code justification} above - the report owner, or an Admin acting on their behalf. Null for a violation justified before this field existed. */
+        String justifiedBy,
+        /** A SEPARATE, approver-side authorization - distinct from the employee's own justification above. Non-null only once an active approver (or delegate) has called {@code approve-exception}. */
+        String approverJustification,
+        String approverJustifiedBy,
+        LocalDateTime approverJustifiedAt,
         /** Which numbered policy version was active when this was detected - see {@code PolicyVersion}'s javadoc. */
         Integer policyVersionNumber
 ) {

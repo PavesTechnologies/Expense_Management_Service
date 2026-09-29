@@ -1,5 +1,6 @@
 package com.expense_management_service.entity;
 
+import com.expense_management_service.enums.InvoiceHandoffStatus;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import jakarta.persistence.*;
@@ -119,6 +120,17 @@ public class ExpenseReport {
     @Column(name = "payment_routing_status", length = 255)
     @Builder.Default
     private PaymentRoutingStatus paymentRoutingStatus = PaymentRoutingStatus.NONE;
+
+    /**
+     * Client-invoicing track, independent of {@link #paymentRoutingStatus} — a client-billable
+     * report is both reimbursed to the employee (AP) and handed off to the invoice team. Set to
+     * PENDING at approval if any line item is client-billable, and to COMPLETED by {@code
+     * InvoiceHandoffServiceImpl} once every client-billable line item has been handed off.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "invoice_handoff_status", length = 32, nullable = false)
+    @Builder.Default
+    private InvoiceHandoffStatus invoiceHandoffStatus = InvoiceHandoffStatus.NOT_APPLICABLE;
 
     /**
      * Who confirmed the external payment (AP_EXECUTIVE), and when - set only by {@code

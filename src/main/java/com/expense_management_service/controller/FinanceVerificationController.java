@@ -7,16 +7,20 @@ import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.FinanceQueryRequest;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.FinanceHistoryItemResponse;
 import com.expense_management_service.dto.response.FinanceLineItemReviewResponse;
 import com.expense_management_service.dto.response.FinanceQueueItemResponse;
 import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.enums.FinanceVerificationStatus;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.FinanceVerificationService;
+import com.expense_management_service.dto.response.FinancePaymentSummaryResponse;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -66,7 +70,9 @@ public class FinanceVerificationController {
     @PreAuthorize(CAN_ACT_AS_FINANCE)
     public ApiResponse<PageResponse<FinanceQueueItemResponse>> getMyQueue(
             @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.success(financeVerificationService.getFinanceQueue(currentUserService.getEmployeeId(), PageRequest.of(page, size)));
+        return ApiResponse.success(financeVerificationService.getFinanceQueue(currentUserService.getEmployeeId(),
+                // Newest submissions first.
+                PageRequest.of(page, size, Sort.by(Sort.Order.desc("submittedAt"), Sort.Order.desc("createdAt")))));
     }
 
     @GetMapping("/{reportId}/reviews")
@@ -79,5 +85,20 @@ public class FinanceVerificationController {
     @PreAuthorize(CAN_ACT_AS_FINANCE)
     public ApiResponse<ApprovalStatusResponse> getStatus(@PathVariable UUID reportId) {
         return ApiResponse.success(approvalWorkflowService.getApprovalStatus(reportId));
+    }
+
+    @GetMapping("/payment-summary")
+    @PreAuthorize(CAN_ACT_AS_FINANCE)
+    public ApiResponse<FinancePaymentSummaryResponse> getPaymentSummary() {
+        return ApiResponse.success(financeVerificationService.getPaymentSummary());
+    }
+
+    /** History tabs (Verified / Queried) - PENDING is not a valid value here, use {@link #getMyQueue}. */
+    @GetMapping("/history")
+    @PreAuthorize(CAN_ACT_AS_FINANCE)
+    public ApiResponse<PageResponse<FinanceHistoryItemResponse>> getHistory(
+            @RequestParam FinanceVerificationStatus status,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.success(financeVerificationService.getFinanceHistory(status, PageRequest.of(page, size)));
     }
 }

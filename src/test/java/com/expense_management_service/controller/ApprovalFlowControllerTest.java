@@ -5,11 +5,13 @@ import com.expense_management_service.dto.request.ApprovalFlowCriterionRequest;
 import com.expense_management_service.dto.request.ApprovalFlowRequest;
 import com.expense_management_service.dto.request.ApprovalLevelApproverRequest;
 import com.expense_management_service.dto.request.ApprovalLevelRequest;
+import com.expense_management_service.dto.request.CatchAllFlowRequest;
 import com.expense_management_service.dto.response.ApprovalFlowResponse;
 import com.expense_management_service.enums.ApproverSourceType;
 import com.expense_management_service.enums.CriterionField;
 import com.expense_management_service.enums.CriterionOperator;
 import com.expense_management_service.enums.LevelQuorum;
+import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.JwtAuthConverter;
 import com.expense_management_service.service.ApprovalFlowService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -48,6 +50,9 @@ class ApprovalFlowControllerTest {
 
     @MockitoBean
     private ApprovalFlowService approvalFlowService;
+
+    @MockitoBean
+    private CurrentUserService currentUserService;
 
     @MockitoBean
     private JwtDecoder jwtDecoder;
@@ -113,6 +118,35 @@ class ApprovalFlowControllerTest {
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_ADMIN))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.isCatchAll").value(true));
+    }
+
+    @Test
+    void updateCatchAllFlow_returns200_forAdmin_andPassesActingEmployeeId() throws Exception {
+        UUID catchAllId = UUID.randomUUID();
+        when(currentUserService.getEmployeeId()).thenReturn("5100200");
+        when(approvalFlowService.updateCatchAllFlow(any(), org.mockito.ArgumentMatchers.eq("5100200"))).thenReturn(
+                new ApprovalFlowResponse(catchAllId, "Catch-All", null, null, true, "ACTIVE", List.of(), List.of(), LocalDateTime.now(), LocalDateTime.now()));
+        CatchAllFlowRequest request = new CatchAllFlowRequest(List.of(new ApprovalLevelRequest(1, "Manager Review", LevelQuorum.SEQUENTIAL, null,
+                List.of(new ApprovalLevelApproverRequest(1, ApproverSourceType.REPORTING_MANAGER, null)))));
+
+        mockMvc.perform(put("/xms/admin/approval-flows/catch-all")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_ADMIN)))
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.isCatchAll").value(true));
+    }
+
+    @Test
+    void updateCatchAllFlow_returns403_forGeneralRole() throws Exception {
+        CatchAllFlowRequest request = new CatchAllFlowRequest(List.of(new ApprovalLevelRequest(1, "Manager Review", LevelQuorum.SEQUENTIAL, null,
+                List.of(new ApprovalLevelApproverRequest(1, ApproverSourceType.REPORTING_MANAGER, null)))));
+
+        mockMvc.perform(put("/xms/admin/approval-flows/catch-all")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isForbidden());
     }
 
     @Test

@@ -32,6 +32,9 @@ public record ExpenseLineItemResponse(
         String costCenterName,
         UUID projectId,
         String projectName,
+        /** Frozen at submission time — see {@code ExpenseLineItem.resolvedClientId}'s javadoc. Null for non-billable line items. */
+        UUID resolvedClientId,
+        String resolvedClientName,
         Boolean clientBillable,
         String lineStatus,
         LocalDateTime createdAt,

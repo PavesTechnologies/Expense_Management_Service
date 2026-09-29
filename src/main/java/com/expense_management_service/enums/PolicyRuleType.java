@@ -16,5 +16,7 @@ public enum PolicyRuleType {
     /** Fires when the line item's description is blank. {@code ruleValue} is unused. */
     MISSING_DESCRIPTION,
     /** Fires when the same employee has another line item with the same category, date, and amount. {@code ruleValue} is unused. */
-    DUPLICATE_EXPENSE
+    DUPLICATE_EXPENSE,
+    /** Fires when a DIFFERENT employee has a submitted (non-draft) line item with the same merchant, date, amount, and currency — a possible shared-bill/duplicate claim. {@code ruleValue} is unused. */
+    CROSS_EMPLOYEE_DUPLICATE_EXPENSE
 }

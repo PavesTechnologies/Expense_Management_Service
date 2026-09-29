@@ -39,12 +39,14 @@ public class PolicyRuleMapper {
         entity.setStatus(request.status());
     }
 
-    /** DUPLICATE_EXPENSE is the one rule type prone to false positives, so it defaults to the lower INFO tier when the admin doesn't specify a severity; every other type defaults to WARN. */
+    /** DUPLICATE_EXPENSE and CROSS_EMPLOYEE_DUPLICATE_EXPENSE are the rule types prone to false positives, so they default to the lower INFO tier when the admin doesn't specify a severity; every other type defaults to WARN. */
     private PolicySeverity resolveSeverity(PolicyRuleRequest request) {
         if (request.severity() != null) {
             return request.severity();
         }
-        return request.ruleType() == PolicyRuleType.DUPLICATE_EXPENSE ? PolicySeverity.INFO : PolicySeverity.WARN;
+        boolean isDuplicateType = request.ruleType() == PolicyRuleType.DUPLICATE_EXPENSE
+                || request.ruleType() == PolicyRuleType.CROSS_EMPLOYEE_DUPLICATE_EXPENSE;
+        return isDuplicateType ? PolicySeverity.INFO : PolicySeverity.WARN;
     }
 
     /** Block is never a silent default - an Admin who doesn't specify enforcementType always gets WARN, regardless of rule type. */

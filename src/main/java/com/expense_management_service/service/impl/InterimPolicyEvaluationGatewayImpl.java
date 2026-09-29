@@ -69,6 +69,17 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
                             .ifPresent(old -> {
                                 violation.setJustification(old.getJustification());
                                 violation.setJustifiedAt(old.getJustifiedAt());
+                                violation.setJustifiedBy(old.getJustifiedBy());
+                                // Carrying these forward is what makes an approver's exception
+                                // authorization durable across a correction + resubmission cycle -
+                                // every submit()/resubmitCorrection() deletes and recomputes every
+                                // violation on the report, so without this an approver's already-
+                                // recorded approve-exception would be silently destroyed the next
+                                // time the report is corrected, even for a rule wholly unrelated to
+                                // what was corrected.
+                                violation.setApproverJustification(old.getApproverJustification());
+                                violation.setApproverJustifiedBy(old.getApproverJustifiedBy());
+                                violation.setApproverJustifiedAt(old.getApproverJustifiedAt());
                             });
                 }
 

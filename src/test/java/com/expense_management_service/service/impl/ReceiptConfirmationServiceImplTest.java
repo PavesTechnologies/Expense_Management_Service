@@ -76,7 +76,7 @@ class ReceiptConfirmationServiceImplTest {
 
         // lenient: the not-found test never reaches assertOwnerOrAdmin/save.
         lenient().when(currentUserService.getCurrentUser())
-                .thenReturn(new CurrentUser(UUID.randomUUID(), employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of()));
+                .thenReturn(new CurrentUser(UUID.randomUUID(), null, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of()));
         when(receiptRepository.findById(receiptId)).thenReturn(Optional.of(receipt));
         lenient().when(receiptRepository.save(any(Receipt.class))).thenAnswer(inv -> inv.getArgument(0));
     }
@@ -269,6 +269,6 @@ class ReceiptConfirmationServiceImplTest {
         return new ExpenseLineItemResponse(lineItemId, reportId, "EXP-001", "DRAFT", UUID.randomUUID(), "Travel",
                 true, false, null, LocalDate.of(2026, 1, 15), "Acme Taxi", null, new BigDecimal("123.45"),
                 UUID.randomUUID(), "USD", BigDecimal.ONE, new BigDecimal("123.45"), "USD",
-                new BigDecimal("10.00"), new BigDecimal("113.45"), null, null, null, null, true, "ACTIVE", null, null, List.of());
+                new BigDecimal("10.00"), new BigDecimal("113.45"), null, null, null, null, null, null, true, "ACTIVE", null, null, List.of());
     }
 }

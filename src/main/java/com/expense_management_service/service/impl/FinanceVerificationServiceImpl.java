@@ -2,6 +2,7 @@ package com.expense_management_service.service.impl;
 
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.FinanceHistoryItemResponse;
 import com.expense_management_service.dto.response.FinanceLineItemReviewResponse;
 import com.expense_management_service.dto.response.FinancePendingLineItemResponse;
 import com.expense_management_service.dto.response.FinanceQueueItemResponse;
@@ -30,6 +31,8 @@ import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.FinanceEligibilityResult;
 import com.expense_management_service.service.FinanceVerificationEligibilityChecker;
 import com.expense_management_service.service.FinanceVerificationService;
+import com.expense_management_service.dto.response.FinancePaymentSummaryResponse;
+import com.expense_management_service.enums.PaymentRoutingStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -41,6 +44,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
@@ -194,6 +198,50 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
             }
         }
         return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<FinanceHistoryItemResponse> getFinanceHistory(FinanceVerificationStatus status, Pageable pageable) {
+        if (status == null || status == FinanceVerificationStatus.PENDING) {
+            throw new IllegalArgumentException("Finance Verification history only supports VERIFIED or QUERIED, not " + status);
+        }
+
+        var instances = status == FinanceVerificationStatus.VERIFIED
+                ? approvalLevelInstanceRepository.findCompletedFinanceVerificationInstances(pageable)
+                : approvalLevelInstanceRepository.findQueriedFinanceVerificationInstances(pageable);
+
+        return PageResponse.of(instances.map(instance -> toHistoryItem(instance, status)));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public FinancePaymentSummaryResponse getPaymentSummary() {
+        return new FinancePaymentSummaryResponse(
+                expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT),
+                expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED));
+    }
+
+    private FinanceHistoryItemResponse toHistoryItem(ApprovalLevelInstance instance, FinanceVerificationStatus status) {
+        ExpenseReport report = instance.getReport();
+        FinanceVerificationReview representative = financeVerificationReviewRepository
+                .findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                .filter(review -> status != FinanceVerificationStatus.QUERIED || review.getStatus() == FinanceVerificationStatus.QUERIED)
+                .max(Comparator.comparing(FinanceVerificationReview::getActionedAt, Comparator.nullsFirst(Comparator.naturalOrder())))
+                .orElse(null);
+
+        return new FinanceHistoryItemResponse(
+                report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTotalAmount(),
+                report.getCurrency() != null ? report.getCurrency().getCurrencyCode() : null,
+                report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
+                report.getReportStatus() != null ? report.getReportStatus().name() : null,
+                status.name(), instance.getLevelOrder(),
+                representative != null ? representative.getActedBy() : null,
+                representative != null ? representative.getActionedAt() : null,
+                representative != null ? representative.getComment() : null,
+                report.getPaymentRoutingStatus() != null ? report.getPaymentRoutingStatus().name() : null,
+                report.getPaymentCompletedAt(),
+                report.getInvoiceHandoffStatus() != null ? report.getInvoiceHandoffStatus().name() : null);
     }
 
     /**

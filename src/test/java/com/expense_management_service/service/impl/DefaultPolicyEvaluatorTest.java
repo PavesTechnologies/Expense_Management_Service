@@ -13,6 +13,7 @@ import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.enums.PolicyOverageTier;
 import com.expense_management_service.enums.PolicyRuleType;
 import com.expense_management_service.enums.PolicySeverity;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.PolicyRuleLimitRepository;
 import com.expense_management_service.repository.PolicyRuleRepository;
@@ -66,6 +67,7 @@ class DefaultPolicyEvaluatorTest {
     private ExpenseCategory category;
     private ExpenseReport report;
     private Policy policy;
+    private Currency currency;
 
     @BeforeEach
     void setUp() {
@@ -75,13 +77,14 @@ class DefaultPolicyEvaluatorTest {
         category = ExpenseCategory.builder().categoryId(categoryId).categoryName("Travel").status("ACTIVE").build();
         report = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("5100014").build();
         policy = Policy.builder().policyId(UUID.randomUUID()).policyName("Default Policy").status("ACTIVE").build();
+        currency = Currency.builder().currencyId(UUID.randomUUID()).currencyCode("INR").decimalPlaces(2).build();
         lenient().when(policyAssignmentResolver.resolve("5100014")).thenReturn(policy);
         lenient().when(policyVersionService.getCurrentVersion(policy.getPolicyId())).thenReturn(1);
     }
 
     private ExpenseLineItem.ExpenseLineItemBuilder lineItem() {
         return ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(report).category(category)
-                .expenseDate(LocalDate.now()).amount(new BigDecimal("100"));
+                .expenseDate(LocalDate.now()).amount(new BigDecimal("100")).currency(currency);
     }
 
     private PolicyRule rule(PolicyRuleType type, String ruleValue) {
@@ -375,8 +378,8 @@ class DefaultPolicyEvaluatorTest {
         stubRules(rule(PolicyRuleType.DUPLICATE_EXPENSE, null));
         ExpenseLineItem item = lineItem().expenseDate(LocalDate.now()).amount(new BigDecimal("100")).build();
         ExpenseLineItem other = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build();
-        when(expenseLineItemRepository.findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmount(
-                report.getEmployeeId(), categoryId, item.getExpenseDate(), item.getAmount()))
+        when(expenseLineItemRepository.findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmountAndCurrency_CurrencyId(
+                report.getEmployeeId(), categoryId, item.getExpenseDate(), item.getAmount(), currency.getCurrencyId()))
                 .thenReturn(List.of(other));
 
         List<PolicyViolation> violations = evaluator.evaluate(item);
@@ -389,10 +392,104 @@ class DefaultPolicyEvaluatorTest {
     void duplicateExpense_excludesSelf() {
         stubRules(rule(PolicyRuleType.DUPLICATE_EXPENSE, null));
         ExpenseLineItem item = lineItem().expenseDate(LocalDate.now()).amount(new BigDecimal("100")).build();
-        when(expenseLineItemRepository.findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmount(
-                report.getEmployeeId(), categoryId, item.getExpenseDate(), item.getAmount()))
+        when(expenseLineItemRepository.findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmountAndCurrency_CurrencyId(
+                report.getEmployeeId(), categoryId, item.getExpenseDate(), item.getAmount(), currency.getCurrencyId()))
                 .thenReturn(List.of(item));
 
+        assertThat(evaluator.evaluate(item)).isEmpty();
+    }
+
+    @Test
+    void duplicateExpense_doesNotFire_whenOnlyCurrencyDiffers() {
+        // Correctness fix: a $100 USD and a $100 INR expense on the same day/category must not
+        // be treated as duplicates of each other - the old query never checked currency at all.
+        stubRules(rule(PolicyRuleType.DUPLICATE_EXPENSE, null));
+        ExpenseLineItem item = lineItem().expenseDate(LocalDate.now()).amount(new BigDecimal("100")).build();
+        when(expenseLineItemRepository.findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmountAndCurrency_CurrencyId(
+                report.getEmployeeId(), categoryId, item.getExpenseDate(), item.getAmount(), currency.getCurrencyId()))
+                .thenReturn(List.of());
+        // No stub for the merchant-based path is needed - item has no merchantName set.
+
+        assertThat(evaluator.evaluate(item)).isEmpty();
+    }
+
+    @Test
+    void duplicateExpense_fires_onVendorMatch_evenWhenCategoryDiffers() {
+        stubRules(rule(PolicyRuleType.DUPLICATE_EXPENSE, null));
+        ExpenseLineItem item = lineItem().merchantName("Cafe Coffee Day").expenseDate(LocalDate.now())
+                .amount(new BigDecimal("100")).build();
+        ExpenseLineItem other = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build();
+        when(expenseLineItemRepository.findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmountAndCurrency_CurrencyId(
+                report.getEmployeeId(), categoryId, item.getExpenseDate(), item.getAmount(), currency.getCurrencyId()))
+                .thenReturn(List.of());
+        when(expenseLineItemRepository.findByReport_EmployeeIdAndMerchantNameIgnoreCaseAndExpenseDateAndAmountAndCurrency_CurrencyId(
+                report.getEmployeeId(), "Cafe Coffee Day", item.getExpenseDate(), item.getAmount(), currency.getCurrencyId()))
+                .thenReturn(List.of(other));
+
+        List<PolicyViolation> violations = evaluator.evaluate(item);
+
+        assertThat(violations).hasSize(1);
+        assertThat(violations.get(0).getRuleType()).isEqualTo(PolicyRuleType.DUPLICATE_EXPENSE);
+    }
+
+    @Test
+    void duplicateExpense_vendorMatch_excludesSelf() {
+        stubRules(rule(PolicyRuleType.DUPLICATE_EXPENSE, null));
+        ExpenseLineItem item = lineItem().merchantName("Cafe Coffee Day").expenseDate(LocalDate.now())
+                .amount(new BigDecimal("100")).build();
+        when(expenseLineItemRepository.findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmountAndCurrency_CurrencyId(
+                report.getEmployeeId(), categoryId, item.getExpenseDate(), item.getAmount(), currency.getCurrencyId()))
+                .thenReturn(List.of());
+        when(expenseLineItemRepository.findByReport_EmployeeIdAndMerchantNameIgnoreCaseAndExpenseDateAndAmountAndCurrency_CurrencyId(
+                report.getEmployeeId(), "Cafe Coffee Day", item.getExpenseDate(), item.getAmount(), currency.getCurrencyId()))
+                .thenReturn(List.of(item));
+
+        assertThat(evaluator.evaluate(item)).isEmpty();
+    }
+
+    // ---- CROSS_EMPLOYEE_DUPLICATE_EXPENSE - split-bill / shared-receipt detection across employees ----
+
+    @Test
+    void crossEmployeeDuplicate_fires_whenAnotherEmployeeHasAMatchingSubmittedExpense() {
+        stubRules(rule(PolicyRuleType.CROSS_EMPLOYEE_DUPLICATE_EXPENSE, null));
+        ExpenseLineItem item = lineItem().merchantName("The Grand Hotel").expenseDate(LocalDate.now())
+                .amount(new BigDecimal("300")).build();
+        ExpenseReport otherReport = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("5100099")
+                .reportStatus(ReportStatus.PENDING_APPROVAL).build();
+        ExpenseLineItem other = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(otherReport).build();
+        when(expenseLineItemRepository
+                .findByMerchantNameIgnoreCaseAndExpenseDateAndAmountAndCurrency_CurrencyIdAndReport_EmployeeIdNotAndReport_ReportStatusNot(
+                        "The Grand Hotel", item.getExpenseDate(), item.getAmount(), currency.getCurrencyId(),
+                        report.getEmployeeId(), ReportStatus.DRAFT))
+                .thenReturn(List.of(other));
+
+        List<PolicyViolation> violations = evaluator.evaluate(item);
+
+        assertThat(violations).hasSize(1);
+        assertThat(violations.get(0).getRuleType()).isEqualTo(PolicyRuleType.CROSS_EMPLOYEE_DUPLICATE_EXPENSE);
+        assertThat(violations.get(0).getMessage()).contains("5100099").contains(other.getLineItemId().toString());
+    }
+
+    @Test
+    void crossEmployeeDuplicate_doesNotFire_whenNoOtherEmployeeMatches() {
+        stubRules(rule(PolicyRuleType.CROSS_EMPLOYEE_DUPLICATE_EXPENSE, null));
+        ExpenseLineItem item = lineItem().merchantName("The Grand Hotel").expenseDate(LocalDate.now())
+                .amount(new BigDecimal("300")).build();
+        when(expenseLineItemRepository
+                .findByMerchantNameIgnoreCaseAndExpenseDateAndAmountAndCurrency_CurrencyIdAndReport_EmployeeIdNotAndReport_ReportStatusNot(
+                        "The Grand Hotel", item.getExpenseDate(), item.getAmount(), currency.getCurrencyId(),
+                        report.getEmployeeId(), ReportStatus.DRAFT))
+                .thenReturn(List.of());
+
+        assertThat(evaluator.evaluate(item)).isEmpty();
+    }
+
+    @Test
+    void crossEmployeeDuplicate_doesNotFire_whenMerchantNameBlank() {
+        stubRules(rule(PolicyRuleType.CROSS_EMPLOYEE_DUPLICATE_EXPENSE, null));
+        ExpenseLineItem item = lineItem().expenseDate(LocalDate.now()).amount(new BigDecimal("300")).build();
+
+        // No repository stub at all - the rule must skip the query entirely rather than searching on a blank vendor.
         assertThat(evaluator.evaluate(item)).isEmpty();
     }
 

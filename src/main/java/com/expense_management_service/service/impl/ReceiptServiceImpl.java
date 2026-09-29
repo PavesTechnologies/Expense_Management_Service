@@ -126,7 +126,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     private ReceiptResponse uploadInternal(ExpenseReport report, ExpenseLineItem lineItem, MultipartFile file) {
         assertOwnerOrAdmin(report);
         assertReportEditable(report);
-        assertFileValid(file);
+        byte[] fileBytes = assertFileValid(file);
 
         String originalFileName = extractBaseFileName(file.getOriginalFilename());
         String storedFileName = UUID.randomUUID() + "-" + sanitizeForKey(originalFileName);
@@ -147,6 +147,7 @@ public class ReceiptServiceImpl implements ReceiptService {
                 .uploadedBy(currentUserService.getCurrentUser().employeeId())
                 .uploadedAt(LocalDateTime.now())
                 .ocrStatus(OcrStatus.UPLOADED.name())
+                .fileHash(computeFileHash(fileBytes))
                 .build();
 
         try {
@@ -157,7 +158,7 @@ public class ReceiptServiceImpl implements ReceiptService {
             log.info("[OCR] Receipt {} saved for report {} — publishing ReceiptUploadedEvent", saved.getReceiptId(), report.getReportId());
             applicationEventPublisher.publishEvent(new ReceiptUploadedEvent(saved.getReceiptId()));
             log.info("[OCR] ReceiptUploadedEvent published for receipt {}", saved.getReceiptId());
-            return receiptMapper.toResponse(saved);
+            return toResponseWithDuplicateCheck(saved);
         } catch (RuntimeException ex) {
             log.error("Metadata save failed after storage upload succeeded for report {} — deleting the now-orphaned file", report.getReportId(), ex);
             safeDeleteFromStorage(objectKey);
@@ -170,7 +171,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     public List<ReceiptResponse> getAllForReport(UUID reportId) {
         ExpenseReport report = findReport(reportId);
         assertViewable(report);
-        return receiptRepository.findByReport_ReportId(reportId).stream().map(receiptMapper::toResponse).toList();
+        return receiptRepository.findByReport_ReportId(reportId).stream().map(this::toResponseWithDuplicateCheck).toList();
     }
 
     @Override
@@ -178,7 +179,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     public List<ReceiptResponse> getAllForLineItem(UUID lineItemId) {
         ExpenseLineItem lineItem = findLineItem(lineItemId);
         assertViewable(lineItem.getReport());
-        return receiptRepository.findByLineItem_LineItemId(lineItemId).stream().map(receiptMapper::toResponse).toList();
+        return receiptRepository.findByLineItem_LineItemId(lineItemId).stream().map(this::toResponseWithDuplicateCheck).toList();
     }
 
     @Override
@@ -186,7 +187,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     public ReceiptResponse getById(UUID receiptId) {
         Receipt entity = findReceipt(receiptId);
         assertViewable(entity.getReport());
-        return receiptMapper.toResponse(entity);
+        return toResponseWithDuplicateCheck(entity);
     }
 
     @Override
@@ -238,7 +239,8 @@ public class ReceiptServiceImpl implements ReceiptService {
         }
     }
 
-    private void assertFileValid(MultipartFile file) {
+    /** Returns the file's full bytes once validation passes — reused by the caller to compute {@code fileHash} without reading the file a second time. */
+    private byte[] assertFileValid(MultipartFile file) {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("Uploaded file must not be empty");
         }
@@ -256,16 +258,17 @@ public class ReceiptServiceImpl implements ReceiptService {
             throw new IllegalArgumentException(
                     "Unsupported file extension: ." + extension + ". Allowed: pdf, png, jpg, jpeg, webp");
         }
-        assertContentMatchesDeclaredType(file, extension);
+        return assertContentMatchesDeclaredType(file, extension);
     }
 
     /**
      * Verifies the file's actual bytes match every signature part expected for its extension.
      * Both the declared Content-Type and the file extension are attacker-controlled (renaming
      * a file changes both at once), so passing those two checks alone does not prove the file
-     * actually is a PDF/PNG/JPEG/WEBP — only its content can.
+     * actually is a PDF/PNG/JPEG/WEBP — only its content can. Returns those bytes so the caller
+     * doesn't have to read the (potentially large) file from the wire a second time.
      */
-    private void assertContentMatchesDeclaredType(MultipartFile file, String extension) {
+    private byte[] assertContentMatchesDeclaredType(MultipartFile file, String extension) {
         List<SignaturePart> signatureParts = SIGNATURES_BY_EXTENSION.get(extension);
         byte[] header;
         try {
@@ -278,6 +281,34 @@ public class ReceiptServiceImpl implements ReceiptService {
             throw new IllegalArgumentException(
                     "File content does not match its declared type (." + extension + ") — the file may be corrupted or mislabeled");
         }
+        return header;
+    }
+
+    /** SHA-256 of the exact file bytes — used only for advisory exact-file-reuse detection (see {@link #uploadInternal}), never for security/integrity purposes. */
+    private String computeFileHash(byte[] fileBytes) {
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(fileBytes);
+            StringBuilder hex = new StringBuilder(hash.length * 2);
+            for (byte b : hash) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString();
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available on this JVM", e);
+        }
+    }
+
+    /** Advisory-only exact-file-reuse check (see {@code Receipt.fileHash}'s javadoc) — never blocks anything, just informs the response. */
+    private ReceiptResponse toResponseWithDuplicateCheck(Receipt entity) {
+        if (entity.getFileHash() == null) {
+            return receiptMapper.toResponse(entity);
+        }
+        return receiptRepository.findByFileHash(entity.getFileHash()).stream()
+                .filter(other -> !other.getReceiptId().equals(entity.getReceiptId()))
+                .findFirst()
+                .map(other -> receiptMapper.toResponse(entity, true, other.getReceiptId()))
+                .orElseGet(() -> receiptMapper.toResponse(entity));
     }
 
     private boolean matchesAt(byte[] header, SignaturePart part) {

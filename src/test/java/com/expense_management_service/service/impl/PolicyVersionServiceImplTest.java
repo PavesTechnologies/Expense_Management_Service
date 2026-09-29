@@ -63,7 +63,7 @@ class PolicyVersionServiceImplTest {
     @Test
     void activateNewVersion_bumpsFromOneToTwo_forANeverVersionedPolicy() {
         when(policyVersionRepository.findTopByPolicy_PolicyIdOrderByVersionNumberDesc(policyId)).thenReturn(Optional.empty());
-        when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(UUID.randomUUID(), "admin-1", null, null, null, null));
+        when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(UUID.randomUUID(), null, "admin-1", null, null, null, null));
 
         int newVersion = service.activateNewVersion(policy);
 
@@ -75,7 +75,7 @@ class PolicyVersionServiceImplTest {
     void activateNewVersion_bumpsFromThreeToFour_whenAlreadyVersioned() {
         PolicyVersion v3 = PolicyVersion.builder().versionId(UUID.randomUUID()).policy(policy).versionNumber(3).activatedAt(LocalDateTime.now()).build();
         when(policyVersionRepository.findTopByPolicy_PolicyIdOrderByVersionNumberDesc(policyId)).thenReturn(Optional.of(v3));
-        when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(UUID.randomUUID(), "admin-1", null, null, null, null));
+        when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(UUID.randomUUID(), null, "admin-1", null, null, null, null));
 
         assertThat(service.activateNewVersion(policy)).isEqualTo(4);
     }
@@ -83,7 +83,7 @@ class PolicyVersionServiceImplTest {
     @Test
     void activateNewVersion_recordsAnAuditLogEntry() {
         when(policyVersionRepository.findTopByPolicy_PolicyIdOrderByVersionNumberDesc(policyId)).thenReturn(Optional.empty());
-        when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(UUID.randomUUID(), "admin-1", null, null, null, null));
+        when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(UUID.randomUUID(), null, "admin-1", null, null, null, null));
 
         service.activateNewVersion(policy);
 

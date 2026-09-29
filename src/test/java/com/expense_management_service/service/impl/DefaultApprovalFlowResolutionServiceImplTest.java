@@ -12,6 +12,7 @@ import com.expense_management_service.enums.CriterionOperator;
 import com.expense_management_service.repository.ApprovalFlowRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.EmployeeCacheRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.ExchangeRateService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +38,7 @@ class DefaultApprovalFlowResolutionServiceImplTest {
     @Mock private EmployeeCacheRepository employeeCacheRepository;
     @Mock private CurrencyRepository currencyRepository;
     @Mock private ExchangeRateService exchangeRateService;
+    @Mock private PolicyViolationRepository policyViolationRepository;
 
     private DefaultApprovalFlowResolutionServiceImpl service;
 
@@ -45,7 +47,7 @@ class DefaultApprovalFlowResolutionServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new DefaultApprovalFlowResolutionServiceImpl(approvalFlowRepository, employeeCacheRepository, currencyRepository, exchangeRateService);
+        service = new DefaultApprovalFlowResolutionServiceImpl(approvalFlowRepository, employeeCacheRepository, currencyRepository, exchangeRateService, policyViolationRepository);
         ReflectionTestUtils.setField(service, "baseCurrencyCode", "INR");
         when(currencyRepository.findByCurrencyCode("INR")).thenReturn(Optional.of(baseCurrency));
     }
@@ -132,5 +134,37 @@ class DefaultApprovalFlowResolutionServiceImplTest {
         ApprovalFlow resolved = service.resolveMatchingFlow(report);
 
         assertThat(resolved.getFlowId()).isEqualTo(flow.getFlowId());
+    }
+
+    @Test
+    void resolveMatchingFlow_matchesHasPolicyViolation_whenReportCarriesAViolation() {
+        ExpenseReport report = reportWithAmount(new BigDecimal("500"));
+        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(new BigDecimal("500"));
+        when(policyViolationRepository.existsByLineItem_Report_ReportId(report.getReportId())).thenReturn(true);
+
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(UUID.randomUUID()).priority(1).isCatchAll(false).criteriaPattern("1").build();
+        flow.getCriteria().add(ApprovalFlowCriterion.builder().flow(flow).index(1).field(CriterionField.HAS_POLICY_VIOLATION).operator(CriterionOperator.EQUALS).value(null).build());
+        when(approvalFlowRepository.findByIsCatchAllFalseAndStatusOrderByPriorityAsc("ACTIVE")).thenReturn(List.of(flow));
+
+        ApprovalFlow resolved = service.resolveMatchingFlow(report);
+
+        assertThat(resolved.getFlowId()).isEqualTo(flow.getFlowId());
+    }
+
+    @Test
+    void resolveMatchingFlow_doesNotMatchHasPolicyViolation_whenReportHasNoViolation() {
+        ExpenseReport report = reportWithAmount(new BigDecimal("500"));
+        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(new BigDecimal("500"));
+        when(policyViolationRepository.existsByLineItem_Report_ReportId(report.getReportId())).thenReturn(false);
+
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(UUID.randomUUID()).priority(1).isCatchAll(false).criteriaPattern("1").build();
+        flow.getCriteria().add(ApprovalFlowCriterion.builder().flow(flow).index(1).field(CriterionField.HAS_POLICY_VIOLATION).operator(CriterionOperator.EQUALS).value(null).build());
+        when(approvalFlowRepository.findByIsCatchAllFalseAndStatusOrderByPriorityAsc("ACTIVE")).thenReturn(List.of(flow));
+        ApprovalFlow catchAll = ApprovalFlow.builder().flowId(UUID.randomUUID()).isCatchAll(true).build();
+        when(approvalFlowRepository.findByIsCatchAllTrue()).thenReturn(Optional.of(catchAll));
+
+        ApprovalFlow resolved = service.resolveMatchingFlow(report);
+
+        assertThat(resolved.getFlowId()).isEqualTo(catchAll.getFlowId());
     }
 }

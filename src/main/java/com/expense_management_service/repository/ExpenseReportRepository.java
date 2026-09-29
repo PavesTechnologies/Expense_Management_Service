@@ -68,4 +68,19 @@ public interface ExpenseReportRepository extends JpaRepository<ExpenseReport, UU
      * no per-report/per-cost-center assignment required to make it visible.
      */
     Page<ExpenseReport> findByReportStatus(ReportStatus reportStatus, Pageable pageable);
+
+    /**
+     * The AP Payment history tabs: any {@code paymentRoutingStatus} other than {@code
+     * APPROVED_FOR_PAYMENT} (that one is the pending queue, see {@link
+     * #findByReportStatusAndPaymentRoutingStatus}) or {@code NONE} (not a payment-routing outcome
+     * at all - most approved reports with no Finance Verification level).
+     */
+    Page<ExpenseReport> findByPaymentRoutingStatus(PaymentRoutingStatus paymentRoutingStatus, Pageable pageable);
+
+    long countByPaymentRoutingStatus(PaymentRoutingStatus paymentRoutingStatus);
+
+    long countByReportStatusAndPaymentRoutingStatus(ReportStatus reportStatus, PaymentRoutingStatus paymentRoutingStatus);
+
+    long countByPaymentRoutingStatusAndPaymentCompletedAtGreaterThanEqual(
+            PaymentRoutingStatus paymentRoutingStatus, java.time.LocalDateTime since);
 }

@@ -17,6 +17,7 @@ import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.BudgetEncumbranceService;
 import com.expense_management_service.service.CostCenterBudgetService;
 import com.expense_management_service.service.ExpenseLineItemService;
+import com.expense_management_service.dto.response.ApPaymentSummaryResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -26,6 +27,7 @@ import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Set;
 import java.util.UUID;
@@ -36,9 +38,15 @@ import java.util.UUID;
 @Slf4j
 public class ApPaymentServiceImpl implements ApPaymentService {
 
-    /** {@code paymentRoutingStatus} values from which the report's payment details remain visible to AP. */
-    private static final Set<PaymentRoutingStatus> AP_VISIBLE_STATUSES =
-            Set.of(PaymentRoutingStatus.APPROVED_FOR_PAYMENT, PaymentRoutingStatus.PAYMENT_COMPLETED);
+    /**
+     * {@code paymentRoutingStatus} values from which the report's payment details remain visible
+     * to AP - every real routing outcome except {@code NONE} (a report with no Finance
+     * Verification level at all never reaches AP in the first place).
+     */
+    private static final Set<PaymentRoutingStatus> AP_VISIBLE_STATUSES = Set.of(
+            PaymentRoutingStatus.APPROVED_FOR_PAYMENT, PaymentRoutingStatus.PAYMENT_COMPLETED,
+            PaymentRoutingStatus.INVOICE_HANDOFF_PENDING, PaymentRoutingStatus.INVOICE_HANDOFF_COMPLETED,
+            PaymentRoutingStatus.HANDOFF_FAILED);
 
     private final ExpenseReportRepository expenseReportRepository;
     private final ExpenseLineItemService expenseLineItemService;
@@ -57,13 +65,37 @@ public class ApPaymentServiceImpl implements ApPaymentService {
         return PageResponse.of(page.map(this::toQueueItem));
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public ApPaymentSummaryResponse getSummary() {
+        LocalDateTime startOfMonth = LocalDate.now().withDayOfMonth(1).atStartOfDay();
+        return new ApPaymentSummaryResponse(
+                // Same filter as getApQueue, so the card always equals the Pending tab's count.
+                expenseReportRepository.countByReportStatusAndPaymentRoutingStatus(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT),
+                expenseReportRepository.countByPaymentRoutingStatusAndPaymentCompletedAtGreaterThanEqual(PaymentRoutingStatus.PAYMENT_COMPLETED, startOfMonth),
+                expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED),
+                expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.HANDOFF_FAILED));
+    }
+
     private ApPaymentQueueItemResponse toQueueItem(ExpenseReport report) {
         return new ApPaymentQueueItemResponse(
                 report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTitle(),
                 report.getTotalAmount(), report.getCurrency() != null ? report.getCurrency().getCurrencyCode() : null,
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterId() : null,
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
-                report.getApprovedAt(), report.getReportStatus().name(), report.getPaymentRoutingStatus().name());
+                report.getApprovedAt(), report.getReportStatus().name(), report.getPaymentRoutingStatus().name(),
+                report.getInvoiceHandoffStatus() != null ? report.getInvoiceHandoffStatus().name() : null,
+                report.getPaymentCompletedAt(), report.getPaymentCompletedBy());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<ApPaymentQueueItemResponse> getApHistory(PaymentRoutingStatus status, Pageable pageable) {
+        if (status == null || status == PaymentRoutingStatus.NONE || status == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) {
+            throw new IllegalArgumentException(
+                    "AP Payment history does not support " + status + " - use getApQueue for the pending queue");
+        }
+        return PageResponse.of(expenseReportRepository.findByPaymentRoutingStatus(status, pageable).map(this::toQueueItem));
     }
 
     @Override

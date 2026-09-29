@@ -15,6 +15,7 @@ public record ExpenseReportResponse(
         String costCenterName,
         String reportStatus,
         String paymentRoutingStatus,
+        String invoiceHandoffStatus,
         UUID currencyId,
         String currencyCode,
         BigDecimal totalAmount,

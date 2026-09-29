@@ -46,7 +46,7 @@ class ApprovalDelegationServiceImplTest {
 
     private void loginAs(String employeeId, String... roles) {
         when(currentUserService.getCurrentUser()).thenReturn(
-                new CurrentUser(UUID.randomUUID(), employeeId, "x@example.com", "X", List.of(roles), List.of()));
+                new CurrentUser(UUID.randomUUID(), null, employeeId, "x@example.com", "X", List.of(roles), List.of()));
     }
 
     private ApprovalDelegationRequest requestFor(String delegatorId) {

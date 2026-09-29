@@ -21,6 +21,10 @@ public class PolicyViolationMapper {
                 entity.getCurrency() != null ? entity.getCurrency().getCurrencyCode() : null,
                 entity.getJustification(),
                 entity.getJustifiedAt(),
+                entity.getJustifiedBy(),
+                entity.getApproverJustification(),
+                entity.getApproverJustifiedBy(),
+                entity.getApproverJustifiedAt(),
                 entity.getPolicyVersionNumber()
         );
     }

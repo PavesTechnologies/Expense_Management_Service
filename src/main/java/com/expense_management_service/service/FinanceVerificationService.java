@@ -1,9 +1,12 @@
 package com.expense_management_service.service;
 
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.FinanceHistoryItemResponse;
 import com.expense_management_service.dto.response.FinanceLineItemReviewResponse;
 import com.expense_management_service.dto.response.FinanceQueueItemResponse;
 import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.enums.FinanceVerificationStatus;
+import com.expense_management_service.dto.response.FinancePaymentSummaryResponse;
 import org.springframework.data.domain.Pageable;
 
 import java.util.List;
@@ -37,4 +40,14 @@ public interface FinanceVerificationService {
 
     /** Current-submission-cycle Finance review status + audit snapshot for every line item, across every FINANCE_VERIFICATION level of this cycle. */
     List<FinanceLineItemReviewResponse> getFinanceReviews(UUID reportId, String actingEmployeeId);
+
+    /**
+     * Finance Verification history - reports whose current-cycle Finance level already reached
+     * {@code VERIFIED} (completed) or {@code QUERIED} (at least one line item sent back for
+     * correction). {@code PENDING} is not a valid history status - use {@link #getFinanceQueue}.
+     */
+    PageResponse<FinanceHistoryItemResponse> getFinanceHistory(FinanceVerificationStatus status, Pageable pageable);
+
+    /** How many finance-verified reports are still with AP vs. already paid. */
+    FinancePaymentSummaryResponse getPaymentSummary();
 }

@@ -30,6 +30,7 @@ import com.expense_management_service.enums.LevelInstanceStatus;
 import com.expense_management_service.enums.LevelQuorum;
 import com.expense_management_service.enums.LevelType;
 import com.expense_management_service.enums.LineItemReviewStatus;
+import com.expense_management_service.enums.InvoiceHandoffStatus;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.mapper.ApprovalFlowMapper;
@@ -884,7 +885,35 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             completeReport(report);
             return;
         }
-        activateLevelInstance(nextQueued.get(), report);
+
+        ApprovalLevelInstance instance = nextQueued.get();
+        if (allAssignmentsAlreadySkipped(instance)) {
+            completeSkippedLevel(report, instance, cycle);
+            return;
+        }
+        activateLevelInstance(instance, report);
+    }
+
+    /**
+     * True when every assignment {@code ChainCorrectnessServiceImpl}'s duplicate-approver pass (§2.6)
+     * already resolved for this level was SKIPPED as a cross-level duplicate - i.e. nobody is left who
+     * could ever act on it. Bug fix: previously {@code activateNextEligibleLevel} activated such a
+     * level anyway, leaving it stuck ACTIVE with zero live assignments (e.g. Reporting Manager and
+     * Cost Center Owner resolving to the same employee silently stalled the chain instead of
+     * proceeding to Finance Executive).
+     */
+    private boolean allAssignmentsAlreadySkipped(ApprovalLevelInstance instance) {
+        List<ApprovalAssignment> assignments = approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId());
+        return !assignments.isEmpty() && assignments.stream().allMatch(a -> a.getStatus() == AssignmentStatus.SKIPPED);
+    }
+
+    /** Waives a level nobody can act on (see {@link #allAssignmentsAlreadySkipped}) - marks it COMPLETED without ever activating it, and proceeds to the next level. */
+    private void completeSkippedLevel(ExpenseReport report, ApprovalLevelInstance instance, int cycle) {
+        instance.setStatus(LevelInstanceStatus.COMPLETED);
+        approvalLevelInstanceRepository.save(instance);
+        approvalEventPublisher.publish("LEVEL_COMPLETED", report.getReportId(),
+                "level=" + instance.getLevelOrder() + " reason=all-approvers-duplicate");
+        activateNextEligibleLevel(report, cycle, instance.getLevelOrder());
     }
 
     private void activateLevelInstance(ApprovalLevelInstance instance, ExpenseReport report) {
@@ -1202,12 +1231,16 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         boolean anyClientBillable = report.getExpenseLineItems() != null && report.getExpenseLineItems().stream()
                 .anyMatch(lineItem -> Boolean.TRUE.equals(lineItem.getClientBillable()));
 
+        // Every approved report is an employee reimbursement and goes to AP — client-billable
+        // included. Invoicing the client is a separate, parallel track (invoiceHandoffStatus),
+        // never a replacement for paying the employee.
+        report.setPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        approvalEventPublisher.publish("REPORT_APPROVED_FOR_PAYMENT", report.getReportId(),
+                anyClientBillable ? "reason=client-billable" : "reason=internal");
+
         if (anyClientBillable) {
-            report.setPaymentRoutingStatus(PaymentRoutingStatus.INVOICE_HANDOFF_PENDING);
+            report.setInvoiceHandoffStatus(InvoiceHandoffStatus.PENDING);
             approvalEventPublisher.publish("REPORT_INVOICE_HANDOFF", report.getReportId(), "reason=client-billable");
-        } else {
-            report.setPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
-            approvalEventPublisher.publish("REPORT_APPROVED_FOR_PAYMENT", report.getReportId(), "reason=internal");
         }
     }
 

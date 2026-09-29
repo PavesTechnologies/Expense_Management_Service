@@ -83,6 +83,19 @@ public class ExpenseLineItem {
     @Column(name = "client_billable")
     private Boolean clientBillable;
 
+    /**
+     * Frozen snapshot of the RMS client resolved for {@link #project} at the moment this line
+     * item was last saved with {@code clientBillable = true} — deliberately independent of
+     * whatever {@code ProjectCache}/RMS say afterward, so display and audit trail stay accurate
+     * even if the client record later changes or the RMS lookup becomes unavailable. Null for
+     * any non-billable line item. See {@code ExpenseLineItemServiceImpl.resolveClientBillableProject}.
+     */
+    @Column(name = "resolved_client_id")
+    private UUID resolvedClientId;
+
+    @Column(name = "resolved_client_name", length = 255)
+    private String resolvedClientName;
+
     @Column(name = "line_status", length = 255)
     private String lineStatus;
 

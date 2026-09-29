@@ -3,6 +3,7 @@ package com.expense_management_service.service.impl;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -19,6 +20,8 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.entity.ProjectCache;
 import com.expense_management_service.enums.PolicyEnforcementType;
+import com.expense_management_service.integration.pms.PmsClient;
+import com.expense_management_service.integration.pms.dto.PmsProjectDetailResponse;
 import com.expense_management_service.mapper.ExpenseLineItemMapper;
 import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.CostCenterRepository;
@@ -68,6 +71,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private final ProjectCacheRepository projectCacheRepository;
     private final ExchangeRateService exchangeRateService;
     private final CurrentUserService currentUserService;
+    private final PmsClient pmsClient;
     private final ExpenseLineItemMapper expenseLineItemMapper;
     private final PolicyEvaluator policyEvaluator;
     private final PolicyViolationRepository policyViolationRepository;
@@ -182,8 +186,78 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         UUID costCenterId = request.costCenterId();
         entity.setCostCenter(costCenterId == null ? null : findActiveCostCenter(costCenterId));
 
-        UUID projectId = request.projectId();
-        entity.setProject(projectId == null ? null : findProject(projectId));
+        if (Boolean.TRUE.equals(request.clientBillable())) {
+            resolveClientBillableProject(entity, request.projectId());
+        } else {
+            // Internal expense: preserve the original lenient behavior exactly — project is
+            // optional, no PMS/RMS calls, no unnecessary requirements imposed.
+            UUID projectId = request.projectId();
+            entity.setProject(projectId == null ? null : findProject(projectId));
+            entity.setResolvedClientId(null);
+            entity.setResolvedClientName(null);
+        }
+    }
+
+    /**
+     * Backend-enforced project assignment + client resolution for a client-billable line item —
+     * runs on every {@code create}/{@code update}, so a correction/resubmission re-validates
+     * exactly like a first submission does. Everything here is re-fetched live from PMS; the
+     * client is PMS's {@code Project.clientId} (RMS is not called — see the inline note below).
+     * <p>
+     * Throws {@link BusinessRuleViolationException} (422) for every failure mode rather than
+     * silently defaulting a project/client — a client-billable expense whose project has no
+     * client in PMS must never be allowed to save.
+     */
+    private void resolveClientBillableProject(ExpenseLineItem entity, UUID projectId) {
+        if (projectId == null) {
+            throw new BusinessRuleViolationException(
+                    "A project must be selected for a client-billable expense line item");
+        }
+        ProjectCache project = findProject(projectId);
+
+        Long pmsProjectId = project.getPmsProjectId();
+        if (pmsProjectId == null) {
+            throw new BusinessRuleViolationException(
+                    "Project " + project.getProjectCode()
+                            + " has no PMS reference and cannot be used for a client-billable expense");
+        }
+
+        Long callerUmsUserId = currentUserService.getUmsUserId();
+        boolean assigned = pmsClient.getMyActiveProjects(callerUmsUserId).stream()
+                .anyMatch(assignedProject -> pmsProjectId.equals(assignedProject.id()));
+        if (!assigned) {
+            throw new BusinessRuleViolationException(
+                    "You are not currently assigned to project " + project.getProjectCode()
+                            + " in PMS, or it is no longer active");
+        }
+
+        PmsProjectDetailResponse pmsProject = pmsClient.getProject(pmsProjectId)
+                .orElseThrow(() -> new BusinessRuleViolationException(
+                        "Project " + project.getProjectCode() + " could not be found in PMS"));
+        if (pmsProject.clientId() == null) {
+            throw new BusinessRuleViolationException(
+                    "Project " + project.getProjectCode() + " has no client associated with it in PMS");
+        }
+
+        // No RMS lookup here: RMS's client endpoints reject an ordinary GENERAL employee's token,
+        // so the client is taken as PMS reports it — clientId only, no name/status.
+
+        // Refresh the cache row with the latest PMS data — never treat what was cached before
+        // this call as authoritative for a submission decision.
+        if (pmsProject.name() != null) {
+            project.setProjectName(pmsProject.name());
+        }
+        if (pmsProject.projectKey() != null) {
+            project.setProjectCode(pmsProject.projectKey());
+        }
+        project.setStatus(pmsProject.status());
+        project.setClientId(pmsProject.clientId());
+        project.setSyncedAt(LocalDateTime.now());
+        projectCacheRepository.save(project);
+
+        entity.setProject(project);
+        entity.setResolvedClientId(pmsProject.clientId());
+        entity.setResolvedClientName(project.getClientName());
     }
 
     /**

@@ -41,39 +41,39 @@ public class SecurityConfig {
     private final JwtAuthConverter jwtAuthConverter;
 
     @Bean
-public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
 
-    http
-            .csrf(csrf -> csrf.disable())
+        http
+                .csrf(csrf -> csrf.disable())
 
-            .cors(cors -> {})
+                .cors(cors -> {})
 
-            .formLogin(form -> form.disable())
+                .formLogin(form -> form.disable())
 
-            .httpBasic(basic -> basic.disable())
+                .httpBasic(basic -> basic.disable())
 
-            .sessionManagement(session ->
-                    session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
-            )
+                .sessionManagement(session ->
+                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                )
 
-            .authorizeHttpRequests(auth -> auth
+                .authorizeHttpRequests(auth -> auth
 
-                    // Allow CORS preflight requests
-                    .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
+                        // Allow CORS preflight requests
+                        .requestMatchers(org.springframework.http.HttpMethod.OPTIONS, "/**").permitAll()
 
-                    // Public endpoints
-                    .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
+                        // Public endpoints
+                        .requestMatchers(PUBLIC_ENDPOINTS).permitAll()
 
-                    // Everything else requires JWT
-                    .anyRequest().authenticated()
-            )
+                        // Everything else requires JWT
+                        .anyRequest().authenticated()
+                )
 
-            .oauth2ResourceServer(oauth2 ->
-                    oauth2.jwt(jwt ->
-                            jwt.jwtAuthenticationConverter(jwtAuthConverter)
-                    )
-            );
+                .oauth2ResourceServer(oauth2 ->
+                        oauth2.jwt(jwt ->
+                                jwt.jwtAuthenticationConverter(jwtAuthConverter)
+                        )
+                );
 
-    return http.build();
+        return http.build();
+    }
 }
-        }

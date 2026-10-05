@@ -9,6 +9,8 @@ public record CashAdvanceResponse(
         UUID advanceId,
         String employeeId,
         String managerId,
+        UUID costCenterId,
+        String costCenterName,
         BigDecimal amount,
         UUID currencyId,
         String currencyCode,
@@ -32,11 +34,32 @@ public record CashAdvanceResponse(
             String purpose,
             String status,
             LocalDate settlementDueDate,
+            LocalDate neededByDate,
             BigDecimal outstandingBalance,
             LocalDateTime createdAt,
             LocalDateTime updatedAt
     ) {
-        this(advanceId, employeeId, managerId, amount, currencyId, currencyCode, baseAmount, purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt);
+        this(advanceId, employeeId, managerId, null, null, amount, currencyId, currencyCode, baseAmount,
+                purpose, status, settlementDueDate, neededByDate, outstandingBalance, createdAt, updatedAt);
+    }
+
+    public CashAdvanceResponse(
+            UUID advanceId,
+            String employeeId,
+            String managerId,
+            BigDecimal amount,
+            UUID currencyId,
+            String currencyCode,
+            BigDecimal baseAmount,
+            String purpose,
+            String status,
+            LocalDate settlementDueDate,
+            BigDecimal outstandingBalance,
+            LocalDateTime createdAt,
+            LocalDateTime updatedAt
+    ) {
+        this(advanceId, employeeId, managerId, null, null, amount, currencyId, currencyCode, baseAmount,
+            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt);
     }
 
     public CashAdvanceResponse(
@@ -53,7 +76,8 @@ public record CashAdvanceResponse(
             LocalDateTime createdAt,
             LocalDateTime updatedAt
     ) {
-        this(advanceId, employeeId, null, amount, currencyId, currencyCode, baseAmount, purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt);
+        this(advanceId, employeeId, null, null, null, amount, currencyId, currencyCode, baseAmount,
+            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt);
     }
 
     public CashAdvanceResponse(
@@ -68,7 +92,8 @@ public record CashAdvanceResponse(
             LocalDate settlementDueDate,
             BigDecimal outstandingBalance
     ) {
-        this(advanceId, employeeId, null, amount, currencyId, currencyCode, baseAmount, purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, null, null);
+        this(advanceId, employeeId, null, null, null, amount, currencyId, currencyCode, baseAmount,
+                purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, null, null);
     }
 }
 

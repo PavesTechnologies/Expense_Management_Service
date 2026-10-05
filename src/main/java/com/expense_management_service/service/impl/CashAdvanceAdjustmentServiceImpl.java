@@ -121,6 +121,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         }
 
         CashAdvanceAdjustment saved = cashAdvanceAdjustmentRepository.save(entity);
+        refreshReimbursable(report);
 
         auditLogRepository.save(AuditLog.builder()
                 .entityName("CashAdvanceAdjustment")
@@ -178,6 +179,9 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
             cashAdvanceRepository.save(advance);
         }
         cashAdvanceAdjustmentRepository.delete(entity);
+        if (entity.getReport() != null) {
+            refreshReimbursable(entity.getReport());
+        }
 
         auditLogRepository.save(AuditLog.builder()
                 .entityName("CashAdvanceAdjustment")
@@ -233,6 +237,11 @@ private boolean isAdminCaller() {
         return cashAdvanceAdjustmentRepository.findById(adjustmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("CashAdvanceAdjustment not found with id: " + adjustmentId));
     }
+
+    /** Reimbursable = gross less this report's cash advance adjustments (BR-TAX-013). */
+    private void refreshReimbursable(ExpenseReport report) {
+        report.setReimbursableAmount(ReimbursementCalculator.reimbursable(report.getTotalAmount(),
+                cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId())));
+        expenseReportRepository.save(report);
+    }
 }
-
-

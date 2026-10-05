@@ -46,6 +46,7 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
     private final ExpenseReportRepository expenseReportRepository;
     private final InvoiceSyncRepository invoiceSyncRepository;
     private final InvoiceSyncMapper invoiceSyncMapper;
+    private final com.expense_management_service.service.ApprovalEventPublisher approvalEventPublisher;
 
     /** Same organization base-currency property {@code ExpenseLineItemServiceImpl} uses — {@code baseAmount} is always denominated in it. */
     @Value("${exchange.rate.base-currency}")
@@ -58,6 +59,24 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
         Page<ExpenseLineItem> result = expenseLineItemRepository.findEligibleForInvoiceHandoff(
                 clientId, projectId, startDate, endDate, PageRequest.of(page, size));
         return PageResponse.of(result.map(this::toEligibleExpenseResponse));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.expense_management_service.dto.response.BillingPayloadResponse getBillingPayload(UUID lineItemId) {
+        ExpenseLineItem lineItem = findLineItem(lineItemId);
+        ExpenseReport report = lineItem.getReport();
+        if (!Boolean.TRUE.equals(lineItem.getClientBillable()) || report == null
+                || (report.getInvoiceHandoffStatus() != InvoiceHandoffStatus.PENDING
+                && report.getInvoiceHandoffStatus() != InvoiceHandoffStatus.COMPLETED)) {
+            throw new BusinessRuleViolationException(
+                    "Line item " + lineItemId + " is not a client-billable expense on an approved report");
+        }
+        var handedOff = invoiceSyncRepository.findByLineItem_LineItemIdOrderBySyncDateDesc(lineItemId).stream()
+                .filter(sync -> STATUS_HANDED_OFF.equals(sync.getSyncStatus()))
+                .findFirst();
+        return BillingPayloadFactory.build(lineItem, baseCurrencyCode, handedOff.isPresent() ? STATUS_HANDED_OFF : "PENDING",
+                handedOff.map(InvoiceSync::getInvoiceReference).orElse(null));
     }
 
     @Override
@@ -87,6 +106,8 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
 
         InvoiceSyncResponse response = invoiceSyncMapper.toResponse(invoiceSyncRepository.save(sync));
         completeReportHandoffIfAllLinesHandedOff(lineItem.getReport());
+        approvalEventPublisher.publish("EXPENSE_BILLABLE_HANDED_OFF", lineItem.getReport().getReportId(),
+                "lineItemId=" + lineItemId + " payloadVersion=" + BillingPayloadFactory.PAYLOAD_VERSION);
         return response;
     }
 
@@ -186,6 +207,9 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 baseCurrencyCode,
                 l.getTaxAmount(),
                 l.getNetAmount(),
+                BillingPayloadFactory.costBasis(l),
+                l.getBaseRecoverableTaxAmount(),
+                l.getTaxCode(),
                 project != null ? project.getProjectId() : null,
                 project != null ? project.getProjectCode() : null,
                 project != null ? project.getProjectName() : null,

@@ -53,9 +53,20 @@ public class FinanceVerificationController {
 
     @PostMapping("/{reportId}/line-items/{lineItemId}/verify")
     @PreAuthorize(CAN_ACT_AS_FINANCE)
-    public ApiResponse<ExpenseReportResponse> verifyLineItem(@PathVariable UUID reportId, @PathVariable UUID lineItemId) {
+    public ApiResponse<ExpenseReportResponse> verifyLineItem(@PathVariable UUID reportId, @PathVariable UUID lineItemId,
+                                                              @RequestBody(required = false) com.expense_management_service.dto.request.FinanceVerifyRequest request) {
+        boolean taxChecked = request != null && Boolean.TRUE.equals(request.taxChecked());
         return ApiResponse.success("Line item verified",
-                financeVerificationService.verifyLineItem(reportId, lineItemId, currentUserService.getEmployeeId()));
+                financeVerificationService.verifyLineItem(reportId, lineItemId, currentUserService.getEmployeeId(), taxChecked));
+    }
+
+    /** Per-line tax correction. FINANCE_EXECUTIVE only - never the global tax configuration (BR-TAX-012). */
+    @PostMapping("/{reportId}/line-items/{lineItemId}/tax-adjustment")
+    @PreAuthorize("hasRole('FINANCE_EXECUTIVE')")
+    public ApiResponse<ExpenseReportResponse> adjustLineTax(@PathVariable UUID reportId, @PathVariable UUID lineItemId,
+                                                             @Valid @RequestBody com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest request) {
+        return ApiResponse.success("Tax adjusted",
+                financeVerificationService.adjustLineTax(reportId, lineItemId, currentUserService.getEmployeeId(), request));
     }
 
     @PostMapping("/{reportId}/line-items/{lineItemId}/query")

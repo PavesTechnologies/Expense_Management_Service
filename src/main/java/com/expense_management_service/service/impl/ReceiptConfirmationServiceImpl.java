@@ -18,6 +18,7 @@ import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
 import com.expense_management_service.service.ExpenseLineItemService;
+import com.expense_management_service.service.TaxSnapshotService;
 import com.expense_management_service.service.ReceiptConfirmationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -49,6 +50,7 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
     private final ExpenseLineItemService expenseLineItemService;
     private final CurrencyRepository currencyRepository;
     private final CurrentUserService currentUserService;
+    private final TaxSnapshotService taxSnapshotService;
 
     @Override
     public ReceiptConfirmResponse confirm(UUID receiptId, ReceiptConfirmRequest request) {
@@ -85,11 +87,13 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
 
         ExpenseLineItemRequest lineItemRequest = new ExpenseLineItemRequest(
                 request.categoryId(), expenseDate, merchantName, request.description(), amount, currencyId,
-                taxAmount, request.costCenterId(), request.projectId(), request.clientBillable());
+                taxAmount, request.costCenterId(), request.projectId(), request.clientBillable(),
+                request.taxCodeId(), request.taxOverrideReason());
 
         ExpenseLineItemResponse created = expenseLineItemService.create(receipt.getReport().getReportId(), lineItemRequest);
         markCreatedByOcr(created.lineItemId(), latestOcr.isPresent());
         linkReceiptToLineItem(receipt, created.lineItemId());
+        attachOcrTax(created.lineItemId(), latestOcr);
 
         log.info("Confirmed receipt {} — created line item {}", receipt.getReceiptId(), created.lineItemId());
         return new ReceiptConfirmResponse(receipt.getReceiptId(), created.lineItemId(), OcrStatus.VERIFIED, false, amount,
@@ -108,11 +112,19 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
         boolean amountMismatch = extractedAmount != null && enteredAmount.compareTo(extractedAmount) != 0;
 
         linkReceiptToLineItem(receipt, existing.getLineItemId());
+        attachOcrTax(existing.getLineItemId(), latestOcr);
 
         log.info("Confirmed receipt {} — linked to existing line item {} (amountMismatch={})",
                 receipt.getReceiptId(), existing.getLineItemId(), amountMismatch);
         return new ReceiptConfirmResponse(receipt.getReceiptId(), existing.getLineItemId(), OcrStatus.VERIFIED,
                 amountMismatch, enteredAmount, extractedAmount);
+    }
+
+    /** Copies OCR's tax (and how sure it was) onto the line as evidence and re-validates the line's tax. */
+    private void attachOcrTax(UUID lineItemId, Optional<ReceiptOcr> latestOcr) {
+        latestOcr.filter(ocr -> ocr.getTaxAmount() != null).ifPresent(ocr ->
+                expenseLineItemRepository.findById(lineItemId).ifPresent(line ->
+                        taxSnapshotService.attachOcrEvidence(line, ocr.getTaxAmount(), ocr.getTaxConfidence())));
     }
 
     private void linkReceiptToLineItem(Receipt receipt, UUID lineItemId) {

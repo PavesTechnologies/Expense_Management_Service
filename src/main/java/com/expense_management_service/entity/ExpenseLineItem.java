@@ -1,5 +1,9 @@
 package com.expense_management_service.entity;
 
+import com.expense_management_service.enums.TaxSource;
+import com.expense_management_service.enums.TaxTreatment;
+import com.expense_management_service.enums.TaxType;
+import com.expense_management_service.enums.TaxValidationStatus;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
@@ -70,6 +74,84 @@ public class ExpenseLineItem {
     @Column(name = "net_amount", precision = 19, scale = 4, nullable = false)
     private BigDecimal netAmount;
 
+    // ---- Tax snapshot: what applied to this line, independent of later changes to the tax master.
+    // Recalculated on each save while the report is editable, frozen at submission.
+
+    /** Soft reference (no FK) - the copied values below are what count. */
+    @Column(name = "tax_code_id")
+    private UUID taxCodeId;
+
+    @Column(name = "tax_code", length = 50)
+    private String taxCode;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "tax_type", length = 32)
+    private TaxType taxType;
+
+    @Column(name = "tax_rate_percent", precision = 5, scale = 2)
+    private BigDecimal taxRatePercent;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "tax_treatment", length = 16)
+    private TaxTreatment taxTreatment;
+
+    /** What the configuration says the tax is; kept beside {@code taxAmount} so overrides stay visible. */
+    @Column(name = "calculated_tax_amount", precision = 19, scale = 4)
+    private BigDecimal calculatedTaxAmount;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "tax_source", length = 32)
+    private TaxSource taxSource;
+
+    @Column(name = "tax_override_reason", length = 500)
+    private String taxOverrideReason;
+
+    /** Copied from the tax code when the snapshot is taken. */
+    @Column(name = "itc_recoverable_percent", precision = 5, scale = 2)
+    private BigDecimal itcRecoverablePercent;
+
+    /** round(taxAmount x itcRecoverablePercent / 100), transaction currency. */
+    @Column(name = "recoverable_tax_amount", precision = 19, scale = 4)
+    private BigDecimal recoverableTaxAmount;
+
+    /** round(taxAmount x exchangeRate) in base-currency minor units. */
+    @Column(name = "base_tax_amount", precision = 19, scale = 4)
+    private BigDecimal baseTaxAmount;
+
+    /** baseAmount - baseTaxAmount, so the two always add up to baseAmount. */
+    @Column(name = "base_net_amount", precision = 19, scale = 4)
+    private BigDecimal baseNetAmount;
+
+    @Column(name = "base_recoverable_tax_amount", precision = 19, scale = 4)
+    private BigDecimal baseRecoverableTaxAmount;
+
+    /** OCR's tax, copied when the receipt is confirmed so comparisons survive OCR re-runs. */
+    @Column(name = "ocr_tax_amount", precision = 19, scale = 4)
+    private BigDecimal ocrTaxAmount;
+
+    /** OCR's confidence (0-1) in {@code ocrTaxAmount}; below TAX_OCR_MIN_CONFIDENCE it is ignored for comparison. */
+    @Column(name = "ocr_tax_confidence", precision = 5, scale = 4)
+    private BigDecimal ocrTaxConfidence;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "tax_validation_status", length = 32)
+    private TaxValidationStatus taxValidationStatus;
+
+    /** Comma-separated reason codes behind {@code taxValidationStatus}, e.g. "OCR_MISMATCH,OVERRIDE". */
+    @Column(name = "tax_validation_reasons", length = 255)
+    private String taxValidationReasons;
+
+    /**
+     * Last time the tax changed while the report was being corrected after a submission. A Finance
+     * verification older than this is reopened on resume (tax-only changes reset Finance, not the manager).
+     */
+    @Column(name = "tax_revised_at")
+    private LocalDateTime taxRevisedAt;
+
+    /** When the snapshot was frozen (submission); null while still editable. */
+    @Column(name = "tax_snapshot_at")
+    private LocalDateTime taxSnapshotAt;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "cost_center_id")
     @ToString.Exclude
@@ -116,6 +198,13 @@ public class ExpenseLineItem {
     @Builder.Default
     @ToString.Exclude
     private List<Receipt> receipts = new ArrayList<>();
+
+    /** Snapshotted tax components; their amounts sum to {@code taxAmount}. Empty for legacy / untaxed lines. */
+    @OneToMany(mappedBy = "lineItem", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("sequence ASC")
+    @Builder.Default
+    @ToString.Exclude
+    private List<ExpenseLineTaxComponent> taxComponents = new ArrayList<>();
 
     @OneToMany(mappedBy = "lineItem", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default

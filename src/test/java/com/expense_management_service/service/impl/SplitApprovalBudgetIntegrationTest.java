@@ -135,7 +135,7 @@ class SplitApprovalBudgetIntegrationTest {
                 approvalEventPublisher, slaPolicyService, new PolicyViolationMapper(),
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
 
         when(policyEvaluationGateway.evaluate(any())).thenReturn(new PolicyDecision(true, List.of()));
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());

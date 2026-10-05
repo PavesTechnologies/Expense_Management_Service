@@ -32,6 +32,7 @@ import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
+import com.expense_management_service.service.ExpenseSplitService;
 import com.expense_management_service.service.PolicyEvaluator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -87,6 +88,16 @@ class ExpenseLineItemServiceImplTest {
     private ApprovalAssignmentRepository approvalAssignmentRepository;
     @Mock
     private DelegationService delegationService;
+    @Mock
+    private ExpenseSplitService expenseSplitService;
+    @Mock
+    private com.expense_management_service.repository.TaxCodeRepository taxCodeRepository;
+    @Mock
+    private com.expense_management_service.service.ExpenseCategoryTaxMappingService taxMappingService;
+    @Mock
+    private com.expense_management_service.repository.SystemConfigurationRepository systemConfigurationRepository;
+    @Mock
+    private com.expense_management_service.service.TaxAuditService taxAuditService;
 
     private ExpenseLineItemServiceImpl expenseLineItemService;
 
@@ -106,7 +117,9 @@ class ExpenseLineItemServiceImplTest {
                 costCenterRepository, projectCacheRepository, exchangeRateService, currentUserService,
                 pmsClient,
                 new ExpenseLineItemMapper(), policyEvaluator, policyViolationRepository, new PolicyViolationMapper(),
-                approvalAssignmentRepository, delegationService);
+                approvalAssignmentRepository, delegationService, expenseSplitService,
+                new TaxSnapshotServiceImpl(new TaxCalculationServiceImpl(taxCodeRepository, taxMappingService, systemConfigurationRepository),
+                        expenseLineItemRepository, taxAuditService, new TaxValidationServiceImpl(systemConfigurationRepository), currencyRepository));
         ReflectionTestUtils.setField(expenseLineItemService, "baseCurrencyCode", "INR");
 
         reportId = UUID.randomUUID();
@@ -765,6 +778,36 @@ class ExpenseLineItemServiceImplTest {
         assertThat(response.exchangeRate()).isEqualByComparingTo("95.969290");
         assertThat(response.baseAmount()).isEqualByComparingTo("9596.9290");
         assertThat(response.baseCurrencyCode()).isEqualTo("INR");
+    }
+
+    @Test
+    void create_derivesBaseTaxValues_forAnEnteredTaxWithoutATaxCode() {
+        reportDisplayCurrencyDifferentFromBase();
+        UUID usdId = UUID.randomUUID();
+        Currency usd = Currency.builder().currencyId(usdId).currencyCode("USD").status("ACTIVE").build();
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(usdId)).thenReturn(Optional.of(usd));
+        when(exchangeRateService.getHistoricalRate(eq(usdId), eq(currencyId), any()))
+                .thenReturn(new ExchangeRateResponse(UUID.randomUUID(), usdId, "USD", currencyId, "INR",
+                        new BigDecimal("95.969290"), LocalDate.now().minusDays(1), "SCHEDULED_REFRESH", null, null, null));
+        org.mockito.ArgumentCaptor<ExpenseLineItem> saved = org.mockito.ArgumentCaptor.forClass(ExpenseLineItem.class);
+        when(expenseLineItemRepository.save(saved.capture())).thenAnswer(inv -> inv.getArgument(0));
+
+        expenseLineItemService.create(reportId, new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Hotel",
+                "desc", new BigDecimal("100.00"), usdId, new BigDecimal("10.00"), null, null, false));
+
+        ExpenseLineItem line = saved.getValue();
+        // base tax = round(10.00 x 95.969290) to INR paise; base net makes up the rest of base amount exactly.
+        assertThat(line.getBaseTaxAmount()).isEqualByComparingTo("959.69");
+        assertThat(line.getBaseNetAmount()).isEqualByComparingTo("8637.2390");
+        assertThat(line.getBaseNetAmount().add(line.getBaseTaxAmount())).isEqualByComparingTo(line.getBaseAmount());
+        // The category has no tax code mapped, so the entered tax stands, flagged for configuration.
+        assertThat(line.getTaxSource()).isEqualTo(com.expense_management_service.enums.TaxSource.EMPLOYEE_OVERRIDE);
+        assertThat(line.getTaxValidationStatus()).isEqualTo(com.expense_management_service.enums.TaxValidationStatus.CONFIGURATION_MISSING);
+        assertThat(line.getRecoverableTaxAmount()).isEqualByComparingTo("0");
+        assertThat(line.getTaxCodeId()).isNull();
     }
 
     @Test

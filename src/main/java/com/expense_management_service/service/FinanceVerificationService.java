@@ -26,7 +26,16 @@ import java.util.UUID;
 public interface FinanceVerificationService {
 
     /** Verifies one line item at the report's currently-active FINANCE_VERIFICATION level, after running eligibility checks. */
-    ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId);
+    /** Lines whose tax is flagged (MISMATCH / REQUIRES_FINANCE_REVIEW) need {@code taxChecked} = true (BR-TAX-011). */
+    ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, boolean taxChecked);
+
+    default ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId) {
+        return verifyLineItem(reportId, lineItemId, actingEmployeeId, false);
+    }
+
+    /** FINANCE_EXECUTIVE per-line tax correction while the line awaits Finance verification (BR-TAX-012). */
+    ExpenseReportResponse adjustLineTax(UUID reportId, UUID lineItemId, String actingEmployeeId,
+                                        com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest request);
 
     /**
      * Raises a query on one line item without rejecting the whole report (§Query vs Reject) - the

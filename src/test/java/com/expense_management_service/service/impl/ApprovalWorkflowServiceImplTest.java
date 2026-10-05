@@ -115,7 +115,7 @@ class ApprovalWorkflowServiceImplTest {
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
 
         when(materialChangeEvaluator.computeGlAccountFingerprint(any())).thenReturn("");
         when(policyEvaluationGateway.evaluate(any())).thenReturn(new PolicyDecision(true, List.of()));
@@ -438,7 +438,7 @@ class ApprovalWorkflowServiceImplTest {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
                         new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
 
         ExpenseReport report = draftReport();
         report.getExpenseLineItems().get(0).setClientBillable(true);
@@ -486,7 +486,7 @@ class ApprovalWorkflowServiceImplTest {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
                         new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
 
         ExpenseReport report = draftReport();
         report.setTotalAmount(new java.math.BigDecimal("50000"));

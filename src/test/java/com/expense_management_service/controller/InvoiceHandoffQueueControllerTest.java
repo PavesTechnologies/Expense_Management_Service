@@ -58,7 +58,7 @@ class InvoiceHandoffQueueControllerTest {
 
     private static InvoiceHandoffEligibleExpenseResponse sampleEligible(UUID lineItemId) {
         return new InvoiceHandoffEligibleExpenseResponse(lineItemId, UUID.randomUUID(), "ER-001", "emp-1",
-                LocalDate.now(), "Travel", "desc", null, "USD", null, "INR", null, null,
+                LocalDate.now(), "Travel", "desc", null, "USD", null, "INR", null, null, null, null, null,
                 UUID.randomUUID(), "ALPHA", "Project Alpha", UUID.randomUUID(), "Aurora Health", 0);
     }
 

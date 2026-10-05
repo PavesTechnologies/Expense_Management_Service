@@ -101,7 +101,7 @@ class RepairStuckCostCenterOwnerLevelsRealDbIT {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
                         new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                mock(MaterialChangeEvaluator.class));
+                mock(MaterialChangeEvaluator.class), org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
 
         Method completeSkippedLevel = ApprovalWorkflowServiceImpl.class
                 .getDeclaredMethod("completeSkippedLevel", ExpenseReport.class, ApprovalLevelInstance.class, int.class);

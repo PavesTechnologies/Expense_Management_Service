@@ -72,6 +72,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private final CurrentUserService currentUserService;
     private final DelegationService delegationService;
+    private final com.expense_management_service.service.TaxReportService taxReportService;
 
     @Value("${exchange.rate.base-currency}")
     private String baseCurrencyCode;
@@ -324,7 +325,7 @@ public class DashboardServiceImpl implements DashboardService {
                 null, List.of(),
                 "Queue by category", rankGrouped(queueByCategory, 5),
                 agingBuckets(queue.stream().map(row -> (LocalDateTime) row[1]).toList(), now),
-                List.of(), attention, activity);
+                List.of(), attention, activity, taxReportService.summary(TREND_MONTHS));
     }
 
     private List<Item> latestFinanceActions() {
@@ -495,7 +496,7 @@ public class DashboardServiceImpl implements DashboardService {
                 pipeline,
                 "Reports by status", statusBreakdown,
                 "Top categories (12 months)", categoryRanking(lines, 6),
-                List.of(), budgets(), List.of(), recentSubmissions());
+                List.of(), budgets(), List.of(), recentSubmissions(), taxReportService.summary(ADMIN_TREND_MONTHS));
     }
 
     private List<Budget> budgets() {

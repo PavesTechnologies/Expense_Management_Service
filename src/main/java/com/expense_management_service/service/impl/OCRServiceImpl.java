@@ -114,6 +114,9 @@ public class OCRServiceImpl implements OCRService {
             attempt.setCurrencyCode(parsed.currencyCode());
             attempt.setSubtotal(parsed.subtotal());
             attempt.setTaxAmount(parsed.taxAmount());
+            attempt.setTaxConfidence(parsed.fieldConfidence() != null ? parsed.fieldConfidence().taxConfidence() : null);
+            attempt.setTaxComponents(taxComponentsJson(parsed.taxComponents()));
+            attempt.setSupplierGstin(parsed.supplierGstin());
             attempt.setAmount(parsed.totalAmount());
             attempt.setPaymentMethod(parsed.paymentMethod());
             attempt.setConfidenceScore(parsed.confidenceScore());
@@ -403,5 +406,15 @@ public class OCRServiceImpl implements OCRService {
 
     private boolean hasRole(CurrentUser caller, String role) {
         return caller.roles() != null && caller.roles().stream().anyMatch(r -> r.equalsIgnoreCase(role));
+    }
+
+    /** Tax evidence as compact JSON, e.g. [{"code":"CGST","amount":900.00}]; null when none were read. */
+    private static String taxComponentsJson(java.util.List<com.expense_management_service.dto.ocr.OcrTaxComponent> components) {
+        if (components == null || components.isEmpty()) {
+            return null;
+        }
+        return components.stream()
+                .map(c -> "{\"code\":\"" + c.code() + "\",\"amount\":" + c.amount().toPlainString() + "}")
+                .collect(java.util.stream.Collectors.joining(",", "[", "]"));
     }
 }

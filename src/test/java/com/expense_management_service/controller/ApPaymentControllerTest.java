@@ -76,7 +76,7 @@ class ApPaymentControllerTest {
 
     private ExpenseReportResponse sampleReportResponse(String status) {
         return new ExpenseReportResponse(UUID.randomUUID(), "EXP-0001", "5100001", "Trip", "Client visit", "2026",
-                UUID.randomUUID(), "Engineering", status, "PAYMENT_COMPLETED", "NOT_APPLICABLE", UUID.randomUUID(), "INR",
+                UUID.randomUUID(), "Engineering", status, "PAYMENT_COMPLETED", "NOT_APPLICABLE", UUID.randomUUID(), "INR", "INR",
                 new BigDecimal("1000"), new BigDecimal("1000"),
                 LocalDateTime.now(), LocalDateTime.now(), null, LocalDateTime.now(), LocalDateTime.now(), 1, false, false, 0, 0);
     }
@@ -85,7 +85,7 @@ class ApPaymentControllerTest {
     void getApQueue_returns200_forApExecutive() throws Exception {
         ApPaymentQueueItemResponse item = new ApPaymentQueueItemResponse(
                 UUID.randomUUID(), "EXP-0001", "5100001", "Trip", new BigDecimal("50000"), "INR",
-                UUID.randomUUID(), "Engineering", LocalDateTime.now(), "APPROVED", "APPROVED_FOR_PAYMENT", "NOT_APPLICABLE", null, null);
+                UUID.randomUUID(), "Engineering", LocalDateTime.now(), "APPROVED", "APPROVED_FOR_PAYMENT", "NOT_APPLICABLE", null, null, null, null, null, null);
         when(apPaymentService.getApQueue(any(Pageable.class)))
                 .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
 
@@ -175,7 +175,7 @@ class ApPaymentControllerTest {
     void getApHistory_returns200_forApExecutive() throws Exception {
         ApPaymentQueueItemResponse item = new ApPaymentQueueItemResponse(
                 UUID.randomUUID(), "EXP-0002", "5100001", "Trip", new BigDecimal("50000"), "INR",
-                UUID.randomUUID(), "Engineering", LocalDateTime.now(), "APPROVED", "PAYMENT_COMPLETED", "NOT_APPLICABLE", LocalDateTime.now(), "5100060");
+                UUID.randomUUID(), "Engineering", LocalDateTime.now(), "APPROVED", "PAYMENT_COMPLETED", "NOT_APPLICABLE", LocalDateTime.now(), "5100060", null, null, null, null);
         when(apPaymentService.getApHistory(eq(PaymentRoutingStatus.PAYMENT_COMPLETED), any(Pageable.class)))
                 .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
 

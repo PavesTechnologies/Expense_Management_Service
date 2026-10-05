@@ -57,6 +57,7 @@ class FinanceVerificationServiceImplTest {
     @Mock private ApprovalWorkflowService approvalWorkflowService;
     @Mock private com.expense_management_service.repository.PolicyViolationRepository policyViolationRepository;
     @Mock private com.expense_management_service.repository.VerificationQueryRepository verificationQueryRepository;
+    @Mock private com.expense_management_service.service.TaxSnapshotService taxSnapshotService;
 
     private FinanceVerificationServiceImpl service;
 
@@ -71,7 +72,7 @@ class FinanceVerificationServiceImplTest {
         service = new FinanceVerificationServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, financeVerificationReviewRepository, expenseLineItemRepository,
                 financeVerificationEligibilityChecker, approvalEventPublisher, approvalWorkflowService, factory,
-                verificationQueryRepository);
+                verificationQueryRepository, taxSnapshotService);
 
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
     }
@@ -322,5 +323,71 @@ class FinanceVerificationServiceImplTest {
 
         org.assertj.core.api.Assertions.assertThat(summary.awaitingPaymentCount()).isEqualTo(4);
         org.assertj.core.api.Assertions.assertThat(summary.paidCount()).isEqualTo(9);
+    }
+
+    // ---------------------------------------------------------------- tax (Phase 4)
+
+    private ExpenseLineItem flaggedLine(com.expense_management_service.enums.TaxValidationStatus status) {
+        ExpenseLineItem line = lineItem();
+        line.setTaxValidationStatus(status);
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId)).thenReturn(Optional.of(line));
+        return line;
+    }
+
+    @Test
+    void verifyLineItem_flaggedTax_requiresTaxCheckedConfirmation() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.PENDING).build();
+        stubHappyPathUpTo(review);
+        when(financeVerificationEligibilityChecker.check(any())).thenReturn(FinanceEligibilityResult.ok());
+        ExpenseLineItem line = flaggedLine(com.expense_management_service.enums.TaxValidationStatus.REQUIRES_FINANCE_REVIEW);
+
+        assertThatThrownBy(() -> service.verifyLineItem(reportId, lineItemId, approverId))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("confirm you checked it");
+        verify(financeVerificationReviewRepository, never()).save(any());
+
+        service.verifyLineItem(reportId, lineItemId, approverId, true);
+
+        org.assertj.core.api.Assertions.assertThat(review.getStatus()).isEqualTo(FinanceVerificationStatus.VERIFIED);
+        verify(taxSnapshotService).markFinanceVerified(line);
+    }
+
+    @Test
+    void verifyLineItem_matchedTax_needsNoConfirmation() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.PENDING).build();
+        stubHappyPathUpTo(review);
+        when(financeVerificationEligibilityChecker.check(any())).thenReturn(FinanceEligibilityResult.ok());
+        flaggedLine(com.expense_management_service.enums.TaxValidationStatus.MATCHED);
+
+        service.verifyLineItem(reportId, lineItemId, approverId);
+
+        org.assertj.core.api.Assertions.assertThat(review.getStatus()).isEqualTo(FinanceVerificationStatus.VERIFIED);
+    }
+
+    @Test
+    void adjustLineTax_delegatesToTheSnapshot_whileTheLineAwaitsFinance() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.PENDING).build();
+        stubHappyPathUpTo(review);
+        ExpenseLineItem line = flaggedLine(com.expense_management_service.enums.TaxValidationStatus.MISMATCH);
+        UUID igst = UUID.randomUUID();
+
+        service.adjustLineTax(reportId, lineItemId, approverId, new com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest(
+                igst, new java.math.BigDecimal("180.00"), new java.math.BigDecimal("50"), "Inter-state hotel - IGST, not CGST+SGST"));
+
+        verify(taxSnapshotService).financeAdjust(line, igst, new java.math.BigDecimal("180.00"), new java.math.BigDecimal("50"),
+                "Inter-state hotel - IGST, not CGST+SGST");
+        verify(approvalEventPublisher).publish(eq("LINE_ITEM_TAX_ADJUSTED"), eq(reportId), any());
+    }
+
+    @Test
+    void adjustLineTax_isRejected_onceTheLineWasReviewed() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.VERIFIED).build();
+        stubHappyPathUpTo(review);
+
+        assertThatThrownBy(() -> service.adjustLineTax(reportId, lineItemId, approverId,
+                new com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest(null, java.math.BigDecimal.ONE, null, "x")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("already been reviewed");
+        verify(taxSnapshotService, never()).financeAdjust(any(), any(), any(), any(), any());
     }
 }

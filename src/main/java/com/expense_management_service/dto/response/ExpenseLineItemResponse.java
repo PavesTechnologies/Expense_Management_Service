@@ -39,6 +39,8 @@ public record ExpenseLineItemResponse(
         String lineStatus,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
-        List<PolicyWarningResponse> policyWarnings
+        List<PolicyWarningResponse> policyWarnings,
+        /** The tax snapshot (code, components, source, status); null only for hand-built test fixtures. */
+        LineTaxResponse tax
 ) {
 }

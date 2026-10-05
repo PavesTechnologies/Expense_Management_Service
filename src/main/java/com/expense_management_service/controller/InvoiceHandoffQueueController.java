@@ -66,6 +66,13 @@ public class InvoiceHandoffQueueController {
         return ApiResponse.success(invoiceHandoffService.getHandedOff(page, size));
     }
 
+    /** AR's authoritative billing payload (v1). Also callable by the AR service account. */
+    @GetMapping("/{lineItemId}/billing-payload")
+    @PreAuthorize("hasAnyRole('FINANCE_EXECUTIVE','AR_SERVICE')")
+    public ApiResponse<com.expense_management_service.dto.response.BillingPayloadResponse> getBillingPayload(@PathVariable UUID lineItemId) {
+        return ApiResponse.success(invoiceHandoffService.getBillingPayload(lineItemId));
+    }
+
     @GetMapping("/{lineItemId}/history")
     public ApiResponse<List<InvoiceSyncResponse>> getHandoffHistory(@PathVariable UUID lineItemId) {
         return ApiResponse.success(invoiceHandoffService.getHandoffHistory(lineItemId));

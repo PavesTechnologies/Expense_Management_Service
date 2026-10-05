@@ -65,6 +65,23 @@ public class FinanceVerificationStrategy implements LevelReviewStrategy {
     }
 
     @Override
+    public java.util.List<com.expense_management_service.entity.ExpenseLineItem> reopenReviewsForRevisedTax(ApprovalLevelInstance instance) {
+        java.util.List<com.expense_management_service.entity.ExpenseLineItem> reopened = new java.util.ArrayList<>();
+        financeVerificationReviewRepository.findByLevelInstance_InstanceIdAndStatus(
+                        instance.getInstanceId(), FinanceVerificationStatus.VERIFIED)
+                .forEach(review -> {
+                    var line = review.getLineItem();
+                    if (line != null && line.getTaxRevisedAt() != null
+                            && (review.getActionedAt() == null || line.getTaxRevisedAt().isAfter(review.getActionedAt()))) {
+                        review.setStatus(FinanceVerificationStatus.PENDING);
+                        financeVerificationReviewRepository.save(review);
+                        reopened.add(line);
+                    }
+                });
+        return reopened;
+    }
+
+    @Override
     public void resumeCorrectedReviews(ApprovalLevelInstance instance) {
         financeVerificationReviewRepository.findByLevelInstance_InstanceIdAndStatus(
                         instance.getInstanceId(), FinanceVerificationStatus.QUERIED)

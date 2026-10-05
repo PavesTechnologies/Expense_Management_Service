@@ -23,6 +23,10 @@ public record InvoiceHandoffEligibleExpenseResponse(
         String baseCurrencyCode,
         BigDecimal taxAmount,
         BigDecimal netAmount,
+        /** Base gross - base recoverable tax: what the client is billed before AR's output tax. */
+        BigDecimal costBasis,
+        BigDecimal recoverableTaxAmount,
+        String taxCode,
         UUID projectId,
         String projectCode,
         String projectName,

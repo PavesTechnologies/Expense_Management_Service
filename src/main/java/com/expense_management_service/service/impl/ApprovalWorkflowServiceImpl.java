@@ -38,6 +38,7 @@ import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
 import com.expense_management_service.repository.ApprovalLineItemReviewRepository;
+import com.expense_management_service.repository.ApprovalSplitReviewRepository;
 import com.expense_management_service.repository.CashAdvanceAdjustmentRepository;
 import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
@@ -58,6 +59,7 @@ import com.expense_management_service.service.ChainCorrectnessService;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.LevelReviewStrategy;
 import com.expense_management_service.service.MaterialChangeEvaluator;
+import com.expense_management_service.service.TaxSnapshotService;
 import com.expense_management_service.service.PolicyDecision;
 import com.expense_management_service.service.PolicyEvaluationGateway;
 import com.expense_management_service.service.SlaPolicyService;
@@ -65,6 +67,7 @@ import com.expense_management_service.common.BusinessDayCalculator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -109,6 +112,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private static final String LINE_ITEM_STATUS_ACTIVE = "ACTIVE";
     private static final String LINE_ITEM_STATUS_BLOCKED = "BLOCKED";
 
+    /** Report totals are stored in the organization base currency (sum of line baseAmount), so they are labelled with it. */
+    @Value("${exchange.rate.base-currency}")
+    private String baseCurrencyCode;
 
     private final ExpenseReportRepository expenseReportRepository;
     private final ApprovalLevelInstanceRepository approvalLevelInstanceRepository;
@@ -138,6 +144,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private final List<LevelReviewStrategy> levelReviewStrategies;
     private final ExpenseReportResponseFactory expenseReportResponseFactory;
     private final MaterialChangeEvaluator materialChangeEvaluator;
+    private final TaxSnapshotService taxSnapshotService;
 
     // ---------------------------------------------------------------------
     // Submission / resubmission
@@ -156,6 +163,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         if (report.getCostCenter() == null) {
             throw new IllegalArgumentException("Expense report has no cost center assigned");
         }
+        // Rejects un-explained tax overrides and freezes every line's tax snapshot (rolled back with the submit).
+        taxSnapshotService.freezeForSubmission(report);
 
         PolicyDecision decision = policyEvaluationGateway.evaluate(report);
         if (!decision.allowed()) {
@@ -190,6 +199,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
      * flow-matching criterion at all but must still force re-approval.
      */
     private ExpenseReportResponse resubmitCorrection(ExpenseReport report) {
+        taxSnapshotService.freezeForSubmission(report);
         PolicyDecision decision = policyEvaluationGateway.evaluate(report);
         if (!decision.allowed()) {
             throw new IllegalArgumentException("Resubmission blocked by Policy Engine: " + decision.violations());
@@ -237,6 +247,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             reconcileSplitOwnerApprovals(report, activeInstance);
         }
 
+        // BR-TAX-010: a tax-only change is not material for approvers but Finance re-verifies that line.
+        resolveStrategy(activeInstance.getLevelType()).reopenReviewsForRevisedTax(activeInstance)
+                .forEach(taxSnapshotService::recordFinanceVerificationReset);
         resolveStrategy(activeInstance.getLevelType()).resumeCorrectedReviews(activeInstance);
         resumeCorrectedSplitReviews(activeInstance);
 
@@ -577,7 +590,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
         return new ApprovalQueueItemResponse(
                 report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTotalAmount(),
-                report.getCurrency() != null ? report.getCurrency().getCurrencyCode() : null,
+                baseCurrencyCode,
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
                 report.getReportStatus() != null ? report.getReportStatus().name() : null,
                 report.getSubmittedAt(),
@@ -1234,21 +1247,41 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
     }
 
+    /**
+     * At final approval: each cash advance adjustment is capped at what the approved report still
+     * has left to absorb (approval can only lower the gross, so an adjustment planned against the
+     * submitted total may now be too high), the advances' balances are re-derived, and the
+     * report's reimbursable amount is fixed as gross less adjustments (BR-TAX-013).
+     * <p>
+     * Previously each adjustment was overwritten with {@code reimbursableAmount}, which was never
+     * computed (always 0) - so approval reset every adjustment to 0 and advances never settled.
+     */
     private void processCashAdvanceAdjustmentsForReport(ExpenseReport report) {
-        if (cashAdvanceAdjustmentRepository == null || cashAdvanceRepository == null) return;
-        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId());
-        if (adjustments == null || adjustments.isEmpty()) return;
+        BigDecimal gross = report.getTotalAmount() != null ? report.getTotalAmount() : BigDecimal.ZERO;
+        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository == null ? List.of()
+                : cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId());
+        if (adjustments == null) {
+            adjustments = List.of();
+        }
 
-        BigDecimal verifiedAmount = report.getReimbursableAmount() != null ? report.getReimbursableAmount() : report.getTotalAmount();
+        BigDecimal remaining = gross;
+        for (CashAdvanceAdjustment adjustment : adjustments) {
+            BigDecimal planned = adjustment.getAdjustedAmount() != null ? adjustment.getAdjustedAmount() : BigDecimal.ZERO;
+            BigDecimal applied = planned.min(remaining).max(BigDecimal.ZERO);
+            if (applied.compareTo(planned) != 0) {
+                adjustment.setAdjustedAmount(applied);
+                cashAdvanceAdjustmentRepository.save(adjustment);
+            }
+            remaining = remaining.subtract(applied);
+        }
+        report.setReimbursableAmount(ReimbursementCalculator.reimbursable(gross, adjustments));
+        expenseReportRepository.save(report);
+        if (cashAdvanceRepository == null) return;
 
         for (CashAdvanceAdjustment adjustment : adjustments) {
             CashAdvance advance = adjustment.getCashAdvance();
             if (advance == null) continue;
-
-            if (verifiedAmount != null) {
-                adjustment.setAdjustedAmount(verifiedAmount);
-                cashAdvanceAdjustmentRepository.save(adjustment);
-            }
+            BigDecimal verifiedAmount = adjustment.getAdjustedAmount();
 
             List<CashAdvanceAdjustment> allAdjustments = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId());
             BigDecimal totalAdjusted = allAdjustments.stream()
@@ -1315,6 +1348,11 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         if (anyClientBillable) {
             report.setInvoiceHandoffStatus(InvoiceHandoffStatus.PENDING);
             approvalEventPublisher.publish("REPORT_INVOICE_HANDOFF", report.getReportId(), "reason=client-billable");
+            // AR integration (BR-TAX-023): ids only - AR pulls the authoritative billing payload by line.
+            report.getExpenseLineItems().stream()
+                    .filter(lineItem -> Boolean.TRUE.equals(lineItem.getClientBillable()))
+                    .forEach(lineItem -> approvalEventPublisher.publish("EXPENSE_BILLABLE_READY", report.getReportId(),
+                            "lineItemId=" + lineItem.getLineItemId() + " payloadVersion=" + BillingPayloadFactory.PAYLOAD_VERSION));
         }
     }
 

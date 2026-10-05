@@ -17,6 +17,10 @@ public record FinancePendingLineItemResponse(
         String glAccountCode,
         boolean eligibleForVerify,
         String ineligibleReason,
-        boolean clientBillable
+        boolean clientBillable,
+        BigDecimal taxAmount,
+        String taxCode,
+        /** e.g. MATCHED, MISMATCH, REQUIRES_FINANCE_REVIEW - flagged lines need a "tax checked" confirmation to verify. */
+        String taxValidationStatus
 ) {
 }

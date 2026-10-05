@@ -91,7 +91,7 @@ class FinanceVerificationControllerTest {
 
     private ExpenseReportResponse sampleReportResponse(String status) {
         return new ExpenseReportResponse(UUID.randomUUID(), "EXP-0001", "5100001", "Trip", "Client visit", "2026",
-                UUID.randomUUID(), "Engineering", status, "NONE", "NOT_APPLICABLE", UUID.randomUUID(), "INR", new BigDecimal("1000"), new BigDecimal("1000"),
+                UUID.randomUUID(), "Engineering", status, "NONE", "NOT_APPLICABLE", UUID.randomUUID(), "INR", "INR", new BigDecimal("1000"), new BigDecimal("1000"),
                 LocalDateTime.now(), null, null, LocalDateTime.now(), LocalDateTime.now(), 1, true, false, 0, 0);
     }
 
@@ -110,7 +110,7 @@ class FinanceVerificationControllerTest {
         mockMvc.perform(post("/xms/finance-verification/{reportId}/line-items/{lineItemId}/verify", UUID.randomUUID(), UUID.randomUUID())
                         .with(general()))
                 .andExpect(status().isForbidden());
-        verify(financeVerificationService, never()).verifyLineItem(any(), any(), any());
+        verify(financeVerificationService, never()).verifyLineItem(any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
     }
 
     @Test
@@ -118,7 +118,7 @@ class FinanceVerificationControllerTest {
         mockMvc.perform(post("/xms/finance-verification/{reportId}/line-items/{lineItemId}/verify", UUID.randomUUID(), UUID.randomUUID())
                         .with(reportingManager()))
                 .andExpect(status().isForbidden());
-        verify(financeVerificationService, never()).verifyLineItem(any(), any(), any());
+        verify(financeVerificationService, never()).verifyLineItem(any(), any(), any(), org.mockito.ArgumentMatchers.anyBoolean());
     }
 
     @Test
@@ -157,7 +157,7 @@ class FinanceVerificationControllerTest {
         UUID reportId = UUID.randomUUID();
         UUID lineItemId = UUID.randomUUID();
         when(currentUserService.getEmployeeId()).thenReturn("5100099");
-        when(financeVerificationService.verifyLineItem(reportId, lineItemId, "5100099"))
+        when(financeVerificationService.verifyLineItem(reportId, lineItemId, "5100099", false))
                 .thenThrow(new AccessDeniedException("You are not an active Finance approver (or delegate) for this report's current level"));
 
         mockMvc.perform(post("/xms/finance-verification/{reportId}/line-items/{lineItemId}/verify", reportId, lineItemId)
@@ -170,7 +170,7 @@ class FinanceVerificationControllerTest {
         UUID reportId = UUID.randomUUID();
         UUID lineItemId = UUID.randomUUID();
         when(currentUserService.getEmployeeId()).thenReturn("5100050");
-        when(financeVerificationService.verifyLineItem(reportId, lineItemId, "5100050"))
+        when(financeVerificationService.verifyLineItem(reportId, lineItemId, "5100050", false))
                 .thenReturn(sampleReportResponse("PENDING_FINANCE_VERIFICATION"));
 
         mockMvc.perform(post("/xms/finance-verification/{reportId}/line-items/{lineItemId}/verify", reportId, lineItemId)
@@ -188,7 +188,7 @@ class FinanceVerificationControllerTest {
         // resolves them as the approver's active delegate and succeeds - the controller just
         // surfaces whatever Layer 2 decided.
         when(currentUserService.getEmployeeId()).thenReturn("5100077");
-        when(financeVerificationService.verifyLineItem(reportId, lineItemId, "5100077"))
+        when(financeVerificationService.verifyLineItem(reportId, lineItemId, "5100077", false))
                 .thenReturn(sampleReportResponse("PENDING_FINANCE_VERIFICATION"));
 
         mockMvc.perform(post("/xms/finance-verification/{reportId}/line-items/{lineItemId}/verify", reportId, lineItemId)

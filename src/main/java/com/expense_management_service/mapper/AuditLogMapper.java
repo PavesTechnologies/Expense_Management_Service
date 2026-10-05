@@ -37,7 +37,9 @@ public class AuditLogMapper {
                 entity.getOldValue(),
                 entity.getNewValue(),
                 entity.getPerformedBy(),
-                entity.getPerformedAt()
+                entity.getPerformedAt(),
+                entity.getReason(),
+                entity.getSource() != null ? entity.getSource().name() : null
         );
     }
 }

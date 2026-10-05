@@ -9,6 +9,8 @@ import org.hibernate.annotations.UpdateTimestamp;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 
 /**
@@ -17,7 +19,8 @@ import java.util.UUID;
  * Unrelated to the Accounts Receivable module's tax configuration, which covers tax charged to clients.
  */
 @Entity
-@Table(name = "tax_code", uniqueConstraints = @UniqueConstraint(columnNames = "tax_code"))
+// Named to match V20's constraint: an unnamed one made ddl-auto=update add a duplicate index (removed in V22).
+@Table(name = "tax_code", uniqueConstraints = @UniqueConstraint(name = "uk_tax_code_tax_code", columnNames = "tax_code"))
 @Getter
 @Setter
 @NoArgsConstructor
@@ -47,9 +50,30 @@ public class TaxCode {
     @Column(name = "rate_percent", precision = 5, scale = 2, nullable = false)
     private BigDecimal ratePercent;
 
-    /** Whether the company can claim this tax back as input tax credit. */
+    /** Whether any of this tax can be claimed back as input tax credit - derived: {@code itcRecoverablePercent > 0}. */
     @Column(name = "itc_eligible", nullable = false)
     private Boolean itcEligible;
+
+    /** Share of the tax the company can claim back (0-100). 0 for blocked credits and EXEMPT. */
+    @Column(name = "itc_recoverable_percent", precision = 5, scale = 2, nullable = false)
+    @Builder.Default
+    private BigDecimal itcRecoverablePercent = BigDecimal.ZERO;
+
+    /** ISO 3166 alpha-2. Only IN is offered today; the column lets other regimes be added as configuration. */
+    @Column(name = "country_code", length = 2, nullable = false)
+    @Builder.Default
+    private String countryCode = "IN";
+
+    /** For regimes with state-level rates (e.g. US sales tax). Unused for India GST. */
+    @Column(name = "region_code", length = 16)
+    private String regionCode;
+
+    /** The levied parts; {@link #ratePercent} is their sum. */
+    @OneToMany(mappedBy = "taxCode", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("sequence ASC")
+    @Builder.Default
+    @ToString.Exclude
+    private List<TaxCodeComponent> components = new ArrayList<>();
 
     /** GL account the recoverable tax is posted to; optional. */
     @ManyToOne(fetch = FetchType.LAZY)
@@ -58,7 +82,7 @@ public class TaxCode {
     private GlAccount inputTaxGlAccount;
 
     @Lob
-    @Column(name = "description")
+    @Column(name = "description", columnDefinition = "LONGTEXT")
     private String description;
 
     @Column(name = "effective_from", nullable = false)

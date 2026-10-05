@@ -10,16 +10,13 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.enums.CriterionField;
 import com.expense_management_service.enums.CriterionOperator;
 import com.expense_management_service.repository.ApprovalFlowRepository;
-import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.EmployeeCacheRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
-import com.expense_management_service.service.ExchangeRateService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -28,7 +25,6 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -36,8 +32,6 @@ class DefaultApprovalFlowResolutionServiceImplTest {
 
     @Mock private ApprovalFlowRepository approvalFlowRepository;
     @Mock private EmployeeCacheRepository employeeCacheRepository;
-    @Mock private CurrencyRepository currencyRepository;
-    @Mock private ExchangeRateService exchangeRateService;
     @Mock private PolicyViolationRepository policyViolationRepository;
 
     private DefaultApprovalFlowResolutionServiceImpl service;
@@ -47,9 +41,7 @@ class DefaultApprovalFlowResolutionServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new DefaultApprovalFlowResolutionServiceImpl(approvalFlowRepository, employeeCacheRepository, currencyRepository, exchangeRateService, policyViolationRepository);
-        ReflectionTestUtils.setField(service, "baseCurrencyCode", "INR");
-        when(currencyRepository.findByCurrencyCode("INR")).thenReturn(Optional.of(baseCurrency));
+        service = new DefaultApprovalFlowResolutionServiceImpl(approvalFlowRepository, employeeCacheRepository, policyViolationRepository);
     }
 
     private ExpenseReport reportWithAmount(BigDecimal amount) {
@@ -66,7 +58,6 @@ class DefaultApprovalFlowResolutionServiceImplTest {
     @Test
     void resolveMatchingFlow_returnsFirstMatchingFlowByPriority() {
         ExpenseReport report = reportWithAmount(new BigDecimal("15000"));
-        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(new BigDecimal("15000"));
         ApprovalFlow lowFlow = flowWithAmountCriterion(1, CriterionOperator.GREATER_THAN, "10000");
         when(approvalFlowRepository.findByIsCatchAllFalseAndStatusOrderByPriorityAsc("ACTIVE")).thenReturn(List.of(lowFlow));
 
@@ -76,9 +67,21 @@ class DefaultApprovalFlowResolutionServiceImplTest {
     }
 
     @Test
+    void resolveMatchingFlow_usesTheStoredBaseTotal_asIs_forANonBaseCurrencyReport() {
+        // totalAmount is stored in base currency (INR 15,000) even though the report is in USD;
+        // it must be compared as-is, never converted from USD a second time.
+        Currency usd = Currency.builder().currencyId(UUID.randomUUID()).currencyCode("USD").build();
+        ExpenseReport report = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("5100001")
+                .currency(usd).totalAmount(new BigDecimal("15000")).expenseLineItems(List.of()).build();
+        ApprovalFlow over10k = flowWithAmountCriterion(1, CriterionOperator.GREATER_THAN, "10000");
+        when(approvalFlowRepository.findByIsCatchAllFalseAndStatusOrderByPriorityAsc("ACTIVE")).thenReturn(List.of(over10k));
+
+        assertThat(service.resolveMatchingFlow(report).getFlowId()).isEqualTo(over10k.getFlowId());
+    }
+
+    @Test
     void resolveMatchingFlow_fallsBackToCatchAll_whenNothingMatches() {
         ExpenseReport report = reportWithAmount(new BigDecimal("100"));
-        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(new BigDecimal("100"));
         ApprovalFlow nonMatching = flowWithAmountCriterion(1, CriterionOperator.GREATER_THAN, "10000");
         when(approvalFlowRepository.findByIsCatchAllFalseAndStatusOrderByPriorityAsc("ACTIVE")).thenReturn(List.of(nonMatching));
         ApprovalFlow catchAll = ApprovalFlow.builder().flowId(UUID.randomUUID()).isCatchAll(true).build();
@@ -92,7 +95,6 @@ class DefaultApprovalFlowResolutionServiceImplTest {
     @Test
     void resolveMatchingFlow_throws_whenNothingMatchesAndNoCatchAllConfigured() {
         ExpenseReport report = reportWithAmount(new BigDecimal("100"));
-        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(new BigDecimal("100"));
         when(approvalFlowRepository.findByIsCatchAllFalseAndStatusOrderByPriorityAsc("ACTIVE")).thenReturn(List.of());
         when(approvalFlowRepository.findByIsCatchAllTrue()).thenReturn(Optional.empty());
 
@@ -108,7 +110,6 @@ class DefaultApprovalFlowResolutionServiceImplTest {
         ExpenseLineItem mealsLine = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).category(meals).build();
         ExpenseReport report = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("5100001")
                 .currency(baseCurrency).totalAmount(new BigDecimal("500")).expenseLineItems(List.of(mealsLine, travelLine)).build();
-        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(new BigDecimal("500"));
 
         ApprovalFlow flow = ApprovalFlow.builder().flowId(UUID.randomUUID()).priority(1).isCatchAll(false).criteriaPattern("1").build();
         flow.getCriteria().add(ApprovalFlowCriterion.builder().flow(flow).index(1).field(CriterionField.CATEGORY).operator(CriterionOperator.EQUALS).value("TRAVEL").build());
@@ -123,7 +124,6 @@ class DefaultApprovalFlowResolutionServiceImplTest {
     void resolveMatchingFlow_matchesOnSubmittersDepartment_notCostCenterDepartment() {
         UUID departmentUuid = UUID.randomUUID();
         ExpenseReport report = reportWithAmount(new BigDecimal("500"));
-        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(new BigDecimal("500"));
         when(employeeCacheRepository.findByEmployeeId("5100001")).thenReturn(Optional.of(
                 EmployeeCache.builder().employeeId("5100001").departmentUuid(departmentUuid.toString()).build()));
 
@@ -139,7 +139,6 @@ class DefaultApprovalFlowResolutionServiceImplTest {
     @Test
     void resolveMatchingFlow_matchesHasPolicyViolation_whenReportCarriesAViolation() {
         ExpenseReport report = reportWithAmount(new BigDecimal("500"));
-        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(new BigDecimal("500"));
         when(policyViolationRepository.existsByLineItem_Report_ReportId(report.getReportId())).thenReturn(true);
 
         ApprovalFlow flow = ApprovalFlow.builder().flowId(UUID.randomUUID()).priority(1).isCatchAll(false).criteriaPattern("1").build();
@@ -154,7 +153,6 @@ class DefaultApprovalFlowResolutionServiceImplTest {
     @Test
     void resolveMatchingFlow_doesNotMatchHasPolicyViolation_whenReportHasNoViolation() {
         ExpenseReport report = reportWithAmount(new BigDecimal("500"));
-        when(exchangeRateService.convertAmount(any(), any(), any(), any())).thenReturn(new BigDecimal("500"));
         when(policyViolationRepository.existsByLineItem_Report_ReportId(report.getReportId())).thenReturn(false);
 
         ApprovalFlow flow = ApprovalFlow.builder().flowId(UUID.randomUUID()).priority(1).isCatchAll(false).criteriaPattern("1").build();

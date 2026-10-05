@@ -87,7 +87,7 @@ public class TextractResponseParserImpl implements TextractResponseParser {
         return new ParsedReceiptData(
                 merchant.value(), invoiceNumber.value(), receiptDate.value(), receiptTime.value(), currencyCode.value(),
                 subtotal.value(), taxAmount.value(), totalAmount.value(), paymentMethod.value(),
-                overallConfidence, fieldConfidence);
+                overallConfidence, fieldConfidence, taxExtractor.extractComponents(index), taxExtractor.extractGstin(index));
     }
 
     /**

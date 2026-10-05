@@ -6,6 +6,7 @@ import com.expense_management_service.dto.response.ApPaymentQueueItemResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.entity.AuditLog;
+import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
@@ -21,6 +22,7 @@ import com.expense_management_service.dto.response.ApPaymentSummaryResponse;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
@@ -47,6 +49,10 @@ public class ApPaymentServiceImpl implements ApPaymentService {
             PaymentRoutingStatus.APPROVED_FOR_PAYMENT, PaymentRoutingStatus.PAYMENT_COMPLETED,
             PaymentRoutingStatus.INVOICE_HANDOFF_PENDING, PaymentRoutingStatus.INVOICE_HANDOFF_COMPLETED,
             PaymentRoutingStatus.HANDOFF_FAILED);
+
+    /** Report totals are stored in the organization base currency (sum of line baseAmount), so they are labelled with it. */
+    @Value("${exchange.rate.base-currency}")
+    private String baseCurrencyCode;
 
     private final ExpenseReportRepository expenseReportRepository;
     private final ExpenseLineItemService expenseLineItemService;
@@ -80,12 +86,17 @@ public class ApPaymentServiceImpl implements ApPaymentService {
     private ApPaymentQueueItemResponse toQueueItem(ExpenseReport report) {
         return new ApPaymentQueueItemResponse(
                 report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTitle(),
-                report.getTotalAmount(), report.getCurrency() != null ? report.getCurrency().getCurrencyCode() : null,
+                report.getTotalAmount(), baseCurrencyCode,
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterId() : null,
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
                 report.getApprovedAt(), report.getReportStatus().name(), report.getPaymentRoutingStatus().name(),
                 report.getInvoiceHandoffStatus() != null ? report.getInvoiceHandoffStatus().name() : null,
-                report.getPaymentCompletedAt(), report.getPaymentCompletedBy());
+                report.getPaymentCompletedAt(), report.getPaymentCompletedBy(),
+                report.getTotalAmount(),
+                ReimbursementCalculator.sum(report.getExpenseLineItems(), ExpenseLineItem::getBaseTaxAmount),
+                ReimbursementCalculator.sum(report.getExpenseLineItems(), ExpenseLineItem::getBaseRecoverableTaxAmount),
+                report.getReimbursableAmount() != null ? report.getReimbursableAmount()
+                        : ReimbursementCalculator.reimbursable(report.getTotalAmount(), report.getCashAdvanceAdjustments()));
     }
 
     @Override

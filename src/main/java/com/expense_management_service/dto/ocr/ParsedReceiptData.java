@@ -41,8 +41,21 @@ public record ParsedReceiptData(
         BigDecimal totalAmount,
         String paymentMethod,
         BigDecimal confidenceScore,
-        FieldConfidence fieldConfidence
+        FieldConfidence fieldConfidence,
+        /** Tax components as printed (CGST 900 + SGST 900); empty when the receipt shows a single tax figure. */
+        java.util.List<OcrTaxComponent> taxComponents,
+        /** Supplier GSTIN printed on the receipt, if found. */
+        String supplierGstin
 ) {
+    /** Shape without tax evidence (parsers that don't read components). */
+    public ParsedReceiptData(
+            String merchantName, String invoiceNumber, LocalDate receiptDate, LocalTime receiptTime, String currencyCode,
+            BigDecimal subtotal, BigDecimal taxAmount, BigDecimal totalAmount, String paymentMethod,
+            BigDecimal confidenceScore, FieldConfidence fieldConfidence) {
+        this(merchantName, invoiceNumber, receiptDate, receiptTime, currencyCode, subtotal, taxAmount, totalAmount,
+                paymentMethod, confidenceScore, fieldConfidence, java.util.List.of(), null);
+    }
+
     /**
      * Legacy 10-arg shape, kept so every existing caller (tests, {@code TravelDocumentResponseParser},
      * {@code DetectDocumentTextOcrStrategy}) keeps compiling unchanged — only

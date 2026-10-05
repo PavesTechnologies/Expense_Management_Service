@@ -622,4 +622,53 @@ class ExpenseSplitServiceImplTest {
                 new ExpenseSplitRequest(costCenterAId, SplitType.PERCENTAGE, BigDecimal.valueOf(60), null),
                 new ExpenseSplitRequest(costCenterBId, SplitType.PERCENTAGE, BigDecimal.valueOf(40), null)));
     }
+
+    // -------------------------------------------------------------------
+    // Rebalance after the line item's base amount changes
+    // -------------------------------------------------------------------
+
+    @Test
+    void rebalance_percentageSplits_keepPercentages_andLastAbsorbsRemainder() {
+        ExpenseSplit a = ExpenseSplit.builder().costCenter(costCenterA).splitType(SplitType.PERCENTAGE)
+                .percentage(new BigDecimal("33.33")).allocatedAmount(new BigDecimal("3333.0000")).splitOrder(0).build();
+        ExpenseSplit b = ExpenseSplit.builder().costCenter(costCenterB).splitType(SplitType.PERCENTAGE)
+                .percentage(new BigDecimal("66.67")).allocatedAmount(new BigDecimal("6667.0000")).splitOrder(1).build();
+        when(expenseSplitRepository.findByLineItem_LineItemIdAndRemovedAtIsNullOrderBySplitOrderAsc(lineItemId)).thenReturn(List.of(a, b));
+        lineItem.setBaseAmount(new BigDecimal("1000.00"));
+
+        service.rebalanceSplitsForLineItem(lineItem);
+
+        assertThat(a.getAllocatedAmount()).isEqualByComparingTo("333.30");
+        assertThat(b.getAllocatedAmount()).isEqualByComparingTo("666.70");
+        assertThat(a.getPercentage()).isEqualByComparingTo("33.33");
+        verify(expenseSplitRepository).saveAll(List.of(a, b));
+    }
+
+    @Test
+    void rebalance_fixedAmountSplits_keepTheirShareOfTheOldTotal() {
+        ExpenseSplit a = ExpenseSplit.builder().costCenter(costCenterA).splitType(SplitType.FIXED_AMOUNT)
+                .allocatedAmount(new BigDecimal("7500.0000")).splitOrder(0).build();
+        ExpenseSplit b = ExpenseSplit.builder().costCenter(costCenterB).splitType(SplitType.FIXED_AMOUNT)
+                .allocatedAmount(new BigDecimal("2500.0000")).splitOrder(1).build();
+        when(expenseSplitRepository.findByLineItem_LineItemIdAndRemovedAtIsNullOrderBySplitOrderAsc(lineItemId)).thenReturn(List.of(a, b));
+        lineItem.setBaseAmount(new BigDecimal("12000.00"));
+
+        service.rebalanceSplitsForLineItem(lineItem);
+
+        assertThat(a.getAllocatedAmount()).isEqualByComparingTo("9000.00");
+        assertThat(b.getAllocatedAmount()).isEqualByComparingTo("3000.00");
+    }
+
+    @Test
+    void rebalance_isANoOp_whenSplitsAlreadyReconcile_orTheLineIsUnsplit() {
+        ExpenseSplit a = ExpenseSplit.builder().costCenter(costCenterA).splitType(SplitType.PERCENTAGE)
+                .percentage(BigDecimal.valueOf(60)).allocatedAmount(new BigDecimal("6000.0000")).build();
+        ExpenseSplit b = ExpenseSplit.builder().costCenter(costCenterB).splitType(SplitType.PERCENTAGE)
+                .percentage(BigDecimal.valueOf(40)).allocatedAmount(new BigDecimal("4000.0000")).build();
+        when(expenseSplitRepository.findByLineItem_LineItemIdAndRemovedAtIsNullOrderBySplitOrderAsc(lineItemId)).thenReturn(List.of(a, b));
+
+        service.rebalanceSplitsForLineItem(lineItem);
+
+        verify(expenseSplitRepository, never()).saveAll(anyList());
+    }
 }

@@ -54,6 +54,9 @@ import static org.mockito.Mockito.when;
 class InvoiceHandoffServiceImplTest {
 
     @Mock
+    private com.expense_management_service.service.ApprovalEventPublisher approvalEventPublisher;
+
+    @Mock
     private ExpenseLineItemRepository expenseLineItemRepository;
     @Mock
     private InvoiceSyncRepository invoiceSyncRepository;
@@ -67,7 +70,8 @@ class InvoiceHandoffServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        service = new InvoiceHandoffServiceImpl(expenseLineItemRepository, expenseReportRepository, invoiceSyncRepository, new InvoiceSyncMapper());
+        service = new InvoiceHandoffServiceImpl(expenseLineItemRepository, expenseReportRepository, invoiceSyncRepository, new InvoiceSyncMapper(),
+                approvalEventPublisher);
         ReflectionTestUtils.setField(service, "baseCurrencyCode", "INR");
 
         lineItemId = UUID.randomUUID();
@@ -209,5 +213,48 @@ class InvoiceHandoffServiceImplTest {
         when(invoiceSyncRepository.findByLineItem_LineItemIdOrderBySyncDateDesc(lineItemId)).thenReturn(List.of(sync));
 
         assertThat(service.getHandoffHistory(lineItemId)).hasSize(1);
+    }
+
+    @Test
+    void getBillingPayload_billsTheCostBasis_andReportsHandoffState() {
+        eligibleLineItem.getReport().setInvoiceHandoffStatus(com.expense_management_service.enums.InvoiceHandoffStatus.PENDING);
+        eligibleLineItem.setBaseAmount(new BigDecimal("11800.00"));
+        eligibleLineItem.setBaseTaxAmount(new BigDecimal("1800.00"));
+        eligibleLineItem.setBaseRecoverableTaxAmount(new BigDecimal("900.00"));
+        eligibleLineItem.setTaxCode("GST18");
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        when(invoiceSyncRepository.findByLineItem_LineItemIdOrderBySyncDateDesc(lineItemId)).thenReturn(List.of());
+
+        var payload = service.getBillingPayload(lineItemId);
+
+        assertThat(payload.payloadVersion()).isEqualTo(1);
+        assertThat(payload.costBasis()).isEqualByComparingTo("10900.00");
+        assertThat(payload.grossAmount()).isEqualByComparingTo("11800.00");
+        assertThat(payload.inputTaxAmount()).isEqualByComparingTo("1800.00");
+        assertThat(payload.currency()).isEqualTo("INR");
+        assertThat(payload.originalCurrency()).isEqualTo("USD");
+        assertThat(payload.handoffStatus()).isEqualTo("PENDING");
+        assertThat(payload.clientName()).isEqualTo("Aurora Health");
+    }
+
+    @Test
+    void getBillingPayload_rejectsALineNotYetApprovedForInvoicing() {
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.getBillingPayload(lineItemId))
+                .hasMessageContaining("not a client-billable expense on an approved report");
+    }
+
+    @Test
+    void markHandedOff_publishesTheBillableHandedOffEvent() {
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        when(invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(lineItemId, "HANDED_OFF")).thenReturn(false);
+        when(invoiceSyncRepository.save(any(InvoiceSync.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.markHandedOff(lineItemId, new InvoiceHandoffRequest("INV-100", null, null));
+
+        org.mockito.Mockito.verify(approvalEventPublisher).publish(org.mockito.ArgumentMatchers.eq("EXPENSE_BILLABLE_HANDED_OFF"),
+                org.mockito.ArgumentMatchers.eq(eligibleLineItem.getReport().getReportId()),
+                org.mockito.ArgumentMatchers.contains("lineItemId=" + lineItemId));
     }
 }

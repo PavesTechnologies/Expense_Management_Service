@@ -24,6 +24,11 @@ public record ApPaymentQueueItemResponse(
         String invoiceHandoffStatus,
         /** Set once AP confirms the payment (PAYMENT_COMPLETED), else null. */
         LocalDateTime paymentCompletedAt,
-        String paymentCompletedBy
+        String paymentCompletedBy,
+        /** Base currency: gross (= totalAmount), tax, recoverable tax and what AP pays the employee. */
+        BigDecimal grossAmount,
+        BigDecimal taxAmount,
+        BigDecimal recoverableTaxAmount,
+        BigDecimal reimbursableAmount
 ) {
 }

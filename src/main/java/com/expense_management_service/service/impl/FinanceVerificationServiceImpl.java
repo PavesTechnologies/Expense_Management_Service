@@ -36,6 +36,7 @@ import com.expense_management_service.enums.PaymentRoutingStatus;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
@@ -54,6 +55,10 @@ import java.util.UUID;
 @Slf4j
 public class FinanceVerificationServiceImpl implements FinanceVerificationService {
 
+    /** Report totals are stored in the organization base currency (sum of line baseAmount), so they are labelled with it. */
+    @Value("${exchange.rate.base-currency}")
+    private String baseCurrencyCode;
+
     private final ExpenseReportRepository expenseReportRepository;
     private final ApprovalLevelInstanceRepository approvalLevelInstanceRepository;
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
@@ -64,10 +69,17 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
     private final ApprovalWorkflowService approvalWorkflowService;
     private final ExpenseReportResponseFactory expenseReportResponseFactory;
     private final VerificationQueryRepository verificationQueryRepository;
+    private final com.expense_management_service.service.TaxSnapshotService taxSnapshotService;
 
     @Override
-    public ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId) {
+    public ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, boolean taxChecked) {
         FinanceActionContext ctx = resolveContext(reportId, lineItemId, actingEmployeeId);
+
+        var taxStatus = ctx.lineItem().getTaxValidationStatus();
+        if (!taxChecked && (taxStatus == com.expense_management_service.enums.TaxValidationStatus.MISMATCH
+                || taxStatus == com.expense_management_service.enums.TaxValidationStatus.REQUIRES_FINANCE_REVIEW)) {
+            throw new IllegalArgumentException("This line's tax is flagged for review - confirm you checked it (or adjust it) before verifying.");
+        }
 
         FinanceEligibilityResult eligibility = financeVerificationEligibilityChecker.check(ctx.lineItem());
         if (!eligibility.eligible()) {
@@ -84,11 +96,26 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
         review.setActedBy(actingEmployeeId);
         review.setActionedAt(LocalDateTime.now());
         financeVerificationReviewRepository.save(review);
+        if (taxStatus != null) {
+            taxSnapshotService.markFinanceVerified(ctx.lineItem());
+        }
         approvalEventPublisher.publish("LINE_ITEM_VERIFIED", reportId, "lineItem=" + lineItemId + " by=" + actingEmployeeId);
 
         approvalWorkflowService.advanceAfterLevelReviewed(reportId, ctx.activeInstance().getInstanceId(), ctx.authorizing().getApproverId());
 
         log.info("Line item {} verified on report {} by {}", lineItemId, reportId, actingEmployeeId);
+        return expenseReportResponseFactory.toResponse(findReport(reportId));
+    }
+
+    @Override
+    public ExpenseReportResponse adjustLineTax(UUID reportId, UUID lineItemId, String actingEmployeeId,
+                                               com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest request) {
+        // Same gate as verify/query: the report is at Finance and this line's review is still pending.
+        FinanceActionContext ctx = resolveContext(reportId, lineItemId, actingEmployeeId);
+        taxSnapshotService.financeAdjust(ctx.lineItem(), request.taxCodeId(), request.taxAmount(),
+                request.itcRecoverablePercent(), request.reason());
+        approvalEventPublisher.publish("LINE_ITEM_TAX_ADJUSTED", reportId, "lineItem=" + lineItemId + " by=" + actingEmployeeId);
+        log.info("Tax adjusted on line item {} of report {} by {}: {}", lineItemId, reportId, actingEmployeeId, request.reason());
         return expenseReportResponseFactory.toResponse(findReport(reportId));
     }
 
@@ -162,13 +189,15 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
                             lineItem.getMerchantName(), lineItem.getDescription(), lineItem.getExpenseDate(),
                             lineItem.getAmount(), lineItem.getCurrency() != null ? lineItem.getCurrency().getCurrencyCode() : null,
                             glAccount != null ? glAccount.getGlAccountCode() : null,
-                            eligibility.eligible(), eligibility.reason(), Boolean.TRUE.equals(lineItem.getClientBillable()));
+                            eligibility.eligible(), eligibility.reason(), Boolean.TRUE.equals(lineItem.getClientBillable()),
+                            lineItem.getTaxAmount(), lineItem.getTaxCode(),
+                            lineItem.getTaxValidationStatus() != null ? lineItem.getTaxValidationStatus().name() : null);
                 })
                 .toList();
 
         return new FinanceQueueItemResponse(
                 report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTotalAmount(),
-                report.getCurrency() != null ? report.getCurrency().getCurrencyCode() : null,
+                baseCurrencyCode,
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
                 report.getReportStatus() != null ? report.getReportStatus().name() : null,
                 report.getSubmittedAt(),
@@ -232,7 +261,7 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
 
         return new FinanceHistoryItemResponse(
                 report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTotalAmount(),
-                report.getCurrency() != null ? report.getCurrency().getCurrencyCode() : null,
+                baseCurrencyCode,
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
                 report.getReportStatus() != null ? report.getReportStatus().name() : null,
                 status.name(), instance.getLevelOrder(),

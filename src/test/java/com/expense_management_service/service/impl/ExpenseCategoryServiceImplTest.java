@@ -12,6 +12,7 @@ import com.expense_management_service.mapper.ExpenseCategoryMapper;
 import com.expense_management_service.repository.ExpenseCategoryRepository;
 import com.expense_management_service.repository.GlAccountRepository;
 import com.expense_management_service.repository.TaxCodeRepository;
+import com.expense_management_service.service.ExpenseCategoryTaxMappingService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -21,12 +22,14 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -44,6 +47,9 @@ class ExpenseCategoryServiceImplTest {
     @Mock
     private TaxCodeRepository taxCodeRepository;
 
+    @Mock
+    private ExpenseCategoryTaxMappingService taxMappingService;
+
     private ExpenseCategoryServiceImpl expenseCategoryService;
 
     private final TaxCode tx01 = TaxCode.builder().taxCodeId(UUID.randomUUID()).taxCode("TX01").taxName("GST 18%")
@@ -53,10 +59,9 @@ class ExpenseCategoryServiceImplTest {
     @BeforeEach
     void setUp() {
         expenseCategoryService = new ExpenseCategoryServiceImpl(
-                expenseCategoryRepository, glAccountRepository, taxCodeRepository, new ExpenseCategoryMapper());
+                expenseCategoryRepository, glAccountRepository, taxCodeRepository, new ExpenseCategoryMapper(), taxMappingService);
         // Most tests use tax code TX01 but aren't about it - lenient so they don't have to care.
         lenient().when(taxCodeRepository.findByTaxCodeIgnoreCase("TX01")).thenReturn(Optional.of(tx01));
-        lenient().when(taxCodeRepository.findByStatusIgnoreCaseOrderByRatePercentAsc("ACTIVE")).thenReturn(List.of(tx01));
     }
 
     private static GlAccount activeGlAccount(UUID id) {
@@ -89,19 +94,63 @@ class ExpenseCategoryServiceImplTest {
     }
 
     @Test
-    void create_returnsTaxRateOfMappedTaxCode_andStoresCanonicalCode() {
+    void create_mapsTheTaxCodeFromTheCategoryStart_andReturnsItsRate() {
         UUID glAccountId = UUID.randomUUID();
+        UUID savedId = UUID.randomUUID();
         ExpenseCategoryRequest request = new ExpenseCategoryRequest("TRAVEL", "Travel", glAccountId, "desc", true,
                 null, " tx01 ", LocalDate.of(2026, 1, 1), null, "ACTIVE");
         when(taxCodeRepository.findByTaxCodeIgnoreCase("tx01")).thenReturn(Optional.of(tx01));
         when(expenseCategoryRepository.findByCategoryNameIgnoreCase("Travel")).thenReturn(Optional.empty());
         when(glAccountRepository.findById(glAccountId)).thenReturn(Optional.of(activeGlAccount(glAccountId)));
-        when(expenseCategoryRepository.save(any(ExpenseCategory.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(expenseCategoryRepository.save(any(ExpenseCategory.class))).thenAnswer(inv -> {
+            ExpenseCategory saved = inv.getArgument(0);
+            saved.setCategoryId(savedId);
+            return saved;
+        });
+        when(taxMappingService.mappedCodesOn(any())).thenReturn(Map.of(savedId, tx01));
 
         ExpenseCategoryResponse response = expenseCategoryService.create(request);
 
         assertThat(response.taxCode()).isEqualTo("TX01");
         assertThat(response.taxRate()).isEqualByComparingTo("18.00");
+        // From the category's start (2026-01-01), which is later than the code's own (2017-07-01).
+        verify(taxMappingService).replaceCurrentMapping(any(ExpenseCategory.class), eq(tx01), eq(LocalDate.of(2026, 1, 1)));
+    }
+
+    @Test
+    void update_changingTheTaxCode_startsANewMappingFromToday() {
+        UUID categoryId = UUID.randomUUID();
+        UUID glAccountId = UUID.randomUUID();
+        ExpenseCategory existing = ExpenseCategory.builder().categoryId(categoryId).categoryName("Travel")
+                .taxCode("OLD").status("ACTIVE").build();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(existing));
+        when(expenseCategoryRepository.findByCategoryNameIgnoreCase("Travel")).thenReturn(Optional.of(existing));
+        when(glAccountRepository.findById(glAccountId)).thenReturn(Optional.of(activeGlAccount(glAccountId)));
+        when(expenseCategoryRepository.save(any(ExpenseCategory.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseCategoryResponse response = expenseCategoryService.update(categoryId, validRequest(glAccountId));
+
+        assertThat(response.taxCode()).isEqualTo("TX01");
+        verify(taxMappingService).replaceCurrentMapping(existing, tx01, LocalDate.now());
+    }
+
+    @Test
+    void update_clearingTheTaxCode_endsTheCurrentMapping() {
+        UUID categoryId = UUID.randomUUID();
+        UUID glAccountId = UUID.randomUUID();
+        ExpenseCategory existing = ExpenseCategory.builder().categoryId(categoryId).categoryName("Travel")
+                .taxCode("TX01").status("ACTIVE").build();
+        ExpenseCategoryRequest request = new ExpenseCategoryRequest("TRAVEL", "Travel", glAccountId, "desc", true,
+                null, "  ", LocalDate.of(2026, 1, 1), null, "ACTIVE");
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(existing));
+        when(expenseCategoryRepository.findByCategoryNameIgnoreCase("Travel")).thenReturn(Optional.of(existing));
+        when(glAccountRepository.findById(glAccountId)).thenReturn(Optional.of(activeGlAccount(glAccountId)));
+        when(expenseCategoryRepository.save(any(ExpenseCategory.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseCategoryResponse response = expenseCategoryService.update(categoryId, request);
+
+        assertThat(response.taxCode()).isNull();
+        verify(taxMappingService).replaceCurrentMapping(existing, null, LocalDate.now());
     }
 
     @Test
@@ -142,7 +191,6 @@ class ExpenseCategoryServiceImplTest {
                 null, "LEGACY-9", LocalDate.of(2026, 1, 1), null, "ACTIVE");
         when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(existing));
         when(expenseCategoryRepository.findByCategoryNameIgnoreCase("Travel")).thenReturn(Optional.of(existing));
-        when(taxCodeRepository.findByTaxCodeIgnoreCase("LEGACY-9")).thenReturn(Optional.empty());
         when(glAccountRepository.findById(glAccountId)).thenReturn(Optional.of(activeGlAccount(glAccountId)));
         when(expenseCategoryRepository.save(any(ExpenseCategory.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -150,6 +198,27 @@ class ExpenseCategoryServiceImplTest {
 
         assertThat(response.taxCode()).isEqualTo("LEGACY-9");
         assertThat(response.taxRate()).isNull();
+    }
+
+    @Test
+    void update_keepsUnchangedTaxCode_evenAfterItWasDeactivated() {
+        // Deactivating a tax code must not lock admins out of editing the categories still mapped to it.
+        UUID categoryId = UUID.randomUUID();
+        UUID glAccountId = UUID.randomUUID();
+        ExpenseCategory existing = ExpenseCategory.builder().categoryId(categoryId).categoryName("Travel")
+                .taxCode("OLD").status("ACTIVE").build();
+        ExpenseCategoryRequest request = new ExpenseCategoryRequest("TRAVEL", "Travel", glAccountId, "new desc", true,
+                null, "OLD", LocalDate.of(2026, 1, 1), null, "ACTIVE");
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(existing));
+        when(expenseCategoryRepository.findByCategoryNameIgnoreCase("Travel")).thenReturn(Optional.of(existing));
+        when(glAccountRepository.findById(glAccountId)).thenReturn(Optional.of(activeGlAccount(glAccountId)));
+        when(expenseCategoryRepository.save(any(ExpenseCategory.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseCategoryResponse response = expenseCategoryService.update(categoryId, request);
+
+        assertThat(response.taxCode()).isEqualTo("OLD");
+        verify(taxCodeRepository, never()).findByTaxCodeIgnoreCase("OLD");
+        verify(taxMappingService, never()).replaceCurrentMapping(any(), any(), any());
     }
 
     @Test
@@ -274,6 +343,7 @@ class ExpenseCategoryServiceImplTest {
 
         expenseCategoryService.delete(categoryId);
 
+        verify(taxMappingService).deleteAllForCategory(categoryId);
         verify(expenseCategoryRepository).delete(existing);
     }
 }

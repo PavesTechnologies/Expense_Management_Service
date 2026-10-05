@@ -44,6 +44,8 @@ import com.expense_management_service.security.RoleConstants;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
 import com.expense_management_service.service.ExpenseLineItemService;
+import com.expense_management_service.service.ExpenseSplitService;
+import com.expense_management_service.service.TaxSnapshotService;
 import com.expense_management_service.service.PolicyEvaluator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -78,6 +80,8 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private final PolicyViolationMapper policyViolationMapper;
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
     private final DelegationService delegationService;
+    private final ExpenseSplitService expenseSplitService;
+    private final TaxSnapshotService taxSnapshotService;
 
     /**
      * The organization's single accounting/base currency (e.g. "INR") — every line item's
@@ -108,7 +112,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         entity.setLineStatus(STATUS_ACTIVE);
         applyRelations(entity, request);
         applyCurrencyConversion(entity);
-        applyNetAmount(entity);
+        applyTaxSnapshot(entity, request, null);
 
         ExpenseLineItem saved = expenseLineItemRepository.save(entity);
         refreshPolicyViolations(saved);
@@ -134,13 +138,17 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         assertExpenseDateValid(request.expenseDate());
         assertTaxAmountValid(request.amount(), request.taxAmount());
 
+        var previousTax = taxSnapshotService.describe(entity);
         expenseLineItemMapper.updateEntity(entity, request);
         entity.setCategory(category);
         applyRelations(entity, request);
         applyCurrencyConversion(entity);
-        applyNetAmount(entity);
+        applyTaxSnapshot(entity, request, previousTax);
 
         ExpenseLineItem saved = expenseLineItemRepository.save(entity);
+        // Splits are allocated against baseAmount; an amount or currency edit would otherwise leave
+        // them summing to the old total (and consuming the wrong cost-center budgets).
+        expenseSplitService.rebalanceSplitsForLineItem(saved);
         refreshPolicyViolations(saved);
         recalculateReportTotal(report);
         log.info("Updated line item {} on expense report {}", lineItemId, reportId);
@@ -359,9 +367,15 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     }
 
     /** GST/VAT is captured exactly as printed on the receipt; a missing value is treated as zero. */
-    private void applyNetAmount(ExpenseLineItem entity) {
-        BigDecimal tax = entity.getTaxAmount() != null ? entity.getTaxAmount() : BigDecimal.ZERO;
-        entity.setNetAmount(entity.getAmount().subtract(tax));
+    /**
+     * Server-side tax (BR-TAX-001): the request's taxAmount is what the employee entered and is
+     * compared with the category's (or the selected) tax code; see TaxSnapshotService.
+     */
+    private void applyTaxSnapshot(ExpenseLineItem entity, ExpenseLineItemRequest request, java.util.Map<String, Object> previousTax) {
+        Currency baseCurrency = findOrganizationBaseCurrency();
+        int baseScale = baseCurrency.getDecimalPlaces() != null ? baseCurrency.getDecimalPlaces() : 2;
+        taxSnapshotService.applySnapshot(entity, request.taxCodeId(), request.taxAmount(), request.taxOverrideReason(),
+                previousTax, baseScale);
     }
 
     private void assertTaxAmountValid(BigDecimal amount, BigDecimal taxAmount) {
@@ -380,8 +394,9 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private void recalculateReportTotal(ExpenseReport report) {
         BigDecimal total = expenseLineItemRepository.sumBaseAmountByReportId(report.getReportId());
         report.setTotalAmount(total);
-        // TODO: Implement in Policy Management Epic — reimbursableAmount depends on policy rules
-        // (e.g. personal-portion exclusions) that are out of scope for multi-currency/VAT capture.
+        // Gross less cash advance adjustments (BR-TAX-013). Policy-based non-reimbursable portions
+        // (e.g. personal-use exclusions) are a later Policy Management concern.
+        report.setReimbursableAmount(ReimbursementCalculator.reimbursable(total, report.getCashAdvanceAdjustments()));
         expenseReportRepository.save(report);
     }
 

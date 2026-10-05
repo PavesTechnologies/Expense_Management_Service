@@ -39,4 +39,13 @@ public interface LevelReviewStrategy {
      * fresh SEQUENTIAL pass.
      */
     void resumeCorrectedReviews(ApprovalLevelInstance instance);
+
+    /**
+     * On resume after a correction: reopens reviews of lines whose tax changed after they were
+     * reviewed, returning those lines. Only Finance verification cares (a tax-only change is not
+     * material for approvers), so the default does nothing.
+     */
+    default List<ExpenseLineItem> reopenReviewsForRevisedTax(ApprovalLevelInstance instance) {
+        return List.of();
+    }
 }

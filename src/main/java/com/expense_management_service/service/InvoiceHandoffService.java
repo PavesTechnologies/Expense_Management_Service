@@ -22,6 +22,12 @@ public interface InvoiceHandoffService {
     PageResponse<InvoiceHandoffEligibleExpenseResponse> getEligibleExpenses(
             UUID clientId, UUID projectId, LocalDate startDate, LocalDate endDate, int page, int size);
 
+    /**
+     * AR's authoritative billing payload for one client-billable line on an approved report
+     * (BR-TAX-015 / BR-TAX-023). Safe to call repeatedly - it returns current state.
+     */
+    com.expense_management_service.dto.response.BillingPayloadResponse getBillingPayload(UUID lineItemId);
+
     InvoiceSyncResponse markHandedOff(UUID lineItemId, InvoiceHandoffRequest request);
 
     List<InvoiceSyncResponse> getHandoffHistory(UUID lineItemId);

@@ -34,19 +34,19 @@ public class TaxCodeController {
     }
 
     @GetMapping("/{taxCodeId}")
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
     public ApiResponse<TaxCodeResponse> getById(@PathVariable UUID taxCodeId) {
         return ApiResponse.success(taxCodeService.getById(taxCodeId));
     }
 
     @GetMapping
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
     public ApiResponse<List<TaxCodeResponse>> getAll() {
         return ApiResponse.success(taxCodeService.getAll());
     }
 
     @GetMapping("/active")
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
     public ApiResponse<List<TaxCodeResponse>> getActive() {
         return ApiResponse.success(taxCodeService.getActive());
     }

@@ -16,6 +16,9 @@ import java.util.UUID;
 
 public interface ExpenseLineItemRepository extends JpaRepository<ExpenseLineItem, UUID> {
 
+    /** Lines whose tax snapshot references the code - once any exist, the code's rate is locked. */
+    long countByTaxCodeId(UUID taxCodeId);
+
     List<ExpenseLineItem> findByReport_ReportId(UUID reportId);
 
     /** Path-scoped lookup — guarantees a line item is only ever addressed through its own parent report. */

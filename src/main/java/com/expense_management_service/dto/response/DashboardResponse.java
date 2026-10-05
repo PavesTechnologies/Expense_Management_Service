@@ -37,8 +37,32 @@ public record DashboardResponse(
         List<Slice> aging,
         List<Budget> budgets,
         List<Item> attention,
-        List<Item> activity
+        List<Item> activity,
+        /** Finance / admin views only; null elsewhere. */
+        TaxSummary tax
 ) {
+
+    /** Views without a tax section. */
+    public DashboardResponse(String view, String baseCurrencyCode, List<Kpi> kpis, String trendTitle, List<TrendPoint> trend,
+                             List<Stage> pipeline, String breakdownTitle, List<Slice> breakdown, String rankingTitle,
+                             List<Slice> ranking, List<Slice> aging, List<Budget> budgets, List<Item> attention, List<Item> activity) {
+        this(view, baseCurrencyCode, kpis, trendTitle, trend, pipeline, breakdownTitle, breakdown, rankingTitle, ranking,
+                aging, budgets, attention, activity, null);
+    }
+
+    /**
+     * Tax KPIs (base currency) for the current month plus a monthly tax series.
+     *
+     * @param mismatchRatePercent share of this month's lines with OCR evidence whose tax differs from the receipt
+     * @param taxSharePercent     tax as a share of gross spend this month
+     */
+    public record TaxSummary(BigDecimal taxThisMonth, BigDecimal recoverableThisMonth, BigDecimal nonRecoverableThisMonth,
+                             long linesAwaitingTaxReview, BigDecimal mismatchRatePercent, BigDecimal taxSharePercent,
+                             List<TaxMonth> byMonth) {
+    }
+
+    public record TaxMonth(String period, String label, BigDecimal tax, BigDecimal recoverable, BigDecimal nonRecoverable) {
+    }
 
     /** @param format "count", "money" or "days" — tells the frontend how to print {@code value}. */
     public record Kpi(String key, String label, BigDecimal value, String format, String hint, String tone) {

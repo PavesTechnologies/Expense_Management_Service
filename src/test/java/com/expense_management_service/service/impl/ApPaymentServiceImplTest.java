@@ -334,4 +334,85 @@ class ApPaymentServiceImplTest {
         assertThatThrownBy(() -> service.getPaymentDetails(reportId))
                 .isInstanceOf(AccessDeniedException.class);
     }
+
+    @Test
+    void getPaymentDetails_returnsDetails_whenHandoffFailed() {
+        // AP_VISIBLE_STATUSES was widened alongside the new history tabs - a HANDOFF_FAILED report
+        // must be viewable, not just APPROVED_FOR_PAYMENT/PAYMENT_COMPLETED.
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.HANDOFF_FAILED);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseLineItemService.getAllForReport(reportId)).thenReturn(List.of());
+        when(approvalWorkflowService.getApprovalStatus(reportId))
+                .thenReturn(new ApprovalStatusResponse(2, "Finance", "Finance", 2, false, false));
+
+        assertThat(service.getPaymentDetails(reportId)).isNotNull();
+    }
+
+    // ---------------------------------------------------------------------
+    // getApHistory
+    // ---------------------------------------------------------------------
+
+    @Test
+    void getApHistory_queriesByTheGivenPaymentRoutingStatus() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        when(expenseReportRepository.findByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of()));
+
+        service.getApHistory(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable);
+
+        verify(expenseReportRepository).findByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable);
+    }
+
+    @Test
+    void getApHistory_mapsReportsToQueueItems() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.PAYMENT_COMPLETED);
+        when(expenseReportRepository.findByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(report), pageable, 1));
+
+        var page = service.getApHistory(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable);
+
+        assertThat(page.totalElements()).isEqualTo(1);
+        assertThat(page.content().get(0).reportId()).isEqualTo(reportId);
+        assertThat(page.content().get(0).paymentRoutingStatus()).isEqualTo("PAYMENT_COMPLETED");
+    }
+
+    @Test
+    void getApHistory_throws_whenStatusIsApprovedForPayment() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getApHistory(PaymentRoutingStatus.APPROVED_FOR_PAYMENT, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getApHistory_throws_whenStatusIsNone() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getApHistory(PaymentRoutingStatus.NONE, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getApHistory_throws_whenStatusIsNull() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getApHistory(null, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getSummary_countsPendingPaidAndFailed() {
+        when(expenseReportRepository.countByReportStatusAndPaymentRoutingStatus(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT)).thenReturn(8L);
+        when(expenseReportRepository.countByPaymentRoutingStatusAndPaymentCompletedAtGreaterThanEqual(eq(PaymentRoutingStatus.PAYMENT_COMPLETED), any())).thenReturn(3L);
+        when(expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED)).thenReturn(12L);
+        when(expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.HANDOFF_FAILED)).thenReturn(1L);
+
+        var summary = service.getSummary();
+
+        assertThat(summary.pendingCount()).isEqualTo(8);
+        assertThat(summary.paidThisMonthCount()).isEqualTo(3);
+        assertThat(summary.paidCount()).isEqualTo(12);
+        assertThat(summary.handoffFailedCount()).isEqualTo(1);
+    }
 }

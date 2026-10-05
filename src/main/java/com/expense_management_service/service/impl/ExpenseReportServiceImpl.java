@@ -110,11 +110,12 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     @Override
     @Transactional(readOnly = true)
     public List<ExpenseReportResponse> getAll() {
+        // Always the caller's own reports, whatever their role — this backs "My Expenses" and the
+        // personal dashboard. Reviewers (Admin/Manager/Finance/AP) reach other employees' reports
+        // through their own queues, and can still open one directly via getById/assertViewable.
         CurrentUser caller = currentUserService.getCurrentUser();
-        List<ExpenseReport> reports = isPrivilegedReviewer(caller)
-                ? expenseReportRepository.findAll()
-                : expenseReportRepository.findByEmployeeId(caller.employeeId());
-        return reports.stream().map(this::toResponse).toList();
+        return expenseReportRepository.findByEmployeeId(caller.employeeId()).stream()
+                .map(this::toResponse).toList();
     }
 
     @Override

@@ -15,6 +15,7 @@ import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseSplitRepository;
 import com.expense_management_service.service.ExpenseSplitService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
@@ -46,6 +47,7 @@ import java.util.stream.Collectors;
  * ever wanted, it needs its own explicit decision, not an inferred one.
  */
 @Service
+@Slf4j
 @RequiredArgsConstructor
 @Transactional
 public class ExpenseSplitServiceImpl implements ExpenseSplitService {
@@ -138,6 +140,42 @@ public class ExpenseSplitServiceImpl implements ExpenseSplitService {
         return expenseSplitRepository.saveAll(reconciled).stream()
                 .map(expenseSplitMapper::toResponse)
                 .toList();
+    }
+
+    @Override
+    public void rebalanceSplitsForLineItem(ExpenseLineItem lineItem) {
+        List<ExpenseSplit> splits = expenseSplitRepository.findByLineItem_LineItemIdAndRemovedAtIsNullOrderBySplitOrderAsc(lineItem.getLineItemId());
+        BigDecimal lineItemTotal = lineItem.getBaseAmount();
+        if (splits.isEmpty() || lineItemTotal == null) {
+            return;
+        }
+        BigDecimal previousTotal = splits.stream()
+                .map(s -> s.getAllocatedAmount() == null ? BigDecimal.ZERO : s.getAllocatedAmount())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        if (previousTotal.compareTo(lineItemTotal) == 0) {
+            return;
+        }
+
+        BigDecimal runningTotal = BigDecimal.ZERO;
+        for (int i = 0; i < splits.size(); i++) {
+            ExpenseSplit split = splits.get(i);
+            BigDecimal amount;
+            if (i == splits.size() - 1) {
+                amount = lineItemTotal.subtract(runningTotal).setScale(4, RoundingMode.HALF_UP);
+            } else if (split.getSplitType() == SplitType.PERCENTAGE && split.getPercentage() != null) {
+                amount = lineItemTotal.multiply(split.getPercentage()).divide(PERCENTAGE_TOTAL, 4, RoundingMode.HALF_UP);
+            } else if (previousTotal.signum() == 0) {
+                amount = BigDecimal.ZERO.setScale(4);
+            } else {
+                // FIXED_AMOUNT: keep this split's share of the old total.
+                amount = lineItemTotal.multiply(split.getAllocatedAmount()).divide(previousTotal, 4, RoundingMode.HALF_UP);
+            }
+            split.setAllocatedAmount(amount);
+            runningTotal = runningTotal.add(amount);
+        }
+        expenseSplitRepository.saveAll(splits);
+        log.info("Rebalanced {} splits on line item {} from {} to {}", splits.size(), lineItem.getLineItemId(),
+                previousTotal.toPlainString(), lineItemTotal.toPlainString());
     }
 
     private void softDeleteAll(java.util.Collection<ExpenseSplit> splits) {

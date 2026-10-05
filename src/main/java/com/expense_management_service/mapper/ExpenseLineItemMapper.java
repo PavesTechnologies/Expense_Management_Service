@@ -2,6 +2,8 @@ package com.expense_management_service.mapper;
 
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
+import com.expense_management_service.dto.response.LineTaxComponentResponse;
+import com.expense_management_service.dto.response.LineTaxResponse;
 import com.expense_management_service.dto.response.PolicyWarningResponse;
 import com.expense_management_service.entity.ExpenseLineItem;
 import org.springframework.stereotype.Component;
@@ -60,11 +62,43 @@ public class ExpenseLineItemMapper {
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterName() : null,
                 entity.getProject() != null ? entity.getProject().getProjectId() : null,
                 entity.getProject() != null ? entity.getProject().getProjectName() : null,
+                entity.getResolvedClientId(),
+                entity.getResolvedClientName(),
                 entity.getClientBillable(),
                 entity.getLineStatus(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt(),
-                policyWarnings
+                policyWarnings,
+                toTaxResponse(entity)
+        );
+    }
+
+    public LineTaxResponse toTaxResponse(ExpenseLineItem entity) {
+        return new LineTaxResponse(
+                entity.getTaxCodeId(),
+                entity.getTaxCode(),
+                entity.getTaxType() != null ? entity.getTaxType().name() : null,
+                entity.getTaxRatePercent(),
+                entity.getTaxTreatment() != null ? entity.getTaxTreatment().name() : null,
+                entity.getNetAmount(),
+                entity.getTaxAmount(),
+                entity.getCalculatedTaxAmount(),
+                entity.getTaxSource() != null ? entity.getTaxSource().name() : null,
+                entity.getTaxOverrideReason(),
+                entity.getItcRecoverablePercent(),
+                entity.getRecoverableTaxAmount(),
+                entity.getBaseTaxAmount(),
+                entity.getBaseNetAmount(),
+                entity.getBaseRecoverableTaxAmount(),
+                entity.getOcrTaxAmount(),
+                entity.getTaxValidationStatus() != null ? entity.getTaxValidationStatus().name() : null,
+                entity.getTaxValidationReasons() == null || entity.getTaxValidationReasons().isBlank()
+                        ? List.of() : List.of(entity.getTaxValidationReasons().split(",")),
+                entity.getTaxSnapshotAt(),
+                entity.getTaxComponents() == null ? List.of() : entity.getTaxComponents().stream()
+                        .map(c -> new LineTaxComponentResponse(c.getComponentCode().name(), c.getLabel(), c.getRatePercent(),
+                                c.getTaxAmount(), c.getBaseTaxAmount(), c.getSource().name()))
+                        .toList()
         );
     }
 }

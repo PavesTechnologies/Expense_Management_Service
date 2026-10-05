@@ -31,7 +31,10 @@ public class RabbitApprovalEventListener {
     private static final Set<String> FINANCE_EVENT_TYPES = Set.of(
             "FINANCE_VERIFICATION_ACTIVATED", "LINE_ITEM_VERIFIED", "VERIFICATION_QUERY_RAISED",
             "VERIFICATION_QUERY_RESOLVED", "FINANCE_VERIFICATION_COMPLETED",
-            "REPORT_APPROVED_FOR_PAYMENT", "REPORT_INVOICE_HANDOFF");
+            "REPORT_APPROVED_FOR_PAYMENT", "REPORT_INVOICE_HANDOFF",
+            // AR consumes these to know a billing payload is ready / handed off; the payload itself
+            // is pulled from GET /xms/finance/invoice-handoff-queue/{lineItemId}/billing-payload.
+            "EXPENSE_BILLABLE_READY", "EXPENSE_BILLABLE_HANDED_OFF", "LINE_ITEM_TAX_ADJUSTED");
 
     private final RabbitTemplate rabbitTemplate;
 

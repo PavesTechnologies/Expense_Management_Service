@@ -6,6 +6,7 @@ import com.expense_management_service.dto.response.ApPaymentQueueItemResponse;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.JwtAuthConverter;
 import com.expense_management_service.service.ApPaymentService;
@@ -75,7 +76,7 @@ class ApPaymentControllerTest {
 
     private ExpenseReportResponse sampleReportResponse(String status) {
         return new ExpenseReportResponse(UUID.randomUUID(), "EXP-0001", "5100001", "Trip", "Client visit", "2026",
-                UUID.randomUUID(), "Engineering", status, "PAYMENT_COMPLETED", UUID.randomUUID(), "INR",
+                UUID.randomUUID(), "Engineering", status, "PAYMENT_COMPLETED", "NOT_APPLICABLE", UUID.randomUUID(), "INR", "INR",
                 new BigDecimal("1000"), new BigDecimal("1000"),
                 LocalDateTime.now(), LocalDateTime.now(), null, LocalDateTime.now(), LocalDateTime.now(), 1, false, false, 0, 0);
     }
@@ -84,7 +85,7 @@ class ApPaymentControllerTest {
     void getApQueue_returns200_forApExecutive() throws Exception {
         ApPaymentQueueItemResponse item = new ApPaymentQueueItemResponse(
                 UUID.randomUUID(), "EXP-0001", "5100001", "Trip", new BigDecimal("50000"), "INR",
-                UUID.randomUUID(), "Engineering", LocalDateTime.now(), "APPROVED", "APPROVED_FOR_PAYMENT");
+                UUID.randomUUID(), "Engineering", LocalDateTime.now(), "APPROVED", "APPROVED_FOR_PAYMENT", "NOT_APPLICABLE", null, null, null, null, null, null);
         when(apPaymentService.getApQueue(any(Pageable.class)))
                 .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
 
@@ -168,5 +169,30 @@ class ApPaymentControllerTest {
     void markPaymentCompleted_returns403_forFinanceExecutiveRole() throws Exception {
         mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).with(financeExecutive()))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void getApHistory_returns200_forApExecutive() throws Exception {
+        ApPaymentQueueItemResponse item = new ApPaymentQueueItemResponse(
+                UUID.randomUUID(), "EXP-0002", "5100001", "Trip", new BigDecimal("50000"), "INR",
+                UUID.randomUUID(), "Engineering", LocalDateTime.now(), "APPROVED", "PAYMENT_COMPLETED", "NOT_APPLICABLE", LocalDateTime.now(), "5100060", null, null, null, null);
+        when(apPaymentService.getApHistory(eq(PaymentRoutingStatus.PAYMENT_COMPLETED), any(Pageable.class)))
+                .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
+
+        mockMvc.perform(get("/xms/ap-payments/history").param("status", "PAYMENT_COMPLETED").with(apExecutive()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.content[0].paymentRoutingStatus").value("PAYMENT_COMPLETED"));
+    }
+
+    @Test
+    void getApHistory_returns403_forGeneralRole() throws Exception {
+        mockMvc.perform(get("/xms/ap-payments/history").param("status", "PAYMENT_COMPLETED").with(general()))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void getApHistory_returns401_whenUnauthenticated() throws Exception {
+        mockMvc.perform(get("/xms/ap-payments/history").param("status", "PAYMENT_COMPLETED"))
+                .andExpect(status().isUnauthorized());
     }
 }

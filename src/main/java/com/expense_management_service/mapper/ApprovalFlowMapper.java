@@ -14,6 +14,7 @@ import com.expense_management_service.enums.LevelType;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 
 /**
@@ -106,7 +107,14 @@ public class ApprovalFlowMapper {
                 entity.getCriteria().stream()
                         .map(c -> new ApprovalFlowCriterionResponse(c.getCriterionId(), c.getIndex(), c.getField(), c.getOperator(), c.getValue()))
                         .toList(),
-                entity.getLevels().stream().map(this::toLevelResponse).toList(),
+                // Explicitly re-sorted here, not just relying on ApprovalFlow.levels' @OrderBy - the
+                // business order (levelOrder) must never depend solely on how the collection happened
+                // to be fetched, since level_id is a random UUID and an unordered SELECT would
+                // otherwise return rows in effectively arbitrary order on every fresh load.
+                entity.getLevels().stream()
+                        .sorted(Comparator.comparing(ApprovalLevel::getLevelOrder))
+                        .map(this::toLevelResponse)
+                        .toList(),
                 entity.getCreatedAt(),
                 entity.getUpdatedAt()
         );
@@ -121,6 +129,7 @@ public class ApprovalFlowMapper {
                 level.getQuorum(),
                 level.getLevelType(),
                 level.getApprovers().stream()
+                        .sorted(Comparator.comparing(ApprovalLevelApprover::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
                         .map(a -> new ApprovalLevelApproverResponse(a.getEntryId(), a.getEntryOrder(), a.getSourceType(), a.getSourceReference()))
                         .toList()
         );

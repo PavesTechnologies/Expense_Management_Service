@@ -25,6 +25,69 @@ final class TaxExtractor {
 
     private static final String FIELD_TAX = "TAX";
     private static final List<String> GST_COMPONENT_LABEL_KEYWORDS = List.of("CGST", "SGST", "IGST");
+    /**
+     * Labels that contain a tax keyword but whose value is not a tax amount: registration numbers
+     * (a GSTIN such as 29ABCDE1234F1Z5 would otherwise parse as 2912341), HSN/SAC codes and rate columns.
+     */
+    private static final List<String> NON_AMOUNT_LABEL_KEYWORDS =
+            List.of("GSTIN", "GST NO", "GST NUMBER", "GST REG", "VAT NO", "VAT REG", "TIN", "HSN", "SAC", "RATE");
+
+    /** Indian GSTIN: 2-digit state code, 10-character PAN, entity digit, 'Z', check character. */
+    private static final java.util.regex.Pattern GSTIN =
+            java.util.regex.Pattern.compile("\\b\\d{2}[A-Z]{5}\\d{4}[A-Z][A-Z\\d]Z[A-Z\\d]\\b");
+    private static final List<String> COMPONENT_CODES = List.of("CGST", "SGST", "UTGST", "IGST", "CESS");
+
+    /**
+     * The receipt's tax components as printed (CGST 900 + SGST 900), summed per code. Empty when
+     * the receipt only shows one tax figure. Same field filtering as {@link #extract}.
+     */
+    List<com.expense_management_service.dto.ocr.OcrTaxComponent> extractComponents(ExpenseFieldIndex index) {
+        java.util.Map<String, BigDecimal> byCode = new java.util.LinkedHashMap<>();
+        for (ExpenseField field : index.allFields()) {
+            String label = labelOf(field);
+            if (label == null || !isTaxAmountField(field)) {
+                continue;
+            }
+            String normalizedLabel = label.toUpperCase(Locale.ROOT);
+            // CESS only as a whole word ("PROCESSING FEE" contains it).
+            String code = COMPONENT_CODES.stream()
+                    .filter(c -> "CESS".equals(c) ? normalizedLabel.matches(".*\\bCESS\\b.*") : normalizedLabel.contains(c))
+                    .findFirst().orElse(null);
+            if (code == null) {
+                continue;
+            }
+            BigDecimal amount = ReceiptFieldParsingUtils.parseAmount(textOf(field), label);
+            if (amount != null) {
+                byCode.merge(code, amount.setScale(2, RoundingMode.HALF_UP), BigDecimal::add);
+            }
+        }
+        return byCode.entrySet().stream()
+                .map(e -> new com.expense_management_service.dto.ocr.OcrTaxComponent(e.getKey(), e.getValue()))
+                .toList();
+    }
+
+    /** First GSTIN found in a GSTIN-labelled field, else anywhere in the fields' text. */
+    String extractGstin(ExpenseFieldIndex index) {
+        String anywhere = null;
+        for (ExpenseField field : index.allFields()) {
+            String text = textOf(field);
+            if (text == null) {
+                continue;
+            }
+            java.util.regex.Matcher m = GSTIN.matcher(text.toUpperCase(Locale.ROOT).replaceAll("\\s", ""));
+            if (!m.find()) {
+                continue;
+            }
+            String label = labelOf(field);
+            if (label != null && label.toUpperCase(Locale.ROOT).contains("GSTIN")) {
+                return m.group();
+            }
+            if (anywhere == null) {
+                anywhere = m.group();
+            }
+        }
+        return anywhere;
+    }
 
     ExtractionResult<BigDecimal> extract(ExpenseFieldIndex index) {
         ExtractionResult<BigDecimal> gstComponentSum = sumGstComponents(index.allFields());
@@ -64,7 +127,7 @@ final class TaxExtractor {
             }
             String normalizedLabel = label.toUpperCase(Locale.ROOT);
             boolean isGstComponent = GST_COMPONENT_LABEL_KEYWORDS.stream().anyMatch(normalizedLabel::contains);
-            if (!isGstComponent) {
+            if (!isGstComponent || !isTaxAmountField(field)) {
                 continue;
             }
             BigDecimal componentAmount = ReceiptFieldParsingUtils.parseAmount(textOf(field), label);
@@ -87,12 +150,27 @@ final class TaxExtractor {
     private ExtractionResult<BigDecimal> firstLabeledAmount(List<ExpenseField> allFields, String labelKeyword) {
         List<ExpenseField> matches = findAllFieldsByLabelContaining(allFields, labelKeyword);
         for (ExpenseField field : matches) {
+            if (!isTaxAmountField(field)) {
+                continue;
+            }
             BigDecimal amount = ReceiptFieldParsingUtils.parseAmount(textOf(field), labelKeyword);
             if (amount != null) {
                 return ExtractionResult.of(amount, normalizedConfidenceOf(field));
             }
         }
         return ExtractionResult.empty();
+    }
+
+    /** False for identifier and rate fields (GSTIN, HSN, "CGST Rate", a value such as "9%") that only look like tax lines. */
+    private static boolean isTaxAmountField(ExpenseField field) {
+        String label = labelOf(field);
+        // Whole-word match on a punctuation-free label, so "GSTIN:" and "GST No." match but "SGST" doesn't hit "GST NO".
+        String wordLabel = " " + (label == null ? "" : label.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]+", " ").trim()) + " ";
+        if (NON_AMOUNT_LABEL_KEYWORDS.stream().anyMatch(keyword -> wordLabel.contains(" " + keyword + " "))) {
+            return false;
+        }
+        String text = textOf(field);
+        return text == null || !text.contains("%");
     }
 
     private BigDecimal average(List<BigDecimal> values) {

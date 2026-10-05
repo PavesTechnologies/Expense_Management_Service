@@ -86,7 +86,7 @@ class OCRServiceImplTest {
         // async event-listener thread, which has no SecurityContext at all) — only
         // retryOcr/getLatestResult/getStatus/recordOverride need this stub.
         lenient().when(currentUserService.getCurrentUser())
-                .thenReturn(new CurrentUser(UUID.randomUUID(), employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of()));
+                .thenReturn(new CurrentUser(UUID.randomUUID(), null, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of()));
         when(receiptRepository.findById(receiptId)).thenReturn(Optional.of(receipt));
         // lenient: not every test reaches a save/duplicate-check call (e.g. the retry-rejected
         // and read-only tests don't), so these are shared "if needed" stubs, not universal ones.
@@ -383,7 +383,7 @@ class OCRServiceImplTest {
     @Test
     void getStatus_allowsApExecutive_toViewSomeoneElsesReceipt() {
         when(currentUserService.getCurrentUser()).thenReturn(
-                new CurrentUser(UUID.randomUUID(), "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+                new CurrentUser(UUID.randomUUID(), null, "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
 
         assertThatCode(() -> ocrService.getStatus(receiptId)).doesNotThrowAnyException();
     }
@@ -391,7 +391,7 @@ class OCRServiceImplTest {
     @Test
     void getStatus_allowsFinanceExecutive_toViewSomeoneElsesReceipt() {
         when(currentUserService.getCurrentUser()).thenReturn(
-                new CurrentUser(UUID.randomUUID(), "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+                new CurrentUser(UUID.randomUUID(), null, "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
 
         assertThatCode(() -> ocrService.getStatus(receiptId)).doesNotThrowAnyException();
     }

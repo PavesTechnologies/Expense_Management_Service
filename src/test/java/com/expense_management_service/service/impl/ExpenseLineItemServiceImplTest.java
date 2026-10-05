@@ -9,7 +9,10 @@ import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseCategory;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.ProjectCache;
 import com.expense_management_service.enums.ReportStatus;
+import com.expense_management_service.integration.pms.dto.PmsProjectDetailResponse;
+import com.expense_management_service.integration.pms.dto.PmsProjectSummaryResponse;
 import com.expense_management_service.mapper.ExpenseLineItemMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
@@ -20,6 +23,7 @@ import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.enums.PolicyRuleType;
 import com.expense_management_service.enums.PolicySeverity;
+import com.expense_management_service.integration.pms.PmsClient;
 import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
@@ -28,6 +32,7 @@ import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
+import com.expense_management_service.service.ExpenseSplitService;
 import com.expense_management_service.service.PolicyEvaluator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -51,6 +56,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -73,6 +79,8 @@ class ExpenseLineItemServiceImplTest {
     @Mock
     private CurrentUserService currentUserService;
     @Mock
+    private PmsClient pmsClient;
+    @Mock
     private PolicyEvaluator policyEvaluator;
     @Mock
     private PolicyViolationRepository policyViolationRepository;
@@ -80,6 +88,16 @@ class ExpenseLineItemServiceImplTest {
     private ApprovalAssignmentRepository approvalAssignmentRepository;
     @Mock
     private DelegationService delegationService;
+    @Mock
+    private ExpenseSplitService expenseSplitService;
+    @Mock
+    private com.expense_management_service.repository.TaxCodeRepository taxCodeRepository;
+    @Mock
+    private com.expense_management_service.service.ExpenseCategoryTaxMappingService taxMappingService;
+    @Mock
+    private com.expense_management_service.repository.SystemConfigurationRepository systemConfigurationRepository;
+    @Mock
+    private com.expense_management_service.service.TaxAuditService taxAuditService;
 
     private ExpenseLineItemServiceImpl expenseLineItemService;
 
@@ -97,8 +115,11 @@ class ExpenseLineItemServiceImplTest {
         expenseLineItemService = new ExpenseLineItemServiceImpl(
                 expenseLineItemRepository, expenseReportRepository, expenseCategoryRepository, currencyRepository,
                 costCenterRepository, projectCacheRepository, exchangeRateService, currentUserService,
+                pmsClient,
                 new ExpenseLineItemMapper(), policyEvaluator, policyViolationRepository, new PolicyViolationMapper(),
-                approvalAssignmentRepository, delegationService);
+                approvalAssignmentRepository, delegationService, expenseSplitService,
+                new TaxSnapshotServiceImpl(new TaxCalculationServiceImpl(taxCodeRepository, taxMappingService, systemConfigurationRepository),
+                        expenseLineItemRepository, taxAuditService, new TaxValidationServiceImpl(systemConfigurationRepository), currencyRepository));
         ReflectionTestUtils.setField(expenseLineItemService, "baseCurrencyCode", "INR");
 
         reportId = UUID.randomUUID();
@@ -114,7 +135,7 @@ class ExpenseLineItemServiceImplTest {
     }
 
     private CurrentUser employeeCaller() {
-        return new CurrentUser(UUID.randomUUID(), employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
+        return new CurrentUser(UUID.randomUUID(), null, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
     }
 
     private ExpenseCategory activeCategory(String code) {
@@ -157,6 +178,164 @@ class ExpenseLineItemServiceImplTest {
         assertThat(response.costCenterId()).isNull();
         verify(costCenterRepository, never()).findById(any());
         verify(projectCacheRepository, never()).findById(any());
+    }
+
+    @Test
+    void create_savesLineItem_withZeroPmsCalls_whenNotClientBillable() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        expenseLineItemService.create(reportId, validRequest());
+
+        verifyNoInteractions(pmsClient);
+    }
+
+    // --- Epic 8: client-billable project assignment + PMS client resolution (no RMS) ----------
+
+    private ExpenseLineItemRequest billableRequest(UUID projectId) {
+        return new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Uber", "Client meeting",
+                new BigDecimal("100.00"), currencyId, null, null, projectId, true);
+    }
+
+    private ProjectCache projectCache(UUID projectId, Long pmsProjectId, String code) {
+        return ProjectCache.builder().projectId(projectId).pmsProjectId(pmsProjectId)
+                .projectCode(code).projectName(code + " name").status("ACTIVE").build();
+    }
+
+    private PmsProjectSummaryResponse pmsSummary(Long pmsProjectId, String key) {
+        return new PmsProjectSummaryResponse(pmsProjectId, key, key + " name", null, "ACTIVE");
+    }
+
+    private PmsProjectDetailResponse pmsDetail(Long pmsProjectId, UUID clientId) {
+        return new PmsProjectDetailResponse(pmsProjectId, "PK-" + pmsProjectId, "Project " + pmsProjectId,
+                null, "ACTIVE", clientId, 42L, null, null, null);
+    }
+
+    @Test
+    void create_persistsPmsClientId_whenProjectIsAssigned() {
+        UUID projectId = UUID.randomUUID();
+        UUID clientId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, clientId)));
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, billableRequest(projectId));
+
+        assertThat(response.resolvedClientId()).isEqualTo(clientId);
+        // Client name comes from RMS, which is no longer called — only PMS's clientId is stored.
+        assertThat(response.resolvedClientName()).isNull();
+    }
+
+    @Test
+    void create_resolvesCorrectClient_whenEmployeeHasMultipleProjectsAcrossDifferentClients() {
+        UUID projectId = UUID.randomUUID();
+        UUID selectedClientId = UUID.randomUUID();
+        UUID otherClientId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        // Employee is assigned to two projects belonging to two different clients; ALPHA (501) is selected.
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA"), pmsSummary(777L, "BETA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, selectedClientId)));
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, billableRequest(projectId));
+
+        assertThat(response.resolvedClientId()).isEqualTo(selectedClientId);
+        verify(pmsClient, never()).getProject(777L);
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenProjectNotAssignedInPms() {
+        UUID projectId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        // Employee's assigned list does not include project 501.
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(999L, "OTHER")));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(projectId)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("not currently assigned");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenNoProjectSelectedForBillableExpense() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(null)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("A project must be selected");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenPmsProjectHasNoClientId() {
+        UUID projectId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, null)));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(projectId)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("no client associated");
+
+    }
+
+    @Test
+    void update_reResolvesProjectAndClient_onCorrection() {
+        UUID lineItemId = UUID.randomUUID();
+        UUID projectId = UUID.randomUUID();
+        UUID clientId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+        ExpenseLineItem existing = ExpenseLineItem.builder().lineItemId(lineItemId).report(draftReport)
+                .category(activeCategory("TRAVEL")).amount(new BigDecimal("50")).currency(currency).build();
+
+        stubOwnerAndReport();
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId)).thenReturn(Optional.of(existing));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, clientId)));
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.update(reportId, lineItemId, billableRequest(projectId));
+
+        assertThat(response.resolvedClientId()).isEqualTo(clientId);
+        assertThat(response.projectId()).isEqualTo(projectId);
     }
 
     @Test
@@ -297,7 +476,7 @@ class ExpenseLineItemServiceImplTest {
     void getAllForReport_returnsItems_forApExecutive_onSomeoneElsesReport() {
         draftReport.setEmployeeId("someone-else");
         when(currentUserService.getCurrentUser()).thenReturn(
-                new CurrentUser(UUID.randomUUID(), "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+                new CurrentUser(UUID.randomUUID(), null, "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
         when(expenseLineItemRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
 
@@ -308,7 +487,7 @@ class ExpenseLineItemServiceImplTest {
     void getAllForReport_returnsItems_forFinanceExecutive_onSomeoneElsesReport() {
         draftReport.setEmployeeId("someone-else");
         when(currentUserService.getCurrentUser()).thenReturn(
-                new CurrentUser(UUID.randomUUID(), "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+                new CurrentUser(UUID.randomUUID(), null, "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
         when(expenseLineItemRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
 
@@ -599,6 +778,36 @@ class ExpenseLineItemServiceImplTest {
         assertThat(response.exchangeRate()).isEqualByComparingTo("95.969290");
         assertThat(response.baseAmount()).isEqualByComparingTo("9596.9290");
         assertThat(response.baseCurrencyCode()).isEqualTo("INR");
+    }
+
+    @Test
+    void create_derivesBaseTaxValues_forAnEnteredTaxWithoutATaxCode() {
+        reportDisplayCurrencyDifferentFromBase();
+        UUID usdId = UUID.randomUUID();
+        Currency usd = Currency.builder().currencyId(usdId).currencyCode("USD").status("ACTIVE").build();
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(usdId)).thenReturn(Optional.of(usd));
+        when(exchangeRateService.getHistoricalRate(eq(usdId), eq(currencyId), any()))
+                .thenReturn(new ExchangeRateResponse(UUID.randomUUID(), usdId, "USD", currencyId, "INR",
+                        new BigDecimal("95.969290"), LocalDate.now().minusDays(1), "SCHEDULED_REFRESH", null, null, null));
+        org.mockito.ArgumentCaptor<ExpenseLineItem> saved = org.mockito.ArgumentCaptor.forClass(ExpenseLineItem.class);
+        when(expenseLineItemRepository.save(saved.capture())).thenAnswer(inv -> inv.getArgument(0));
+
+        expenseLineItemService.create(reportId, new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Hotel",
+                "desc", new BigDecimal("100.00"), usdId, new BigDecimal("10.00"), null, null, false));
+
+        ExpenseLineItem line = saved.getValue();
+        // base tax = round(10.00 x 95.969290) to INR paise; base net makes up the rest of base amount exactly.
+        assertThat(line.getBaseTaxAmount()).isEqualByComparingTo("959.69");
+        assertThat(line.getBaseNetAmount()).isEqualByComparingTo("8637.2390");
+        assertThat(line.getBaseNetAmount().add(line.getBaseTaxAmount())).isEqualByComparingTo(line.getBaseAmount());
+        // The category has no tax code mapped, so the entered tax stands, flagged for configuration.
+        assertThat(line.getTaxSource()).isEqualTo(com.expense_management_service.enums.TaxSource.EMPLOYEE_OVERRIDE);
+        assertThat(line.getTaxValidationStatus()).isEqualTo(com.expense_management_service.enums.TaxValidationStatus.CONFIGURATION_MISSING);
+        assertThat(line.getRecoverableTaxAmount()).isEqualByComparingTo("0");
+        assertThat(line.getTaxCodeId()).isNull();
     }
 
     @Test

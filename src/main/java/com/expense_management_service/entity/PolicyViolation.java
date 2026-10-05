@@ -115,6 +115,27 @@ public class PolicyViolation {
     @Column(name = "justified_at")
     private LocalDateTime justifiedAt;
 
+    /** Who added {@link #justification} — the employee (or an Admin acting on their behalf) via {@code PolicyViolationServiceImpl.justify()}. Nullable: pre-existing violations recorded before this field was added have no value here. */
+    @Column(name = "justified_by", length = 255)
+    private String justifiedBy;
+
+    /**
+     * A SEPARATE, approver-side authorization — distinct from the employee's own {@link
+     * #justification} above. Recorded via {@code PolicyViolationServiceImpl.approveException()} by
+     * whoever is an active approver (or delegate) for the report's current ACTIVE approval-level
+     * instance, never the report owner. One-time: once set, a second attempt is rejected rather than
+     * silently overwritten — see that method's javadoc.
+     */
+    @Lob
+    @Column(name = "approver_justification")
+    private String approverJustification;
+
+    @Column(name = "approver_justified_by", length = 255)
+    private String approverJustifiedBy;
+
+    @Column(name = "approver_justified_at")
+    private LocalDateTime approverJustifiedAt;
+
     @Column(name = "detected_at")
     private LocalDateTime detectedAt;
 

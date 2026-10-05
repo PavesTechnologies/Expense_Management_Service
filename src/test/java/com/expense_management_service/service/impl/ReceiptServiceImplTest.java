@@ -89,7 +89,7 @@ class ReceiptServiceImplTest {
     }
 
     private CurrentUser employeeCaller() {
-        return new CurrentUser(UUID.randomUUID(), employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
+        return new CurrentUser(UUID.randomUUID(), null, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
     }
 
     private MockMultipartFile pdfFile() {
@@ -174,6 +174,45 @@ class ReceiptServiceImplTest {
                 .hasMessage("db down");
 
         verify(storageService).delete(anyString());
+    }
+
+    @Test
+    void upload_setsFileHash_andFlagsAdvisoryDuplicate_whenSameBytesAlreadyUploadedByAnotherReceipt() {
+        stubOwnerAndReport();
+        UUID existingReceiptId = UUID.randomUUID();
+        when(receiptRepository.saveAndFlush(any(Receipt.class))).thenAnswer(inv -> {
+            Receipt saved = inv.getArgument(0);
+            saved.setReceiptId(UUID.randomUUID());
+            return saved;
+        });
+        // Same bytes as pdfFile() below - findByFileHash must be stubbed against whatever hash
+        // ReceiptServiceImpl actually computes, so match on any non-null hash instead of a literal.
+        when(receiptRepository.findByFileHash(anyString())).thenAnswer(inv -> {
+            Receipt other = Receipt.builder().receiptId(existingReceiptId).report(draftReport).employeeId("5100099")
+                    .fileHash(inv.getArgument(0)).build();
+            return List.of(other);
+        });
+
+        ReceiptResponse response = receiptService.upload(reportId, pdfFile());
+
+        assertThat(response.possibleDuplicateFileReuse()).isTrue();
+        assertThat(response.duplicateOfReceiptId()).isEqualTo(existingReceiptId);
+    }
+
+    @Test
+    void upload_doesNotFlagDuplicate_whenNoOtherReceiptSharesTheHash() {
+        stubOwnerAndReport();
+        when(receiptRepository.saveAndFlush(any(Receipt.class))).thenAnswer(inv -> {
+            Receipt saved = inv.getArgument(0);
+            saved.setReceiptId(UUID.randomUUID());
+            return saved;
+        });
+        when(receiptRepository.findByFileHash(anyString())).thenReturn(List.of());
+
+        ReceiptResponse response = receiptService.upload(reportId, pdfFile());
+
+        assertThat(response.possibleDuplicateFileReuse()).isFalse();
+        assertThat(response.duplicateOfReceiptId()).isNull();
     }
 
     @Test
@@ -516,7 +555,7 @@ class ReceiptServiceImplTest {
     void getAllForReport_returnsMetadata_forApExecutive_onSomeoneElsesReport() {
         draftReport.setEmployeeId("someone-else");
         when(currentUserService.getCurrentUser()).thenReturn(
-                new CurrentUser(UUID.randomUUID(), "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+                new CurrentUser(UUID.randomUUID(), null, "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
         when(receiptRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
 
@@ -527,7 +566,7 @@ class ReceiptServiceImplTest {
     void getAllForReport_returnsMetadata_forFinanceExecutive_onSomeoneElsesReport() {
         draftReport.setEmployeeId("someone-else");
         when(currentUserService.getCurrentUser()).thenReturn(
-                new CurrentUser(UUID.randomUUID(), "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+                new CurrentUser(UUID.randomUUID(), null, "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
         when(receiptRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
 
@@ -633,7 +672,7 @@ class ReceiptServiceImplTest {
         Receipt receipt = receiptOnReport().receiptId(receiptId).objectKey("receipts/key").build();
         String approverEmployeeId = "manager456";
 
-        CurrentUser managerCaller = new CurrentUser(UUID.randomUUID(), approverEmployeeId, "mgr@example.com", "Manager", List.of("GENERAL"), List.of());
+        CurrentUser managerCaller = new CurrentUser(UUID.randomUUID(), null, approverEmployeeId, "mgr@example.com", "Manager", List.of("GENERAL"), List.of());
         when(currentUserService.getCurrentUser()).thenReturn(managerCaller);
         when(receiptRepository.findById(receiptId)).thenReturn(Optional.of(receipt));
         

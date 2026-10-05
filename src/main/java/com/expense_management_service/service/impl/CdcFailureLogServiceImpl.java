@@ -4,6 +4,10 @@ import com.expense_management_service.common.exception.ResourceNotFoundException
 import com.expense_management_service.entity.CdcFailureLog;
 import com.expense_management_service.repository.CdcFailureLogRepository;
 import com.expense_management_service.service.CdcFailureLogService;
+import com.expense_management_service.enums.NotificationCategory;
+import com.expense_management_service.repository.NotificationRepository;
+import com.expense_management_service.service.NotificationDraft;
+import com.expense_management_service.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -24,9 +28,12 @@ public class CdcFailureLogServiceImpl implements CdcFailureLogService {
     private static final String STATUS_RETRYING = "RETRYING";
     private static final String STATUS_RESOLVED = "RESOLVED";
     private static final String STATUS_EXHAUSTED = "EXHAUSTED";
+    private static final String EVENT_CDC_FAILED = "CDC_SYNC_FAILED";
     private static final int DEFAULT_MAX_RETRIES = 3;
 
     private final CdcFailureLogRepository cdcFailureLogRepository;
+    private final NotificationService notificationService;
+    private final NotificationRepository notificationRepository;
 
     @Override
     public CdcFailureLog logFailure(String sourceTopic, String employeeId, String employeeUuid, String operation,
@@ -50,7 +57,30 @@ public class CdcFailureLogServiceImpl implements CdcFailureLogService {
         CdcFailureLog saved = cdcFailureLogRepository.save(failure);
         log.error("Recorded CDC failure {} for topic {} (employeeUuid={}, type={}): {}",
                 saved.getFailureId(), sourceTopic, employeeUuid, failureType, errorMessage);
+        alertAdmins(saved);
         return saved;
+    }
+
+    /** At most one admin alert per hour - failures tend to arrive in bursts. Never fails the caller. */
+    private void alertAdmins(CdcFailureLog failure) {
+        try {
+            if (notificationRepository.existsByRecipientRoleAndEventTypeAndSentAtAfter(
+                    NotificationService.ROLE_ADMIN, EVENT_CDC_FAILED, LocalDateTime.now().minusHours(1))) {
+                return;
+            }
+            notificationService.notifyRole(NotificationService.ROLE_ADMIN, NotificationDraft.builder()
+                    .category(NotificationCategory.FAILED)
+                    .eventType(EVENT_CDC_FAILED)
+                    .title("Employee data sync failed")
+                    .message("A " + failure.getFailureType() + " error occurred processing " + failure.getSourceTopic()
+                            + (failure.getEmployeeId() != null ? " for employee " + failure.getEmployeeId() : "")
+                            + ". It will be retried automatically; check the CDC failure log if it keeps happening.")
+                    .actorName("System")
+                    .statusLabel("Retry pending")
+                    .build());
+        } catch (Exception ex) {
+            log.warn("Could not raise admin alert for CDC failure {}", failure.getFailureId(), ex);
+        }
     }
 
     @Override

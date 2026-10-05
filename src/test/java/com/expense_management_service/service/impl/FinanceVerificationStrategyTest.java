@@ -106,4 +106,27 @@ class FinanceVerificationStrategyTest {
         assertThat(openQuery.getStatus()).isEqualTo(FinanceVerificationStrategy.QUERY_STATUS_RESOLVED);
         assertThat(openQuery.getResolvedAt()).isNotNull();
     }
+
+    @Test
+    void reopenReviewsForRevisedTax_reopensOnlyVerifiedLinesWhoseTaxChangedAfterVerification() {
+        java.time.LocalDateTime verifiedAt = java.time.LocalDateTime.of(2026, 9, 1, 10, 0);
+        ExpenseLineItem revised = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).taxRevisedAt(verifiedAt.plusDays(1)).build();
+        ExpenseLineItem untouched = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).taxRevisedAt(verifiedAt.minusDays(1)).build();
+        ExpenseLineItem neverRevised = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build();
+        var r1 = com.expense_management_service.entity.FinanceVerificationReview.builder().lineItem(revised)
+                .status(com.expense_management_service.enums.FinanceVerificationStatus.VERIFIED).actionedAt(verifiedAt).build();
+        var r2 = com.expense_management_service.entity.FinanceVerificationReview.builder().lineItem(untouched)
+                .status(com.expense_management_service.enums.FinanceVerificationStatus.VERIFIED).actionedAt(verifiedAt).build();
+        var r3 = com.expense_management_service.entity.FinanceVerificationReview.builder().lineItem(neverRevised)
+                .status(com.expense_management_service.enums.FinanceVerificationStatus.VERIFIED).actionedAt(verifiedAt).build();
+        when(financeVerificationReviewRepository.findByLevelInstance_InstanceIdAndStatus(instance.getInstanceId(),
+                com.expense_management_service.enums.FinanceVerificationStatus.VERIFIED)).thenReturn(List.of(r1, r2, r3));
+
+        List<ExpenseLineItem> reopened = strategy.reopenReviewsForRevisedTax(instance);
+
+        assertThat(reopened).containsExactly(revised);
+        assertThat(r1.getStatus()).isEqualTo(com.expense_management_service.enums.FinanceVerificationStatus.PENDING);
+        assertThat(r2.getStatus()).isEqualTo(com.expense_management_service.enums.FinanceVerificationStatus.VERIFIED);
+        assertThat(r3.getStatus()).isEqualTo(com.expense_management_service.enums.FinanceVerificationStatus.VERIFIED);
+    }
 }

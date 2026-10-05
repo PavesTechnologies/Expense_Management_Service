@@ -58,6 +58,19 @@ public class ReceiptOcr {
     @Column(name = "tax_amount", precision = 19, scale = 4)
     private BigDecimal taxAmount;
 
+    /** Detected tax components as JSON text, e.g. [{"code":"CGST","amount":900.00}]. Evidence only - never joined. */
+    @Lob
+    @Column(name = "tax_components", columnDefinition = "LONGTEXT")
+    private String taxComponents;
+
+    /** Supplier GSTIN printed on the receipt, if detected. */
+    @Column(name = "supplier_gstin", length = 15)
+    private String supplierGstin;
+
+    /** Confidence (0-1) of the extracted tax amount. */
+    @Column(name = "tax_confidence", precision = 5, scale = 4)
+    private BigDecimal taxConfidence;
+
     @Column(name = "payment_method", length = 50)
     private String paymentMethod;
 

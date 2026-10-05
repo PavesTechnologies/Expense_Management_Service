@@ -8,10 +8,15 @@ import java.util.UUID;
  * UMS-issued JWT for the current request.
  * <p>
  * {@code uuid} is {@code obs_user_uuid} — the identifier XMS persists on every
- * audit/workflow column ({@code created_by_uuid}, {@code approved_by_uuid}, etc.),
- * never the numeric {@code user_id} claim.
+ * audit/workflow column ({@code created_by_uuid}, {@code approved_by_uuid}, etc.).
+ * {@code umsUserId} is the separate, numeric {@code user_id} claim — XMS never persists it
+ * anywhere; it exists only to call out to systems (PMS) whose own APIs are keyed by it (see
+ * {@code EmployeeProjectServiceImpl}). It may be {@code null} if the calling JWT doesn't carry
+ * the claim (e.g. in a test token) — callers needing it should use {@link
+ * CurrentUserService#getUmsUserId()}, which fails loudly instead of silently propagating null.
  *
  * @param uuid        stable UMS identity UUID ({@code obs_user_uuid} claim)
+ * @param umsUserId   numeric UMS user id ({@code user_id} claim), nullable
  * @param employeeId  employee id ({@code employee_id} claim)
  * @param email       user email ({@code email} claim)
  * @param name        display name ({@code name} claim)
@@ -20,6 +25,7 @@ import java.util.UUID;
  */
 public record CurrentUser(
         UUID uuid,
+        Long umsUserId,
         String employeeId,
         String email,
         String name,

@@ -29,7 +29,9 @@ class CdcFailureLogServiceImplTest {
 
     @BeforeEach
     void setUp() {
-        cdcFailureLogService = new CdcFailureLogServiceImpl(cdcFailureLogRepository);
+        cdcFailureLogService = new CdcFailureLogServiceImpl(cdcFailureLogRepository,
+                org.mockito.Mockito.mock(com.expense_management_service.service.NotificationService.class),
+                org.mockito.Mockito.mock(com.expense_management_service.repository.NotificationRepository.class));
     }
 
     @Test

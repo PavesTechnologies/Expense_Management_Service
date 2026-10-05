@@ -4,24 +4,20 @@ import com.expense_management_service.common.CriteriaPatternEvaluator;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.entity.ApprovalFlow;
 import com.expense_management_service.entity.ApprovalFlowCriterion;
-import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.enums.CriterionOperator;
 import com.expense_management_service.repository.ApprovalFlowRepository;
-import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.EmployeeCacheRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.ApprovalFlowResolutionService;
-import com.expense_management_service.service.ExchangeRateService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -41,15 +37,14 @@ public class DefaultApprovalFlowResolutionServiceImpl implements ApprovalFlowRes
 
     private final ApprovalFlowRepository approvalFlowRepository;
     private final EmployeeCacheRepository employeeCacheRepository;
-    private final CurrencyRepository currencyRepository;
-    private final ExchangeRateService exchangeRateService;
-
-    @Value("${exchange.rate.base-currency}")
-    private String baseCurrencyCode;
+    private final PolicyViolationRepository policyViolationRepository;
 
     @Override
     public ApprovalFlow resolveMatchingFlow(ExpenseReport report) {
-        BigDecimal baseCurrencyAmount = convertToBaseCurrency(report);
+        // ExpenseReport.totalAmount is already in the base currency (recalculated from line items'
+        // baseAmount in ExpenseLineItemServiceImpl.recalculateReportTotal), so it is used as-is -
+        // converting it again from the report's own currency double-converts any non-base report.
+        BigDecimal baseCurrencyAmount = report.getTotalAmount() != null ? report.getTotalAmount() : BigDecimal.ZERO;
 
         for (ApprovalFlow flow : approvalFlowRepository.findByIsCatchAllFalseAndStatusOrderByPriorityAsc(STATUS_ACTIVE)) {
             if (matches(flow, report, baseCurrencyAmount)) {
@@ -83,7 +78,19 @@ public class DefaultApprovalFlowResolutionServiceImpl implements ApprovalFlowRes
             case CATEGORY -> evaluateCategory(criterion, report);
             case DEPARTMENT -> evaluateDepartment(criterion, report);
             case COST_CENTER -> evaluateCostCenter(criterion, report);
+            case HAS_POLICY_VIOLATION -> evaluateHasPolicyViolation(criterion, report);
         };
+    }
+
+    /**
+     * Evaluated fresh at flow-resolution time - by the time {@code resolveMatchingFlow} runs inside
+     * {@code ApprovalWorkflowServiceImpl.submit()}, {@code PolicyEvaluationGateway.evaluate()} has
+     * already recomputed and persisted this cycle's violations, so this always reflects the report as
+     * just submitted, not a stale prior cycle's flags.
+     */
+    private boolean evaluateHasPolicyViolation(ApprovalFlowCriterion criterion, ExpenseReport report) {
+        boolean hasViolation = policyViolationRepository.existsByLineItem_Report_ReportId(report.getReportId());
+        return applyEqualityOperator(criterion.getOperator(), hasViolation);
     }
 
     private boolean evaluateAmount(ApprovalFlowCriterion criterion, BigDecimal baseCurrencyAmount) {
@@ -144,11 +151,4 @@ public class DefaultApprovalFlowResolutionServiceImpl implements ApprovalFlowRes
         return criterionValue != null && criterionValue.equalsIgnoreCase(actualValue);
     }
 
-    private BigDecimal convertToBaseCurrency(ExpenseReport report) {
-        Currency baseCurrency = currencyRepository.findByCurrencyCode(baseCurrencyCode)
-                .orElseThrow(() -> new IllegalStateException(
-                        "Configured base currency '" + baseCurrencyCode + "' does not exist in the Currency master table"));
-        return exchangeRateService.convertAmount(
-                report.getTotalAmount(), report.getCurrency().getCurrencyId(), baseCurrency.getCurrencyId(), LocalDate.now());
-    }
 }

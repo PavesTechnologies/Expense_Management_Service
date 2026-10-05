@@ -7,18 +7,27 @@ import com.expense_management_service.dto.request.ApprovalLevelRequest;
 import com.expense_management_service.dto.request.CatchAllFlowRequest;
 import com.expense_management_service.dto.response.ApprovalFlowResponse;
 import com.expense_management_service.entity.ApprovalFlow;
+import com.expense_management_service.entity.ApprovalLevel;
+import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.enums.ApproverSourceType;
 import com.expense_management_service.enums.CriterionField;
 import com.expense_management_service.enums.CriterionOperator;
 import com.expense_management_service.mapper.ApprovalFlowMapper;
 import com.expense_management_service.repository.ApprovalFlowRepository;
+import com.expense_management_service.repository.AuditLogRepository;
 import com.expense_management_service.service.ApprovalFlowService;
+import com.expense_management_service.enums.NotificationCategory;
+import com.expense_management_service.security.CurrentUserService;
+import com.expense_management_service.service.NotificationDraft;
+import com.expense_management_service.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -35,6 +44,9 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
 
     private final ApprovalFlowRepository approvalFlowRepository;
     private final ApprovalFlowMapper approvalFlowMapper;
+    private final AuditLogRepository auditLogRepository;
+    private final NotificationService notificationService;
+    private final CurrentUserService currentUserService;
 
     @Override
     public ApprovalFlowResponse create(ApprovalFlowRequest request) {
@@ -48,6 +60,7 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
         }
         ApprovalFlow saved = approvalFlowRepository.save(entity);
         log.info("Created approval flow {} ({}) at priority {}", saved.getFlowId(), saved.getName(), saved.getPriority());
+        alertAdmins("created", saved.getName());
         return approvalFlowMapper.toResponse(saved);
     }
 
@@ -65,6 +78,7 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
         }
         ApprovalFlow saved = approvalFlowRepository.save(entity);
         log.info("Updated approval flow {}", flowId);
+        alertAdmins("updated", saved.getName());
         return approvalFlowMapper.toResponse(saved);
     }
 
@@ -86,6 +100,30 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
         assertNotCatchAll(entity, "delete");
         approvalFlowRepository.delete(entity);
         log.info("Deleted approval flow {}", flowId);
+        alertAdmins("deleted", entity.getName());
+    }
+
+    /**
+     * Tells every admin an approval flow changed - routing for new submissions changes with it.
+     * Stored in this transaction (rolled back with it) and pushed only after commit. Never fails the save.
+     */
+    private void alertAdmins(String action, String flowName) {
+        try {
+            String actor = currentUserService.getCurrentUser().name();
+            notificationService.notifyRole(NotificationService.ROLE_ADMIN, NotificationDraft.builder()
+                    .category(NotificationCategory.INFO)
+                    .eventType("APPROVAL_FLOW_CHANGED")
+                    .title("Approval flow \"" + flowName + "\" " + action)
+                    .message((actor != null ? actor : "An admin") + " " + action + " the approval flow \"" + flowName
+                            + "\". Reports submitted from now on are routed with the new configuration.")
+                    .actorName(actor)
+                    .statusLabel("Configuration changed")
+                    .actionLabel("deleted".equals(action) ? null : "View flows")
+                    .link("/expense-management/approval-rules/flows")
+                    .build());
+        } catch (Exception ex) {
+            log.warn("Could not raise admin alert for approval flow change", ex);
+        }
     }
 
     @Override
@@ -95,7 +133,7 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
     }
 
     @Override
-    public ApprovalFlowResponse updateCatchAllFlow(CatchAllFlowRequest request) {
+    public ApprovalFlowResponse updateCatchAllFlow(CatchAllFlowRequest request, String actingEmployeeId) {
         assertLevelsValid(request.levels());
 
         ApprovalFlow catchAll = approvalFlowRepository.findByIsCatchAllTrue().orElseGet(() -> ApprovalFlow.builder()
@@ -104,10 +142,42 @@ public class ApprovalFlowServiceImpl implements ApprovalFlowService {
                 .status(STATUS_ACTIVE)
                 .build());
 
+        // Snapshotted BEFORE replaceLevels mutates this same list in place (clear() + addAll()) -
+        // this is the only record of what existed before a full-replace save, since there is no
+        // confirmation step and the previous levels are otherwise unrecoverable once orphanRemoval
+        // deletes them.
+        String levelsBefore = summarizeLevels(catchAll.getLevels());
         approvalFlowMapper.replaceLevels(catchAll, request.levels());
         ApprovalFlow saved = approvalFlowRepository.save(catchAll);
-        log.info("Updated catch-all approval flow {}", saved.getFlowId());
+        String levelsAfter = summarizeLevels(saved.getLevels());
+
+        auditLogRepository.save(AuditLog.builder()
+                .entityName("ApprovalFlow")
+                .entityId(saved.getFlowId())
+                .action("CATCH_ALL_LEVELS_UPDATED")
+                .oldValue(levelsBefore)
+                .newValue(levelsAfter)
+                .performedBy(actingEmployeeId)
+                .performedAt(LocalDateTime.now())
+                .build());
+
+        log.info("Updated catch-all approval flow {} by {} - levels: [{}] -> [{}]",
+                saved.getFlowId(), actingEmployeeId, levelsBefore, levelsAfter);
         return approvalFlowMapper.toResponse(saved);
+    }
+
+    /** "L{order}[{levelType}: {sourceType}({sourceReference}), ...]; ..." - a compact, human-readable snapshot for the audit trail, not meant to be machine-parsed back. */
+    private String summarizeLevels(List<ApprovalLevel> levels) {
+        return levels.stream()
+                .sorted(Comparator.comparing(ApprovalLevel::getLevelOrder))
+                .map(level -> "L" + level.getLevelOrder() + "[" + level.getLevelType() + ": "
+                        + level.getApprovers().stream()
+                                .map(a -> a.getSourceReference() != null
+                                        ? a.getSourceType() + "(" + a.getSourceReference() + ")"
+                                        : String.valueOf(a.getSourceType()))
+                                .collect(Collectors.joining(", "))
+                        + "]")
+                .collect(Collectors.joining("; "));
     }
 
     private void assertLevelsValid(List<ApprovalLevelRequest> levels) {

@@ -1,9 +1,12 @@
 package com.expense_management_service.service;
 
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.FinanceHistoryItemResponse;
 import com.expense_management_service.dto.response.FinanceLineItemReviewResponse;
 import com.expense_management_service.dto.response.FinanceQueueItemResponse;
 import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.enums.FinanceVerificationStatus;
+import com.expense_management_service.dto.response.FinancePaymentSummaryResponse;
 import org.springframework.data.domain.Pageable;
 
 import java.util.List;
@@ -23,7 +26,16 @@ import java.util.UUID;
 public interface FinanceVerificationService {
 
     /** Verifies one line item at the report's currently-active FINANCE_VERIFICATION level, after running eligibility checks. */
-    ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId);
+    /** Lines whose tax is flagged (MISMATCH / REQUIRES_FINANCE_REVIEW) need {@code taxChecked} = true (BR-TAX-011). */
+    ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, boolean taxChecked);
+
+    default ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId) {
+        return verifyLineItem(reportId, lineItemId, actingEmployeeId, false);
+    }
+
+    /** FINANCE_EXECUTIVE per-line tax correction while the line awaits Finance verification (BR-TAX-012). */
+    ExpenseReportResponse adjustLineTax(UUID reportId, UUID lineItemId, String actingEmployeeId,
+                                        com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest request);
 
     /**
      * Raises a query on one line item without rejecting the whole report (§Query vs Reject) - the
@@ -37,4 +49,14 @@ public interface FinanceVerificationService {
 
     /** Current-submission-cycle Finance review status + audit snapshot for every line item, across every FINANCE_VERIFICATION level of this cycle. */
     List<FinanceLineItemReviewResponse> getFinanceReviews(UUID reportId, String actingEmployeeId);
+
+    /**
+     * Finance Verification history - reports whose current-cycle Finance level already reached
+     * {@code VERIFIED} (completed) or {@code QUERIED} (at least one line item sent back for
+     * correction). {@code PENDING} is not a valid history status - use {@link #getFinanceQueue}.
+     */
+    PageResponse<FinanceHistoryItemResponse> getFinanceHistory(FinanceVerificationStatus status, Pageable pageable);
+
+    /** How many finance-verified reports are still with AP vs. already paid. */
+    FinancePaymentSummaryResponse getPaymentSummary();
 }

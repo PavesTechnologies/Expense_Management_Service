@@ -7,6 +7,7 @@ import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.ApprovalFlowRequest;
 import com.expense_management_service.dto.request.CatchAllFlowRequest;
 import com.expense_management_service.dto.response.ApprovalFlowResponse;
+import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.ApprovalFlowService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -23,6 +24,7 @@ import org.springframework.web.bind.annotation.*;
 public class ApprovalFlowController {
 
     private final ApprovalFlowService approvalFlowService;
+    private final CurrentUserService currentUserService;
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -58,6 +60,7 @@ public class ApprovalFlowController {
 
     @PutMapping("/catch-all")
     public ApiResponse<ApprovalFlowResponse> updateCatchAllFlow(@Valid @RequestBody CatchAllFlowRequest request) {
-        return ApiResponse.success("Catch-all approval flow updated", approvalFlowService.updateCatchAllFlow(request));
+        return ApiResponse.success("Catch-all approval flow updated",
+                approvalFlowService.updateCatchAllFlow(request, currentUserService.getEmployeeId()));
     }
 }

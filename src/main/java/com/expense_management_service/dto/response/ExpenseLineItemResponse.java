@@ -32,10 +32,15 @@ public record ExpenseLineItemResponse(
         String costCenterName,
         UUID projectId,
         String projectName,
+        /** Frozen at submission time — see {@code ExpenseLineItem.resolvedClientId}'s javadoc. Null for non-billable line items. */
+        UUID resolvedClientId,
+        String resolvedClientName,
         Boolean clientBillable,
         String lineStatus,
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
-        List<PolicyWarningResponse> policyWarnings
+        List<PolicyWarningResponse> policyWarnings,
+        /** The tax snapshot (code, components, source, status); null only for hand-built test fixtures. */
+        LineTaxResponse tax
 ) {
 }

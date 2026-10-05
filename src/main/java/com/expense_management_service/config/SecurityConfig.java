@@ -30,7 +30,12 @@ public class SecurityConfig {
             "/swagger-ui/**",
             "/swagger-ui.html",
             "/actuator/health",
-            "/actuator/info"
+            "/actuator/info",
+            // WebSocket/SockJS handshake (incl. its /info probe). The browser can't send an
+            // Authorization header here, so HTTP-level JWT auth would 401 it; every STOMP CONNECT is
+            // authenticated by ApprovalWebSocketAuthInterceptor instead, and nothing is delivered
+            // to an unauthenticated session.
+            "/xms/ws/**"
     };
 
     private final JwtAuthConverter jwtAuthConverter;

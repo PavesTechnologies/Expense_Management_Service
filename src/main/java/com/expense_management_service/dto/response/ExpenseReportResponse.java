@@ -15,8 +15,11 @@ public record ExpenseReportResponse(
         String costCenterName,
         String reportStatus,
         String paymentRoutingStatus,
+        String invoiceHandoffStatus,
         UUID currencyId,
         String currencyCode,
+        /** Currency of {@code totalAmount} - the organization base currency, not the report's own {@code currencyCode}. */
+        String baseCurrencyCode,
         BigDecimal totalAmount,
         BigDecimal reimbursableAmount,
         LocalDateTime submittedAt,

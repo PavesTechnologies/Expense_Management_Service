@@ -23,6 +23,11 @@ public interface ApprovalFlowService {
     /** Throws {@code ResourceNotFoundException} if Admin hasn't configured the catch-all flow yet. */
     ApprovalFlowResponse getCatchAllFlow();
 
-    /** Upserts the singleton catch-all flow's levels. */
-    ApprovalFlowResponse updateCatchAllFlow(CatchAllFlowRequest request);
+    /**
+     * Upserts the singleton catch-all flow's levels. This is a full replace of the levels
+     * collection (orphanRemoval deletes anything not present in {@code request.levels()}) - every
+     * call is recorded to {@code AuditLog} (old vs. new level summary) so an accidental level
+     * removal is at least traceable after the fact, since there is no confirmation step server-side.
+     */
+    ApprovalFlowResponse updateCatchAllFlow(CatchAllFlowRequest request, String actingEmployeeId);
 }

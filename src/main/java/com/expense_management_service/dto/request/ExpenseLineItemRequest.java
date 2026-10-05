@@ -33,6 +33,17 @@ public record ExpenseLineItemRequest(
         @PositiveOrZero BigDecimal taxAmount,
         UUID costCenterId,
         UUID projectId,
-        Boolean clientBillable
+        Boolean clientBillable,
+        /** Explicit tax code; null = the category's mapping on the expense date. */
+        UUID taxCodeId,
+        /** Why the entered tax differs from the tax code's calculation; required at submission when it does. */
+        @Size(max = 500) String taxOverrideReason
 ) {
+    /** Pre-tax-code shape: {@code taxAmount} is compared with the calculation for the category's code. */
+    public ExpenseLineItemRequest(UUID categoryId, LocalDate expenseDate, String merchantName, String description,
+                                  BigDecimal amount, UUID currencyId, BigDecimal taxAmount, UUID costCenterId,
+                                  UUID projectId, Boolean clientBillable) {
+        this(categoryId, expenseDate, merchantName, description, amount, currencyId, taxAmount, costCenterId,
+                projectId, clientBillable, null, null);
+    }
 }

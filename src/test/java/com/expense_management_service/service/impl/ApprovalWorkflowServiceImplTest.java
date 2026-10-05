@@ -115,7 +115,7 @@ class ApprovalWorkflowServiceImplTest {
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
 
         when(materialChangeEvaluator.computeGlAccountFingerprint(any())).thenReturn("");
         when(policyEvaluationGateway.evaluate(any())).thenReturn(new PolicyDecision(true, List.of()));
@@ -308,8 +308,118 @@ class ApprovalWorkflowServiceImplTest {
         return flow;
     }
 
+    /**
+     * Reporting Manager -> Cost Center Owner -> Finance Executive, three APPROVAL levels, each a
+     * single NAMED_USER entry resolved by {@code sourceReference} - lets a test address each level's
+     * approver independently regardless of whether two levels happen to resolve to the same employee.
+     */
+    private ApprovalFlow managerThenCostCenterOwnerThenFinanceFlow(String managerApproverId, String costCenterOwnerApproverId, String financeApproverId) {
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(flowId).name("Manager then Cost Center Owner then Finance").isCatchAll(false).build();
+        ApprovalLevel managerLevel = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(1)
+                .levelName("Reporting Manager").quorum(LevelQuorum.SEQUENTIAL).levelType(LevelType.APPROVAL).build();
+        managerLevel.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(managerLevel)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference(managerApproverId).build());
+        ApprovalLevel costCenterOwnerLevel = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(2)
+                .levelName("Cost Center Owner").quorum(LevelQuorum.SEQUENTIAL).levelType(LevelType.APPROVAL).build();
+        costCenterOwnerLevel.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(costCenterOwnerLevel)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference(costCenterOwnerApproverId).build());
+        ApprovalLevel financeLevel = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(3)
+                .levelName("Finance Executive").quorum(LevelQuorum.SEQUENTIAL).levelType(LevelType.APPROVAL).build();
+        financeLevel.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(financeLevel)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference(financeApproverId).build());
+        flow.getLevels().add(managerLevel);
+        flow.getLevels().add(costCenterOwnerLevel);
+        flow.getLevels().add(financeLevel);
+        return flow;
+    }
+
+    /** Resolves each level's NAMED_USER entry to its own {@code sourceReference}, so distinct entries can resolve to distinct (or, deliberately, the same) approver id. */
+    private void stubResolverBySourceReference() {
+        when(approverSourceResolver.resolve(any(), any()))
+                .thenAnswer(inv -> Optional.of(((ApprovalLevelApprover) inv.getArgument(0)).getSourceReference()));
+    }
+
+    /**
+     * Bug fix regression: Reporting Manager and Cost Center Owner resolve to the SAME employee.
+     * ChainCorrectnessServiceImpl (real production behavior, simulated here the same way the existing
+     * split-owner test at {@code isEntireInstanceDone_waivesASkippedSplitOwnerAssignmentsOwnSplits}
+     * does) auto-skips the Cost Center Owner level's only assignment as a cross-level duplicate. Before
+     * the fix, activateNextEligibleLevel activated that level anyway, leaving it ACTIVE with zero live
+     * assignments and the chain permanently stuck. It must instead be waived (marked COMPLETED without
+     * ever activating) and the chain must proceed straight to Finance Executive.
+     */
     @Test
-    void financeLevelCompletion_routesToInvoiceHandoff_whenAnyLineItemIsClientBillable() {
+    void reportingManagerApproval_whenCostCenterOwnerIsSamePerson_waivesCostCenterOwnerLevelAndActivatesFinance() {
+        String sharedApproverId = approverId;
+        String financeApproverId = "5100050";
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report))
+                .thenReturn(managerThenCostCenterOwnerThenFinanceFlow(sharedApproverId, sharedApproverId, financeApproverId));
+        stubResolverBySourceReference();
+
+        service.submit(reportId);
+
+        // Simulate what ChainCorrectnessServiceImpl's real duplicate-approver pass would have done at
+        // submission time - the Cost Center Owner level's assignment auto-skipped as a duplicate of
+        // the Reporting Manager's (same employee, resolved at an earlier level).
+        List<ApprovalAssignment> costCenterOwnerLevelAssignments = savedAssignments.stream()
+                .filter(a -> a.getLevelInstance().getLevelOrder() == 2).toList();
+        assertThat(costCenterOwnerLevelAssignments).hasSize(1);
+        costCenterOwnerLevelAssignments.get(0).setStatus(AssignmentStatus.SKIPPED);
+
+        service.reviewLineItem(reportId, lineItemId, sharedApproverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        ApprovalLevelInstance managerInstance = savedInstances.stream().filter(i -> i.getLevelOrder() == 1).findFirst().orElseThrow();
+        ApprovalLevelInstance costCenterOwnerInstance = savedInstances.stream().filter(i -> i.getLevelOrder() == 2).findFirst().orElseThrow();
+        ApprovalLevelInstance financeInstance = savedInstances.stream().filter(i -> i.getLevelOrder() == 3).findFirst().orElseThrow();
+
+        assertThat(managerInstance.getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED);
+        assertThat(costCenterOwnerInstance.getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED);
+        assertThat(financeInstance.getStatus()).isEqualTo(LevelInstanceStatus.ACTIVE);
+        assertThat(assignmentFor(financeApproverId).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL);
+    }
+
+    /**
+     * Baseline/regression companion to the fix above: when Reporting Manager and Cost Center Owner are
+     * DIFFERENT employees (the normal, non-duplicate case), Reporting Manager approval must activate
+     * the Cost Center Owner level and its assignment exactly as before, and Finance Executive must stay
+     * QUEUED until the Cost Center Owner also approves.
+     */
+    @Test
+    void reportingManagerApproval_whenCostCenterOwnerIsDifferentPerson_activatesCostCenterOwnerLevel() {
+        String managerApproverId = approverId;
+        String costCenterOwnerApproverId = "5100077";
+        String financeApproverId = "5100050";
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report))
+                .thenReturn(managerThenCostCenterOwnerThenFinanceFlow(managerApproverId, costCenterOwnerApproverId, financeApproverId));
+        stubResolverBySourceReference();
+
+        service.submit(reportId);
+        service.reviewLineItem(reportId, lineItemId, managerApproverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        ApprovalLevelInstance managerInstance = savedInstances.stream().filter(i -> i.getLevelOrder() == 1).findFirst().orElseThrow();
+        ApprovalLevelInstance costCenterOwnerInstance = savedInstances.stream().filter(i -> i.getLevelOrder() == 2).findFirst().orElseThrow();
+        ApprovalLevelInstance financeInstance = savedInstances.stream().filter(i -> i.getLevelOrder() == 3).findFirst().orElseThrow();
+
+        assertThat(managerInstance.getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED);
+        assertThat(costCenterOwnerInstance.getStatus()).isEqualTo(LevelInstanceStatus.ACTIVE);
+        assertThat(assignmentFor(costCenterOwnerApproverId).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+        assertThat(financeInstance.getStatus()).isEqualTo(LevelInstanceStatus.QUEUED);
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL);
+
+        service.reviewLineItem(reportId, lineItemId, costCenterOwnerApproverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        assertThat(costCenterOwnerInstance.getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED);
+        assertThat(financeInstance.getStatus()).isEqualTo(LevelInstanceStatus.ACTIVE);
+        assertThat(assignmentFor(financeApproverId).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+    }
+
+    @Test
+    void financeLevelCompletion_routesToApAndInvoiceHandoff_whenAnyLineItemIsClientBillable() {
         List<FinanceVerificationReview> financeReviews = new ArrayList<>();
         when(financeVerificationReviewRepository.save(any(FinanceVerificationReview.class))).thenAnswer(inv -> {
             FinanceVerificationReview r = inv.getArgument(0);
@@ -328,7 +438,7 @@ class ApprovalWorkflowServiceImplTest {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
                         new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
 
         ExpenseReport report = draftReport();
         report.getExpenseLineItems().get(0).setClientBillable(true);
@@ -349,8 +459,11 @@ class ApprovalWorkflowServiceImplTest {
         serviceWithFinance.advanceAfterLevelReviewed(reportId, financeInstance.getInstanceId(), "5100050");
 
         assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+        // Client-billable still reimburses the employee via AP; invoicing is a parallel track.
         assertThat(report.getPaymentRoutingStatus())
-                .isEqualTo(com.expense_management_service.enums.PaymentRoutingStatus.INVOICE_HANDOFF_PENDING);
+                .isEqualTo(com.expense_management_service.enums.PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        assertThat(report.getInvoiceHandoffStatus())
+                .isEqualTo(com.expense_management_service.enums.InvoiceHandoffStatus.PENDING);
     }
 
     @Test
@@ -373,7 +486,7 @@ class ApprovalWorkflowServiceImplTest {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
                         new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
-                materialChangeEvaluator);
+                materialChangeEvaluator, org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
 
         ExpenseReport report = draftReport();
         report.setTotalAmount(new java.math.BigDecimal("50000"));
@@ -765,6 +878,7 @@ class ApprovalWorkflowServiceImplTest {
     private static final String HEADER_OWNER = "5100060";
     private static final String OWNER_A = "5100061";
     private static final String OWNER_B = "5100062";
+    private static final String OWNER_C = "5100063";
 
     private CostCenter costCenterOwnedBy(String ownerEmployeeId) {
         return CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("CC-" + ownerEmployeeId)
@@ -802,6 +916,163 @@ class ApprovalWorkflowServiceImplTest {
 
     private ApprovalAssignment assignmentFor(String ownerEmployeeId) {
         return savedAssignments.stream().filter(a -> a.getApproverId().equals(ownerEmployeeId)).findFirst().orElseThrow();
+    }
+
+    /** Disambiguates an approver id that resolves at more than one level (e.g. the Reporting Manager also being a split Cost Center Owner). */
+    private ApprovalAssignment assignmentAtLevel(String approverId, int levelOrder) {
+        return savedAssignments.stream()
+                .filter(a -> a.getApproverId().equals(approverId))
+                .filter(a -> a.getLevelInstance().getLevelOrder() == levelOrder)
+                .findFirst().orElseThrow();
+    }
+
+    private ApprovalLevelInstance instanceAtLevel(int levelOrder) {
+        return savedInstances.stream().filter(i -> i.getLevelOrder() == levelOrder).findFirst().orElseThrow();
+    }
+
+    // ---------------------------------------------------------------------
+    // Duplicate approver + split allocation interaction (production bug: "skip duplicate approvers,
+    // NOT duplicate business requirements" - a Cost Center Owner level with split allocations must
+    // only waive the SPECIFIC split-owner whose employee already appears earlier in the chain, never
+    // the whole level, as long as at least one other split owner's assignment is still actionable.
+    // ---------------------------------------------------------------------
+
+    /**
+     * Reporting Manager (NAMED_USER) -> Cost Center Owner (single COST_CENTER_OWNER entry, split-aware)
+     * -> Finance Executive (NAMED_USER). The Cost Center Owner level's own header entry deliberately
+     * resolves to nothing (see {@link #stubResolverForSplitScenario}) - the report is fully split
+     * across Cost Centers, so Level 2 is made up entirely of per-split-owner assignments.
+     */
+    private ApprovalFlow managerThenSplitCostCenterOwnerThenFinanceFlow(String managerApproverId, String financeApproverId) {
+        ApprovalFlow flow = ApprovalFlow.builder().flowId(flowId).name("Manager then Split Cost Center Owner then Finance").isCatchAll(false).build();
+        ApprovalLevel managerLevel = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(1)
+                .levelName("Reporting Manager").quorum(LevelQuorum.SEQUENTIAL).levelType(LevelType.APPROVAL).build();
+        managerLevel.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(managerLevel)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference(managerApproverId).build());
+        ApprovalLevel costCenterOwnerLevel = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(2)
+                .levelName("Cost Center Owner").quorum(LevelQuorum.ANY_OF).levelType(LevelType.APPROVAL).build();
+        costCenterOwnerLevel.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(costCenterOwnerLevel)
+                .sourceType(ApproverSourceType.COST_CENTER_OWNER).build());
+        ApprovalLevel financeLevel = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(flow).levelOrder(3)
+                .levelName("Finance Executive").quorum(LevelQuorum.SEQUENTIAL).levelType(LevelType.APPROVAL).build();
+        financeLevel.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(financeLevel)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference(financeApproverId).build());
+        flow.getLevels().add(managerLevel);
+        flow.getLevels().add(costCenterOwnerLevel);
+        flow.getLevels().add(financeLevel);
+        return flow;
+    }
+
+    /** NAMED_USER entries resolve to their sourceReference; the level-wide COST_CENTER_OWNER (header) entry resolves to nothing, since these fixtures always fully split the report. */
+    private void stubResolverForSplitScenario() {
+        when(approverSourceResolver.resolve(any(), any())).thenAnswer(inv -> {
+            ApprovalLevelApprover entry = inv.getArgument(0);
+            return entry.getSourceType() == ApproverSourceType.COST_CENTER_OWNER
+                    ? Optional.empty()
+                    : Optional.of(entry.getSourceReference());
+        });
+    }
+
+    /**
+     * End-to-end regression for the exact reported scenario: Reporting Manager A is ALSO one of
+     * several split Cost Center Owners (Engineering). Per §2.6, A's own Engineering assignment must be
+     * auto-skipped as a duplicate of A's Level 1 sign-off - but HR/Owner B and DevOps/Owner C are
+     * DIFFERENT employees with a genuine, distinct business requirement to approve their own
+     * allocation, and must remain fully actionable. The Cost Center Owner level as a whole must
+     * activate (not be waived) because live work remains on it.
+     */
+    @Test
+    void reportingManagerIsOneOfMultipleSplitCostCenterOwners_othersRemainActionableAndLevelCompletesNormally() {
+        String reportingManager = OWNER_A; // also Engineering's Cost Center Owner
+        String financeApproverId = "5100050";
+        ExpenseReport report = draftReport();
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        ExpenseSplit engineering = split(lineItem, costCenterOwnedBy(OWNER_A), "500", 1);
+        ExpenseSplit hr = split(lineItem, costCenterOwnedBy(OWNER_B), "300", 2);
+        ExpenseSplit devOps = split(lineItem, costCenterOwnedBy(OWNER_C), "200", 3);
+        lineItem.setExpenseSplits(List.of(engineering, hr, devOps));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report))
+                .thenReturn(managerThenSplitCostCenterOwnerThenFinanceFlow(reportingManager, financeApproverId));
+        stubResolverForSplitScenario();
+
+        service.submit(reportId);
+        assertThat(instanceAtLevel(1).getStatus()).isEqualTo(LevelInstanceStatus.ACTIVE);
+
+        // Simulate ChainCorrectnessServiceImpl's real duplicate-approver pass, which runs at
+        // submission time - BEFORE Level 1 ever activates, let alone completes. A's Engineering
+        // split-owner assignment is the LATER occurrence of an already-seen employee (A, at Level 1),
+        // so it alone is auto-skipped here - B's and C's assignments are untouched.
+        assignmentAtLevel(OWNER_A, 2).setStatus(AssignmentStatus.SKIPPED);
+
+        // STEP 1: A approves Level 1 (Reporting Manager) - this is what actually triggers Level 2's activation.
+        service.reviewLineItem(reportId, lineItemId, reportingManager, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        // STEP 2/3: Level 2 must activate (not be waived) - HR/B and DevOps/C are still actionable.
+        assertThat(instanceAtLevel(1).getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED);
+        assertThat(instanceAtLevel(2).getStatus()).isEqualTo(LevelInstanceStatus.ACTIVE);
+        assertThat(assignmentAtLevel(OWNER_A, 2).getStatus()).isEqualTo(AssignmentStatus.SKIPPED);
+        assertThat(assignmentAtLevel(OWNER_B, 2).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+        assertThat(assignmentAtLevel(OWNER_C, 2).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+        assertThat(instanceAtLevel(3).getStatus()).isEqualTo(LevelInstanceStatus.QUEUED);
+
+        // STEP 4: B and C approve their own split allocations - A is never asked again.
+        UUID hrSplitId = assignmentAtLevel(OWNER_B, 2).getSplitReviews().get(0).getSplit().getSplitId();
+        UUID devOpsSplitId = assignmentAtLevel(OWNER_C, 2).getSplitReviews().get(0).getSplit().getSplitId();
+        service.reviewSplit(reportId, hrSplitId, OWNER_B, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        service.reviewSplit(reportId, devOpsSplitId, OWNER_C, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        // STEP 5/6: Level 2 completes; Finance Executive activates.
+        assertThat(instanceAtLevel(2).getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED);
+        assertThat(instanceAtLevel(3).getStatus()).isEqualTo(LevelInstanceStatus.ACTIVE);
+        assertThat(assignmentFor(financeApproverId).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+
+        // STEP 7/8: Finance completes; report reaches its final APPROVED status.
+        service.reviewLineItem(reportId, lineItemId, financeApproverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        assertThat(instanceAtLevel(3).getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED);
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+    }
+
+    /**
+     * When EVERY split Cost Center Owner happens to duplicate the Reporting Manager (not just one of
+     * several), the Cost Center Owner level legitimately has zero actionable assignments left and must
+     * be waived entirely - this is the "Case 1/6" (no split, or all-splits-duplicate) counterpart to
+     * the mixed case above, proving the fix's "ALL must be skipped" check (not "ANY") still waives a
+     * level correctly when that really is the outcome for every one of its assignments.
+     */
+    @Test
+    void reportingManagerIsTheOnlySplitCostCenterOwner_wholeLevelIsWaived() {
+        String reportingManager = OWNER_A;
+        String financeApproverId = "5100050";
+        ExpenseReport report = draftReport();
+        ExpenseLineItem lineItem = report.getExpenseLineItems().get(0);
+        // Two splits, same owner - createSplitOwnerAssignments combines them into ONE assignment
+        // (Case 4's existing, intended design), so skipping it skips 100% of Level 2's coverage.
+        ExpenseSplit engineering = split(lineItem, costCenterOwnedBy(OWNER_A), "600", 1);
+        ExpenseSplit alsoEngineering = split(lineItem, costCenterOwnedBy(OWNER_A), "400", 2);
+        lineItem.setExpenseSplits(List.of(engineering, alsoEngineering));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report))
+                .thenReturn(managerThenSplitCostCenterOwnerThenFinanceFlow(reportingManager, financeApproverId));
+        stubResolverForSplitScenario();
+
+        service.submit(reportId);
+        assertThat(assignmentAtLevel(OWNER_A, 2).getSplitReviews()).hasSize(2); // combined into one assignment, per Case 4
+
+        // Simulate ChainCorrectnessServiceImpl's real duplicate-approver pass (runs at submission
+        // time, before Level 1 ever activates) - A is the ONLY Cost Center Owner across both splits,
+        // and already appeared at Level 1, so this single combined assignment is the entirety of
+        // Level 2's coverage and gets skipped.
+        assignmentAtLevel(OWNER_A, 2).setStatus(AssignmentStatus.SKIPPED);
+
+        // A approves Level 1 - this triggers the transition into (and, per the fix, straight past) Level 2.
+        service.reviewLineItem(reportId, lineItemId, reportingManager, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        assertThat(instanceAtLevel(1).getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED);
+        assertThat(instanceAtLevel(2).getStatus()).isEqualTo(LevelInstanceStatus.COMPLETED); // waived, never ACTIVE
+        assertThat(instanceAtLevel(3).getStatus()).isEqualTo(LevelInstanceStatus.ACTIVE);
+        assertThat(assignmentFor(financeApproverId).getStatus()).isEqualTo(AssignmentStatus.ACTIVE);
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL);
     }
 
     @Test

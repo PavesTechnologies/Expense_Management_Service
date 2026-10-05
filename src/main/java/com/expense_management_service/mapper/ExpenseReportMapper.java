@@ -3,10 +3,15 @@ package com.expense_management_service.mapper;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.entity.ExpenseReport;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 @Component
 public class ExpenseReportMapper {
+
+    /** totalAmount is the sum of line baseAmount, so it is labelled with the base currency. */
+    @Value("${exchange.rate.base-currency:}")
+    private String baseCurrencyCode;
 
     /**
      * Only title/businessPurpose come from the request - employeeId, fiscalYear, reportNumber,
@@ -45,8 +50,10 @@ public class ExpenseReportMapper {
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterName() : null,
                 entity.getReportStatus() != null ? entity.getReportStatus().name() : null,
                 entity.getPaymentRoutingStatus() != null ? entity.getPaymentRoutingStatus().name() : null,
+                entity.getInvoiceHandoffStatus() != null ? entity.getInvoiceHandoffStatus().name() : null,
                 entity.getCurrency() != null ? entity.getCurrency().getCurrencyId() : null,
                 entity.getCurrency() != null ? entity.getCurrency().getCurrencyCode() : null,
+                baseCurrencyCode,
                 entity.getTotalAmount(),
                 entity.getReimbursableAmount(),
                 entity.getSubmittedAt(),

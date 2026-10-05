@@ -137,7 +137,7 @@ public class OcrController {
                     + "lineItemId is provided, links the receipt to that existing line item and reports whether "
                     + "its amount differs from what OCR extracted."
     )
-    public ApiResponse<ReceiptConfirmResponse> confirm(@PathVariable UUID receiptId, @RequestBody ReceiptConfirmRequest request) {
+    public ApiResponse<ReceiptConfirmResponse> confirm(@PathVariable UUID receiptId, @Valid @RequestBody ReceiptConfirmRequest request) {
         return ApiResponse.success("Receipt confirmed", receiptConfirmationService.confirm(receiptId, request));
     }
 }

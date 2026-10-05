@@ -60,7 +60,7 @@ class ReceiptControllerTest {
 
     private static ReceiptResponse sampleResponse(UUID reportId, UUID lineItemId, UUID receiptId) {
         return new ReceiptResponse(receiptId, reportId, lineItemId, "taxi-receipt.pdf", "application/pdf",
-                12345, "5100014", LocalDateTime.now(), OcrStatus.UPLOADED);
+                12345, "5100014", LocalDateTime.now(), OcrStatus.UPLOADED, false, null);
     }
 
     @Test

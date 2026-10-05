@@ -10,6 +10,7 @@ import com.expense_management_service.entity.PolicySeverityThreshold;
 import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.enums.PolicyOverageTier;
 import com.expense_management_service.enums.PolicyRuleType;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.PolicyRuleLimitRepository;
 import com.expense_management_service.repository.PolicyRuleRepository;
@@ -29,6 +30,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.UUID;
 
 /**
  * Default {@link PolicyEvaluator}. Follows the {@code ApproverResolver}/{@code
@@ -133,6 +135,7 @@ public class DefaultPolicyEvaluator implements PolicyEvaluator {
             case BACKDATED_DAYS -> checkBackdatedDays(lineItem, rule);
             case MISSING_DESCRIPTION -> checkMissingDescription(lineItem);
             case DUPLICATE_EXPENSE -> checkDuplicateExpense(lineItem);
+            case CROSS_EMPLOYEE_DUPLICATE_EXPENSE -> checkCrossEmployeeDuplicate(lineItem);
             case AMOUNT_LIMIT -> null; // unreachable - handled above, kept only so the switch stays exhaustive
         };
 
@@ -294,18 +297,70 @@ public class DefaultPolicyEvaluator implements PolicyEvaluator {
 
     private String checkDuplicateExpense(ExpenseLineItem lineItem) {
         if (lineItem.getReport() == null || lineItem.getCategory() == null
-                || lineItem.getExpenseDate() == null || lineItem.getAmount() == null) {
+                || lineItem.getExpenseDate() == null || lineItem.getAmount() == null
+                || lineItem.getCurrency() == null) {
             return null;
         }
-        boolean hasDuplicate = expenseLineItemRepository
-                .findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmount(
-                        lineItem.getReport().getEmployeeId(), lineItem.getCategory().getCategoryId(),
-                        lineItem.getExpenseDate(), lineItem.getAmount())
+        String employeeId = lineItem.getReport().getEmployeeId();
+        UUID currencyId = lineItem.getCurrency().getCurrencyId();
+
+        boolean categoryMatch = expenseLineItemRepository
+                .findByReport_EmployeeIdAndCategory_CategoryIdAndExpenseDateAndAmountAndCurrency_CurrencyId(
+                        employeeId, lineItem.getCategory().getCategoryId(),
+                        lineItem.getExpenseDate(), lineItem.getAmount(), currencyId)
                 .stream()
                 .anyMatch(other -> !other.getLineItemId().equals(lineItem.getLineItemId()));
-        if (!hasDuplicate) {
+        if (categoryMatch) {
+            return "Another expense with the same category, date, amount, and currency already exists for this employee";
+        }
+
+        // Additional signal, same employee: a repeat with the same vendor/date/amount/currency but a
+        // DIFFERENT category is still almost certainly the same expense, just miscategorized - the
+        // category-based check above would miss it entirely.
+        String merchantName = lineItem.getMerchantName();
+        if (merchantName != null && !merchantName.isBlank()) {
+            boolean vendorMatch = expenseLineItemRepository
+                    .findByReport_EmployeeIdAndMerchantNameIgnoreCaseAndExpenseDateAndAmountAndCurrency_CurrencyId(
+                            employeeId, merchantName, lineItem.getExpenseDate(), lineItem.getAmount(), currencyId)
+                    .stream()
+                    .anyMatch(other -> !other.getLineItemId().equals(lineItem.getLineItemId()));
+            if (vendorMatch) {
+                return "Another expense with the same vendor, date, amount, and currency already exists for this employee";
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Cross-employee/shared-bill detection: fires when a DIFFERENT employee has already submitted
+     * (non-DRAFT) a line item with the same vendor, date, amount and currency - e.g. two colleagues
+     * each independently claiming the same client dinner. Deliberately not category-scoped, since
+     * two people may categorize a shared bill differently. This only catches an EXACT match (both
+     * claiming the full amount) - it does not detect an uneven split of one bill across employees.
+     * The full detail (including the counterparty's employee id) is stored here; {@code
+     * PolicyViolationServiceImpl} redacts it for non-privileged viewers at read time.
+     */
+    private String checkCrossEmployeeDuplicate(ExpenseLineItem lineItem) {
+        if (lineItem.getReport() == null || lineItem.getExpenseDate() == null || lineItem.getAmount() == null
+                || lineItem.getCurrency() == null) {
             return null;
         }
-        return "Another expense with the same category, date, and amount already exists for this employee";
+        String merchantName = lineItem.getMerchantName();
+        if (merchantName == null || merchantName.isBlank()) {
+            return null;
+        }
+        String employeeId = lineItem.getReport().getEmployeeId();
+        UUID currencyId = lineItem.getCurrency().getCurrencyId();
+
+        return expenseLineItemRepository
+                .findByMerchantNameIgnoreCaseAndExpenseDateAndAmountAndCurrency_CurrencyIdAndReport_EmployeeIdNotAndReport_ReportStatusNot(
+                        merchantName, lineItem.getExpenseDate(), lineItem.getAmount(), currencyId, employeeId, ReportStatus.DRAFT)
+                .stream()
+                .findFirst()
+                .map(other -> "Possible duplicate/shared bill: employee " + other.getReport().getEmployeeId()
+                        + " submitted a matching expense (same vendor, date, amount, and currency) on line item "
+                        + other.getLineItemId() + " - recommend Finance review before approving.")
+                .orElse(null);
     }
 }

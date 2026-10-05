@@ -53,7 +53,8 @@ class PolicyViolationControllerTest {
 
     private static PolicyWarningResponse sampleWarning() {
         return new PolicyWarningResponse(UUID.randomUUID(), PolicyRuleType.MISSING_DESCRIPTION, PolicySeverity.WARN,
-                PolicyEnforcementType.WARN, "This expense is missing a description", null, null, null, null, null, null, null, null);
+                PolicyEnforcementType.WARN, "This expense is missing a description", null, null, null, null, null,
+                null, null, null, null, null, null, null);
     }
 
     @Test
@@ -84,7 +85,8 @@ class PolicyViolationControllerTest {
         UUID violationId = UUID.randomUUID();
         PolicyWarningResponse justified = new PolicyWarningResponse(violationId, PolicyRuleType.MISSING_DESCRIPTION,
                 PolicySeverity.WARN, PolicyEnforcementType.WARN, "This expense is missing a description",
-                null, null, null, null, null, "Client requested no memo", LocalDateTime.now(), null);
+                null, null, null, null, null, "Client requested no memo", LocalDateTime.now(), "5100014",
+                null, null, null, null);
         when(policyViolationService.justify(eq(reportId), eq(lineItemId), eq(violationId), any())).thenReturn(justified);
 
         mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/line-items/{lineItemId}/policy-warnings/{violationId}/justify",

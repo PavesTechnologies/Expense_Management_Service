@@ -56,6 +56,9 @@ class ApprovalWorkflowControllerTest {
     private ApprovalWorkflowService approvalWorkflowService;
 
     @MockitoBean
+    private com.expense_management_service.service.PolicyViolationService policyViolationService;
+
+    @MockitoBean
     private CurrentUserService currentUserService;
 
     @MockitoBean
@@ -63,7 +66,7 @@ class ApprovalWorkflowControllerTest {
 
     private ExpenseReportResponse sampleReportResponse(String status) {
         return new ExpenseReportResponse(UUID.randomUUID(), "EXP-0001", "5100001", "Trip", "Client visit", "2026",
-                UUID.randomUUID(), "Engineering", status, "NONE", UUID.randomUUID(), "INR", new BigDecimal("1000"), new BigDecimal("1000"),
+                UUID.randomUUID(), "Engineering", status, "NONE", "NOT_APPLICABLE", UUID.randomUUID(), "INR", "INR", new BigDecimal("1000"), new BigDecimal("1000"),
                 LocalDateTime.now(), null, null, LocalDateTime.now(), LocalDateTime.now(), 1, true, false, 0, 0);
     }
 
@@ -100,6 +103,33 @@ class ApprovalWorkflowControllerTest {
                         .content(objectMapper.writeValueAsString(new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.reportStatus").value("APPROVED"));
+    }
+
+    @Test
+    void approveException_returns200_andForwardsCurrentUsersEmployeeId() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        UUID lineItemId = UUID.randomUUID();
+        UUID violationId = UUID.randomUUID();
+        when(currentUserService.getEmployeeId()).thenReturn("5100777");
+        com.expense_management_service.dto.response.PolicyWarningResponse response =
+                new com.expense_management_service.dto.response.PolicyWarningResponse(
+                        violationId, com.expense_management_service.enums.PolicyRuleType.AMOUNT_LIMIT,
+                        com.expense_management_service.enums.PolicySeverity.WARN,
+                        com.expense_management_service.enums.PolicyEnforcementType.WARN,
+                        "Amount 500 exceeds the configured limit of 300", new BigDecimal("300"), new BigDecimal("500"),
+                        null, null, "INR", null, null, null,
+                        "No cheaper hotel was available", "5100777", LocalDateTime.now(), 1);
+        when(policyViolationService.approveException(eq(reportId), eq(lineItemId), eq(violationId), eq("5100777"), any()))
+                .thenReturn(response);
+
+        mockMvc.perform(post("/xms/approvals/{reportId}/line-items/{lineItemId}/policy-warnings/{violationId}/approve-exception",
+                        reportId, lineItemId, violationId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsString(
+                                new com.expense_management_service.dto.request.ApproverExceptionRequest("No cheaper hotel was available"))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.approverJustifiedBy").value("5100777"));
     }
 
     @Test

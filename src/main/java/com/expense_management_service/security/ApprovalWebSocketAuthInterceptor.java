@@ -59,6 +59,7 @@ public class ApprovalWebSocketAuthInterceptor implements ChannelInterceptor {
 
         if (StompCommand.SUBSCRIBE.equals(accessor.getCommand())) {
             assertOwnPersonalQueue(accessor);
+            assertTeamNotificationTopic(accessor);
         }
 
         if (StompCommand.SEND.equals(accessor.getCommand())) {
@@ -87,6 +88,27 @@ public class ApprovalWebSocketAuthInterceptor implements ChannelInterceptor {
         } catch (Exception ex) {
             log.warn("WS AUTH FAILED: {}", ex.getMessage());
             throw new IllegalArgumentException("Invalid JWT: " + ex.getMessage());
+        }
+    }
+
+    /**
+     * Team notification feeds ({@code /topic/notifications.<ROLE>}) are only for holders of that
+     * role (SUPER_ADMIN may read the ADMIN feed) - otherwise anyone could watch Finance/AP traffic.
+     */
+    private void assertTeamNotificationTopic(StompHeaderAccessor accessor) {
+        String dest = accessor.getDestination();
+        String prefix = "/topic/notifications.";
+        if (dest == null || !dest.startsWith(prefix)) {
+            return;
+        }
+        String role = dest.substring(prefix.length());
+        Principal principal = accessor.getUser();
+        boolean allowed = principal instanceof UsernamePasswordAuthenticationToken auth && auth.getAuthorities().stream()
+                .map(a -> a.getAuthority())
+                .anyMatch(a -> a.equals("ROLE_" + role) || ("ADMIN".equals(role) && a.equals("ROLE_SUPER_ADMIN")));
+        if (!allowed) {
+            log.warn("WS SUBSCRIBE BLOCKED employeeId={} attempted team feed {}", principal != null ? principal.getName() : null, dest);
+            throw new IllegalArgumentException("Not authorized to subscribe to " + dest);
         }
     }
 

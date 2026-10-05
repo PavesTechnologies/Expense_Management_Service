@@ -57,6 +57,7 @@ class FinanceVerificationServiceImplTest {
     @Mock private ApprovalWorkflowService approvalWorkflowService;
     @Mock private com.expense_management_service.repository.PolicyViolationRepository policyViolationRepository;
     @Mock private com.expense_management_service.repository.VerificationQueryRepository verificationQueryRepository;
+    @Mock private com.expense_management_service.service.TaxSnapshotService taxSnapshotService;
 
     private FinanceVerificationServiceImpl service;
 
@@ -71,7 +72,7 @@ class FinanceVerificationServiceImplTest {
         service = new FinanceVerificationServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, financeVerificationReviewRepository, expenseLineItemRepository,
                 financeVerificationEligibilityChecker, approvalEventPublisher, approvalWorkflowService, factory,
-                verificationQueryRepository);
+                verificationQueryRepository, taxSnapshotService);
 
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
     }
@@ -246,5 +247,147 @@ class FinanceVerificationServiceImplTest {
         assertThat(result).hasSize(1);
         assertThat(result.get(0).status()).isEqualTo(FinanceVerificationStatus.VERIFIED);
         assertThat(result.get(0).levelOrder()).isEqualTo(2);
+    }
+
+    // ---------------------------------------------------------------------
+    // getFinanceHistory
+    // ---------------------------------------------------------------------
+
+    @Test
+    void getFinanceHistory_throws_whenStatusIsPending() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getFinanceHistory(FinanceVerificationStatus.PENDING, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getFinanceHistory_throws_whenStatusIsNull() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getFinanceHistory(null, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getFinanceHistory_verified_usesCompletedInstances_andThelatestReviewAsRepresentative() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        ApprovalLevelInstance instance = ApprovalLevelInstance.builder().instanceId(instanceId)
+                .levelType(LevelType.FINANCE_VERIFICATION).status(LevelInstanceStatus.COMPLETED)
+                .levelOrder(2).report(pendingFinanceReport()).build();
+        when(approvalLevelInstanceRepository.findCompletedFinanceVerificationInstances(pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(instance), pageable, 1));
+        FinanceVerificationReview earlier = FinanceVerificationReview.builder().status(FinanceVerificationStatus.VERIFIED)
+                .actedBy("5100050").actionedAt(java.time.LocalDateTime.now().minusHours(1)).build();
+        FinanceVerificationReview latest = FinanceVerificationReview.builder().status(FinanceVerificationStatus.VERIFIED)
+                .actedBy("5100051").actionedAt(java.time.LocalDateTime.now()).build();
+        when(financeVerificationReviewRepository.findByLevelInstance_InstanceId(instanceId)).thenReturn(List.of(earlier, latest));
+
+        var page = service.getFinanceHistory(FinanceVerificationStatus.VERIFIED, pageable);
+
+        assertThat(page.totalElements()).isEqualTo(1);
+        assertThat(page.content().get(0).reportId()).isEqualTo(reportId);
+        assertThat(page.content().get(0).verificationStatus()).isEqualTo("VERIFIED");
+        assertThat(page.content().get(0).levelOrder()).isEqualTo(2);
+        assertThat(page.content().get(0).actedBy()).isEqualTo("5100051");
+    }
+
+    @Test
+    void getFinanceHistory_queried_picksTheQueriedReviewAsRepresentative_evenWhenALaterVerifiedReviewExists() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        ApprovalLevelInstance instance = ApprovalLevelInstance.builder().instanceId(instanceId)
+                .levelType(LevelType.FINANCE_VERIFICATION).status(LevelInstanceStatus.ACTIVE)
+                .levelOrder(2).report(pendingFinanceReport()).build();
+        when(approvalLevelInstanceRepository.findQueriedFinanceVerificationInstances(pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(instance), pageable, 1));
+        FinanceVerificationReview queried = FinanceVerificationReview.builder().status(FinanceVerificationStatus.QUERIED)
+                .actedBy("5100052").comment("Missing receipt").actionedAt(java.time.LocalDateTime.now().minusMinutes(5)).build();
+        FinanceVerificationReview laterVerified = FinanceVerificationReview.builder().status(FinanceVerificationStatus.VERIFIED)
+                .actedBy("5100050").actionedAt(java.time.LocalDateTime.now()).build();
+        when(financeVerificationReviewRepository.findByLevelInstance_InstanceId(instanceId)).thenReturn(List.of(laterVerified, queried));
+
+        var page = service.getFinanceHistory(FinanceVerificationStatus.QUERIED, pageable);
+
+        assertThat(page.content()).hasSize(1);
+        assertThat(page.content().get(0).verificationStatus()).isEqualTo("QUERIED");
+        assertThat(page.content().get(0).actedBy()).isEqualTo("5100052");
+        assertThat(page.content().get(0).comment()).isEqualTo("Missing receipt");
+    }
+
+    @Test
+    void getPaymentSummary_countsReportsStillWithApAndAlreadyPaid() {
+        when(expenseReportRepository.countByPaymentRoutingStatus(com.expense_management_service.enums.PaymentRoutingStatus.APPROVED_FOR_PAYMENT)).thenReturn(4L);
+        when(expenseReportRepository.countByPaymentRoutingStatus(com.expense_management_service.enums.PaymentRoutingStatus.PAYMENT_COMPLETED)).thenReturn(9L);
+
+        var summary = service.getPaymentSummary();
+
+        org.assertj.core.api.Assertions.assertThat(summary.awaitingPaymentCount()).isEqualTo(4);
+        org.assertj.core.api.Assertions.assertThat(summary.paidCount()).isEqualTo(9);
+    }
+
+    // ---------------------------------------------------------------- tax (Phase 4)
+
+    private ExpenseLineItem flaggedLine(com.expense_management_service.enums.TaxValidationStatus status) {
+        ExpenseLineItem line = lineItem();
+        line.setTaxValidationStatus(status);
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId)).thenReturn(Optional.of(line));
+        return line;
+    }
+
+    @Test
+    void verifyLineItem_flaggedTax_requiresTaxCheckedConfirmation() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.PENDING).build();
+        stubHappyPathUpTo(review);
+        when(financeVerificationEligibilityChecker.check(any())).thenReturn(FinanceEligibilityResult.ok());
+        ExpenseLineItem line = flaggedLine(com.expense_management_service.enums.TaxValidationStatus.REQUIRES_FINANCE_REVIEW);
+
+        assertThatThrownBy(() -> service.verifyLineItem(reportId, lineItemId, approverId))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("confirm you checked it");
+        verify(financeVerificationReviewRepository, never()).save(any());
+
+        service.verifyLineItem(reportId, lineItemId, approverId, true);
+
+        org.assertj.core.api.Assertions.assertThat(review.getStatus()).isEqualTo(FinanceVerificationStatus.VERIFIED);
+        verify(taxSnapshotService).markFinanceVerified(line);
+    }
+
+    @Test
+    void verifyLineItem_matchedTax_needsNoConfirmation() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.PENDING).build();
+        stubHappyPathUpTo(review);
+        when(financeVerificationEligibilityChecker.check(any())).thenReturn(FinanceEligibilityResult.ok());
+        flaggedLine(com.expense_management_service.enums.TaxValidationStatus.MATCHED);
+
+        service.verifyLineItem(reportId, lineItemId, approverId);
+
+        org.assertj.core.api.Assertions.assertThat(review.getStatus()).isEqualTo(FinanceVerificationStatus.VERIFIED);
+    }
+
+    @Test
+    void adjustLineTax_delegatesToTheSnapshot_whileTheLineAwaitsFinance() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.PENDING).build();
+        stubHappyPathUpTo(review);
+        ExpenseLineItem line = flaggedLine(com.expense_management_service.enums.TaxValidationStatus.MISMATCH);
+        UUID igst = UUID.randomUUID();
+
+        service.adjustLineTax(reportId, lineItemId, approverId, new com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest(
+                igst, new java.math.BigDecimal("180.00"), new java.math.BigDecimal("50"), "Inter-state hotel - IGST, not CGST+SGST"));
+
+        verify(taxSnapshotService).financeAdjust(line, igst, new java.math.BigDecimal("180.00"), new java.math.BigDecimal("50"),
+                "Inter-state hotel - IGST, not CGST+SGST");
+        verify(approvalEventPublisher).publish(eq("LINE_ITEM_TAX_ADJUSTED"), eq(reportId), any());
+    }
+
+    @Test
+    void adjustLineTax_isRejected_onceTheLineWasReviewed() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.VERIFIED).build();
+        stubHappyPathUpTo(review);
+
+        assertThatThrownBy(() -> service.adjustLineTax(reportId, lineItemId, approverId,
+                new com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest(null, java.math.BigDecimal.ONE, null, "x")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("already been reviewed");
+        verify(taxSnapshotService, never()).financeAdjust(any(), any(), any(), any(), any());
     }
 }

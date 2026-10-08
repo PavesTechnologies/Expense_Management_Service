@@ -13,5 +13,5 @@ public interface GlobalSearchService {
      * - Finance/Admin: all reports
      * Frontend applies additional filters (date, amount, status, etc.)
      */
-    Page<SearchResultResponse> search(String employeeId, String role, Pageable pageable);
+    Page<SearchResultResponse> search(String query, String employeeId, String roles, Pageable pageable);
 }

@@ -151,7 +151,7 @@ public class GlobalSearchServiceImpl implements GlobalSearchService {
                 si.getStatus(),
                 si.getAmount(),
                 si.getCreatedAt(),
-                si.getCreatedAt()
+                si.getUpdatedAt()
         );
     }
 }

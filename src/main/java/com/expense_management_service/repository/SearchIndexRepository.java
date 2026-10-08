@@ -12,8 +12,11 @@ import java.util.UUID;
 @Repository
 public interface SearchIndexRepository extends JpaRepository<SearchIndex, UUID> {
 
-    // Get all reports by employee (scope: own reports only)
+    // Get all reports by employee (scope: own reports only) - with pagination
     Page<SearchIndex> findByEmployeeId(String employeeId, Pageable pageable);
+
+    // Get all reports by employee - without pagination (for filtering)
+    List<SearchIndex> findByEmployeeId(String employeeId);
 
     // Get all reports (for admin/finance - no scope filter)
     Page<SearchIndex> findAll(Pageable pageable);

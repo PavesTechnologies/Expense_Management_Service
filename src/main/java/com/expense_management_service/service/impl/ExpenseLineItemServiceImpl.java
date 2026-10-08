@@ -19,7 +19,6 @@ import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.entity.ProjectCache;
-import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.integration.pms.PmsClient;
 import com.expense_management_service.integration.pms.dto.PmsProjectDetailResponse;
 import com.expense_management_service.mapper.ExpenseLineItemMapper;
@@ -300,14 +299,14 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
      * Re-runs {@link PolicyEvaluator} against the saved line item and replaces its stored
      * violations, carrying forward any existing justification whose (ruleType, policyRule) still
      * matches a recomputed violation — so a trivial edit doesn't silently erase an employee's
-     * explanation. Wrapped defensively: {@link PolicyEvaluator} already promises never to throw,
+     * explanation (or an approver's recorded exception). Wrapped defensively: {@link PolicyEvaluator} already promises never to throw,
      * but a policy failure here must never fail the line-item save regardless, mirroring
      * {@link #applyCurrencyConversion}'s fail-open posture in this same class.
      * <p>
      * Also applies the BLOCK enforcement step: if any recomputed violation is
-     * {@code enforcementType == BLOCK}, {@code lineItem.lineStatus} is set to {@link #STATUS_BLOCKED};
-     * otherwise it reverts to {@link #STATUS_ACTIVE} (e.g. once a prior blocking violation is
-     * resolved by editing the line item). No exception is thrown for a BLOCK violation — the line
+     * {@code enforcementType == BLOCK} and not yet justified, {@code lineItem.lineStatus} is set to
+     * {@link #STATUS_BLOCKED}; otherwise it reverts to {@link #STATUS_ACTIVE} (once the employee
+     * explains it, or edits the line back within policy). No exception is thrown for a BLOCK violation — the line
      * item and its violations are still persisted, just flagged, so the existing policy-warning
      * endpoint can surface them. {@code lineItem} is already a managed entity by this point (just
      * persisted/merged by the caller), so mutating its status here is enough — Hibernate's dirty
@@ -325,15 +324,17 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
                         .ifPresent(old -> {
                             violation.setJustification(old.getJustification());
                             violation.setJustifiedAt(old.getJustifiedAt());
+                            violation.setJustifiedBy(old.getJustifiedBy());
+                            violation.setApproverJustification(old.getApproverJustification());
+                            violation.setApproverJustifiedBy(old.getApproverJustifiedBy());
+                            violation.setApproverJustifiedAt(old.getApproverJustifiedAt());
                         });
             }
 
             policyViolationRepository.deleteAll(existing);
             policyViolationRepository.saveAll(recomputed);
 
-            boolean hasBlockingViolation = recomputed.stream()
-                    .anyMatch(violation -> violation.getEnforcementType() == PolicyEnforcementType.BLOCK);
-            lineItem.setLineStatus(hasBlockingViolation ? STATUS_BLOCKED : STATUS_ACTIVE);
+            lineItem.setLineStatus(PolicyViolation.blocksLineItem(recomputed) ? STATUS_BLOCKED : STATUS_ACTIVE);
         } catch (Exception ex) {
             log.warn("Policy evaluation failed for line item {} - continuing without policy warnings",
                     lineItem.getLineItemId(), ex);

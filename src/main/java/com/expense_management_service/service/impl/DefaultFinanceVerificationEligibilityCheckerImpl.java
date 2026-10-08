@@ -4,7 +4,6 @@ import com.expense_management_service.entity.ExpenseCategory;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.GlAccount;
 import com.expense_management_service.entity.PolicyViolation;
-import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.FinanceEligibilityResult;
 import com.expense_management_service.service.FinanceVerificationEligibilityChecker;
@@ -43,11 +42,12 @@ public class DefaultFinanceVerificationEligibilityCheckerImpl implements Finance
         return FinanceEligibilityResult.ok();
     }
 
-    /** WARN with no justification, or any BLOCK - the same "unresolved" definition the Finance Verification Phase 0 decision settled on. */
+    /**
+     * Any violation (WARN or BLOCK) the employee has not explained. An explained one is resolved
+     * from the system's side: Finance reads the justification and verifies, queries or rejects -
+     * the same definition {@code InterimPolicyEvaluationGatewayImpl} gates submission on.
+     */
     private boolean isUnresolved(PolicyViolation violation) {
-        if (violation.getEnforcementType() == PolicyEnforcementType.BLOCK) {
-            return true;
-        }
-        return violation.getEnforcementType() == PolicyEnforcementType.WARN && violation.getJustification() == null;
+        return !violation.isJustified();
     }
 }

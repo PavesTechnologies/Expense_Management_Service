@@ -755,6 +755,56 @@ class ApprovalWorkflowServiceImplTest {
     }
 
     @Test
+    void getApprovalStatus_namesTheApproverAndTheirComment_whenSentBackForCorrection() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId,
+                new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "Attach the itemised bill"));
+
+        var status = service.getApprovalStatus(reportId);
+
+        assertThat(status.correctionRequestedBy()).isEqualTo("APPROVER");
+        assertThat(status.correctionRequests()).singleElement().satisfies(r -> {
+            assertThat(r.lineItemId()).isEqualTo(lineItemId);
+            assertThat(r.comment()).isEqualTo("Attach the itemised bill");
+        });
+        assertThat(status.levels()).singleElement().satisfies(level -> {
+            assertThat(level.levelOrder()).isEqualTo(1);
+            assertThat(level.status()).isEqualTo("ACTIVE");
+            assertThat(level.decision()).isEqualTo("NEEDS_CORRECTION");
+            assertThat(level.decidedBy()).isEqualTo(approverId);
+            assertThat(level.decidedAt()).isNotNull();
+            assertThat(level.approverIds()).containsExactly(approverId);
+        });
+    }
+
+    @Test
+    void getApprovalStatus_levelsShowWhoApprovesAndWhoApproved() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId, new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+
+        var status = service.getApprovalStatus(reportId);
+
+        assertThat(status.levels()).singleElement().satisfies(level -> {
+            assertThat(level.status()).isEqualTo("COMPLETED");
+            assertThat(level.decision()).isEqualTo("APPROVED");
+            assertThat(level.decidedBy()).isEqualTo(approverId);
+            assertThat(level.levelType()).isEqualTo("APPROVAL");
+            assertThat(level.roleLabel()).isNotBlank();
+        });
+    }
+
+    @Test
+    void getApprovalStatus_hasNoCorrectionSource_whilePendingApproval() {
+        submittedReport();
+
+        var status = service.getApprovalStatus(reportId);
+
+        assertThat(status.correctionRequestedBy()).isNull();
+        assertThat(status.correctionRequests()).isEmpty();
+        assertThat(status.reportStatus()).isEqualTo("PENDING_APPROVAL");
+    }
+
+    @Test
     void getLineItemReviews_visibleToOwner() {
         submittedReport();
 

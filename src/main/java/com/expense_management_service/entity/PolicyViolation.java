@@ -146,4 +146,19 @@ public class PolicyViolation {
     @UpdateTimestamp
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
+
+    /**
+     * Whether the employee has explained this violation. An explained violation, WARN or BLOCK, no
+     * longer stops submission or Finance verification: the approver and Finance read the
+     * explanation and decide (approve, send back or reject) themselves.
+     */
+    public boolean isJustified() {
+        return justification != null && !justification.isBlank();
+    }
+
+    /** Whether these violations put their line item in BLOCKED status: a BLOCK rule not yet explained. */
+    public static boolean blocksLineItem(java.util.Collection<PolicyViolation> violations) {
+        return violations.stream()
+                .anyMatch(v -> v.getEnforcementType() == PolicyEnforcementType.BLOCK && !v.isJustified());
+    }
 }

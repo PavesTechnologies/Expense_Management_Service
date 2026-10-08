@@ -3,7 +3,6 @@ package com.expense_management_service.service.impl;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.PolicyViolation;
-import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.PolicyDecision;
@@ -26,14 +25,12 @@ import java.util.Objects;
  * policy failure can never block a submission - on top of {@code PolicyEvaluator}'s own
  * never-throw contract.
  * <p>
- * BLOCK enforcement (Finance Verification Phase 0 decision): this previously always returned
- * {@code allowed = true} regardless of {@code PolicyEnforcementType.BLOCK} violations - a genuine
- * gap, not a documented simplification, confirmed by there being zero non-test references to
- * {@code BLOCK} that actually blocked anything. Fixed here because Finance Verification's
- * eligibility checker needs "policy exception resolved" to mean something real: a checker that
- * appears to enforce BLOCK while this gateway silently allowed it through would be worse than not
- * checking at all. Uses {@code PolicyViolationRepository}'s existing "Block gate" fast-path query -
- * that method already existed, unused, suggesting this fix was anticipated but never wired in.
+ * Justification gate: a violation (WARN or BLOCK) stops submission only until the employee has
+ * explained it. Once every violation on the report carries a justification the report goes
+ * through, and the approver and Finance read the explanation and decide - approve, send back or
+ * reject. A BLOCK rule therefore means "must be explained before it can be submitted", not "can
+ * never be submitted"; it is the same definition {@code DefaultFinanceVerificationEligibilityCheckerImpl}
+ * uses for "policy exception resolved".
  */
 @Service
 @RequiredArgsConstructor
@@ -50,9 +47,15 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
         List<PolicyViolation> current = refreshViolations(report);
         var display = current.stream().map(policyViolationMapper::toResponse).toList();
 
-        boolean hasBlockViolation = policyViolationRepository
-                .existsByLineItem_Report_ReportIdAndEnforcementType(report.getReportId(), PolicyEnforcementType.BLOCK);
-        return new PolicyDecision(!hasBlockViolation, display);
+        List<String> unexplained = policyViolationRepository.findByLineItem_Report_ReportId(report.getReportId()).stream()
+                .filter(violation -> !violation.isJustified())
+                .map(violation -> violation.getMessage() != null ? violation.getMessage() : String.valueOf(violation.getRuleType()))
+                .toList();
+        if (unexplained.isEmpty()) {
+            return new PolicyDecision(true, display);
+        }
+        return new PolicyDecision(false, display, "Explain each policy violation before submitting ("
+                + unexplained.size() + " without a justification): " + String.join("; ", unexplained));
     }
 
     private List<PolicyViolation> refreshViolations(ExpenseReport report) {

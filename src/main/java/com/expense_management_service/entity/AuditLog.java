@@ -7,7 +7,9 @@ import lombok.*;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+/** Append-only: Hibernate never issues an UPDATE for a row once it is written. */
 @Entity
+@org.hibernate.annotations.Immutable
 @Table(name = "audit_log")
 @Getter
 @Setter

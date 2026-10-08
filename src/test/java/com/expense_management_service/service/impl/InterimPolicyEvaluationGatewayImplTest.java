@@ -10,7 +10,7 @@ import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.PolicyDecision;
 import com.expense_management_service.service.PolicyEvaluator;
-import org.junit.jupiter.api.Test;      
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -24,9 +24,9 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
 
 /**
- * Covers the Finance Verification Phase 0 fix: BLOCK-severity violations must actually block
- * submission, not just WARN. Before this fix, {@code evaluate()} always returned {@code
- * allowed = true} regardless of {@code PolicyEnforcementType.BLOCK}.
+ * Submission gate: a policy violation (WARN or BLOCK) stops submission only until the employee has
+ * explained it; once every violation is justified the report goes through for the approver and
+ * Finance to decide.
  */
 @ExtendWith(MockitoExtension.class)
 class InterimPolicyEvaluationGatewayImplTest {
@@ -40,6 +40,23 @@ class InterimPolicyEvaluationGatewayImplTest {
         return ExpenseReport.builder().reportId(reportId).expenseLineItems(List.of(items)).build();
     }
 
+    private PolicyViolation violation(PolicyEnforcementType enforcement, String justification) {
+        return PolicyViolation.builder().violationId(UUID.randomUUID())
+                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN)
+                .enforcementType(enforcement).message("Over the Meals limit by INR 700.00")
+                .justification(justification).build();
+    }
+
+    private PolicyDecision evaluateWith(PolicyViolation... violations) {
+        UUID reportId = UUID.randomUUID();
+        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build();
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(violations));
+        when(policyViolationRepository.saveAll(any())).thenReturn(List.of(violations));
+        when(policyViolationRepository.findByLineItem_Report_ReportId(eq(reportId))).thenReturn(List.of(violations));
+        return gateway.evaluate(report(reportId, lineItem));
+    }
+
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
         gateway = new InterimPolicyEvaluationGatewayImpl(policyEvaluator, policyViolationRepository, new PolicyViolationMapper());
@@ -47,59 +64,36 @@ class InterimPolicyEvaluationGatewayImplTest {
 
     @Test
     void evaluate_allowsSubmission_whenNoViolations() {
-        UUID reportId = UUID.randomUUID();
-        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build();
-        ExpenseReport report = report(reportId, lineItem);
-
-        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
-        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
-        when(policyViolationRepository.saveAll(any())).thenReturn(List.of());
-        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(eq(reportId), eq(PolicyEnforcementType.BLOCK)))
-                .thenReturn(false);
-
-        PolicyDecision decision = gateway.evaluate(report);
+        PolicyDecision decision = evaluateWith();
 
         assertThat(decision.allowed()).isTrue();
+        assertThat(decision.blockedReason()).isNull();
     }
 
     @Test
-    void evaluate_allowsSubmission_whenOnlyWarnViolationsExist() {
-        UUID reportId = UUID.randomUUID();
-        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build();
-        ExpenseReport report = report(reportId, lineItem);
-        PolicyViolation warn = PolicyViolation.builder().violationId(UUID.randomUUID())
-                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN)
-                .enforcementType(PolicyEnforcementType.WARN).build();
-
-        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
-        when(policyEvaluator.evaluate(any())).thenReturn(List.of(warn));
-        when(policyViolationRepository.saveAll(any())).thenReturn(List.of(warn));
-        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(eq(reportId), eq(PolicyEnforcementType.BLOCK)))
-                .thenReturn(false);
-
-        PolicyDecision decision = gateway.evaluate(report);
-
-        assertThat(decision.allowed()).isTrue();
-        assertThat(decision.violations()).hasSize(1);
-    }
-
-    @Test
-    void evaluate_blocksSubmission_whenBlockViolationExists() {
-        UUID reportId = UUID.randomUUID();
-        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build();
-        ExpenseReport report = report(reportId, lineItem);
-        PolicyViolation block = PolicyViolation.builder().violationId(UUID.randomUUID())
-                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN)
-                .enforcementType(PolicyEnforcementType.BLOCK).build();
-
-        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
-        when(policyEvaluator.evaluate(any())).thenReturn(List.of(block));
-        when(policyViolationRepository.saveAll(any())).thenReturn(List.of(block));
-        when(policyViolationRepository.existsByLineItem_Report_ReportIdAndEnforcementType(eq(reportId), eq(PolicyEnforcementType.BLOCK)))
-                .thenReturn(true);
-
-        PolicyDecision decision = gateway.evaluate(report);
+    void evaluate_blocksSubmission_whenAViolationIsNotExplained() {
+        PolicyDecision decision = evaluateWith(violation(PolicyEnforcementType.WARN, null));
 
         assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason())
+                .contains("Explain each policy violation")
+                .contains("Over the Meals limit by INR 700.00");
+    }
+
+    @Test
+    void evaluate_blocksSubmission_whenJustificationIsBlank() {
+        PolicyDecision decision = evaluateWith(violation(PolicyEnforcementType.BLOCK, "   "));
+
+        assertThat(decision.allowed()).isFalse();
+    }
+
+    @Test
+    void evaluate_allowsSubmission_whenEveryViolationIsExplained_evenBlock() {
+        PolicyDecision decision = evaluateWith(
+                violation(PolicyEnforcementType.WARN, "Client dinner for four, approved by the account lead"),
+                violation(PolicyEnforcementType.BLOCK, "Only hotel available near the client site that week"));
+
+        assertThat(decision.allowed()).isTrue();
+        assertThat(decision.violations()).hasSize(2);
     }
 }

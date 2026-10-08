@@ -7,8 +7,13 @@ package com.expense_management_service.enums;
  * {@code PolicyRule}/{@code PolicyViolation}.
  */
 public enum PolicyEnforcementType {
-    /** Shown to the employee and approver; never prevents a save or a submission. */
+    /** Shown to the employee and approver; the employee explains it when submitting. Never prevents a save. */
     WARN,
-    /** Prevents {@code ApprovalWorkflowService.submit()} until the employee resolves it. Never blocks a line-item save. */
+    /**
+     * Marks the line item BLOCKED and prevents {@code ApprovalWorkflowService.submit()} until the
+     * employee either brings the line back within policy or explains the violation. An explained
+     * BLOCK violation is submitted, and the approver and Finance decide whether to accept it.
+     * Never blocks a line-item save.
+     */
     BLOCK
 }

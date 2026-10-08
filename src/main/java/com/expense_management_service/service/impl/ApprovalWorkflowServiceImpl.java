@@ -6,7 +6,9 @@ import com.expense_management_service.dto.request.RejectReportRequest;
 import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
 import com.expense_management_service.dto.response.BudgetEncumbranceOutcome;
 import com.expense_management_service.dto.response.BudgetWarning;
+import com.expense_management_service.dto.response.ApprovalLevelProgressResponse;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
+import com.expense_management_service.dto.response.CorrectionRequestResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.LineItemReviewResponse;
 import com.expense_management_service.dto.response.PageResponse;
@@ -168,7 +170,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
         PolicyDecision decision = policyEvaluationGateway.evaluate(report);
         if (!decision.allowed()) {
-            throw new IllegalArgumentException("Submission blocked by Policy Engine: " + decision.violations());
+            throw new IllegalArgumentException(decision.blockedReason() != null ? decision.blockedReason() : "Submission blocked by Policy Engine: " + decision.violations());
         }
 
         ApprovalFlow flow = approvalFlowResolutionService.resolveMatchingFlow(report);
@@ -202,7 +204,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         taxSnapshotService.freezeForSubmission(report);
         PolicyDecision decision = policyEvaluationGateway.evaluate(report);
         if (!decision.allowed()) {
-            throw new IllegalArgumentException("Resubmission blocked by Policy Engine: " + decision.violations());
+            throw new IllegalArgumentException(decision.blockedReason() != null ? decision.blockedReason() : "Resubmission blocked by Policy Engine: " + decision.violations());
         }
 
         int currentCycle = currentSubmissionCycle(report.getReportId());
@@ -751,8 +753,112 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 ? ApprovalFlowMapper.resolveDisplayName(active.getLevelName(), active.getLevelOrder())
                 : null;
 
+        String correctionRequestedBy = null;
+        List<CorrectionRequestResponse> correctionRequests = List.of();
+        if (active != null && (report.getReportStatus() == ReportStatus.AWAITING_CORRECTION
+                || report.getReportStatus() == ReportStatus.QUERY_RAISED)) {
+            // Both an approver's Needs Correction and a Finance query leave the report
+            // AWAITING_CORRECTION; the level still ACTIVE (it resumes in place) says which it was.
+            if (active.getLevelType() == LevelType.FINANCE_VERIFICATION) {
+                correctionRequestedBy = "FINANCE";
+                if (financeVerificationReviewRepository != null) {
+                    correctionRequests = financeVerificationReviewRepository
+                            .findByLevelInstance_InstanceIdAndStatus(active.getInstanceId(), FinanceVerificationStatus.QUERIED).stream()
+                            .map(r -> new CorrectionRequestResponse(r.getLineItem().getLineItemId(), r.getComment(), r.getActedBy(), r.getActionedAt()))
+                            .toList();
+                }
+            } else {
+                correctionRequestedBy = "APPROVER";
+                correctionRequests = approvalLineItemReviewRepository
+                        .findByLevelInstance_InstanceIdAndStatus(active.getInstanceId(), LineItemReviewStatus.NEEDS_CORRECTION).stream()
+                        .map(r -> new CorrectionRequestResponse(r.getLineItem().getLineItemId(), r.getComment(), r.getActedBy(), r.getActionedAt()))
+                        .toList();
+            }
+        }
+
         return new ApprovalStatusResponse(currentLevelOrder, currentLevelName, displayName, instances.size(),
-                isRecallEligible(report), isCancelEligible(report));
+                isRecallEligible(report), isCancelEligible(report), correctionRequestedBy, correctionRequests,
+                report.getReportStatus() != null ? report.getReportStatus().name() : null,
+                levelProgress(report, instances));
+    }
+
+    /** Who approves at each level and who acted, for the Approval Progress view. */
+    private List<ApprovalLevelProgressResponse> levelProgress(ExpenseReport report, List<ApprovalLevelInstance> instances) {
+        boolean rejected = report.getReportStatus() == ReportStatus.REJECTED;
+        // A rejection cancels every open level; the first cancelled one is where it was rejected.
+        Integer rejectedAtLevel = rejected ? instances.stream()
+                .filter(i -> i.getStatus() == LevelInstanceStatus.CANCELLED)
+                .map(ApprovalLevelInstance::getLevelOrder)
+                .findFirst().orElse(null) : null;
+
+        return instances.stream().map(instance -> {
+            List<ApprovalAssignment> assignments = approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId())
+                    .stream()
+                    .filter(a -> a.getStatus() != AssignmentStatus.SUPERSEDED)
+                    .sorted(Comparator.comparing(ApprovalAssignment::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
+                    .toList();
+            List<String> approverIds = assignments.stream().map(ApprovalAssignment::getApproverId).distinct().toList();
+
+            String decidedBy = null;
+            LocalDateTime decidedAt = null;
+            String decision = null;
+            if (instance.getLevelType() == LevelType.FINANCE_VERIFICATION) {
+                if (financeVerificationReviewRepository != null) {
+                    var latest = financeVerificationReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                            .filter(r -> r.getActionedAt() != null)
+                            .max(Comparator.comparing(FinanceVerificationReview::getActionedAt));
+                    if (latest.isPresent()) {
+                        decidedBy = latest.get().getActedBy();
+                        decidedAt = latest.get().getActionedAt();
+                        decision = latest.get().getStatus() != null ? latest.get().getStatus().name() : null;
+                    }
+                }
+            } else {
+                var latest = approvalLineItemReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                        .filter(r -> r.getStatus() != LineItemReviewStatus.PENDING && r.getActionedAt() != null)
+                        .max(Comparator.comparing(ApprovalLineItemReview::getActionedAt));
+                if (latest.isPresent()) {
+                    // actedBy is recorded only for a delegate; otherwise it was the assigned approver.
+                    decidedBy = latest.get().getActedBy() != null ? latest.get().getActedBy()
+                            : approverIds.size() == 1 ? approverIds.get(0) : null;
+                    decidedAt = latest.get().getActionedAt();
+                    decision = latest.get().getStatus().name();
+                }
+            }
+            if (rejectedAtLevel != null && rejectedAtLevel.equals(instance.getLevelOrder())) {
+                decidedBy = report.getRejectedBy();
+                decidedAt = report.getRejectedAt();
+                decision = "REJECTED";
+            }
+
+            return new ApprovalLevelProgressResponse(
+                    instance.getLevelOrder(),
+                    ApprovalFlowMapper.resolveDisplayName(instance.getLevelName(), instance.getLevelOrder()),
+                    roleLabel(instance, assignments),
+                    instance.getLevelType() != null ? instance.getLevelType().name() : null,
+                    instance.getStatus() != null ? instance.getStatus().name() : null,
+                    approverIds, decidedBy, decidedAt, decision);
+        }).toList();
+    }
+
+    private static String roleLabel(ApprovalLevelInstance instance, List<ApprovalAssignment> assignments) {
+        if (instance.getLevelType() == LevelType.FINANCE_VERIFICATION) {
+            return "Finance Verification";
+        }
+        List<String> roles = assignments.stream()
+                .map(ApprovalAssignment::getSourceType)
+                .filter(java.util.Objects::nonNull)
+                .map(source -> switch (source) {
+                    case REPORTING_MANAGER -> "Reporting Manager";
+                    case COST_CENTER_OWNER -> "Cost Center Owner";
+                    case DEPARTMENT_OWNER -> "Department Head";
+                    case FINANCE_OWNER -> "Finance Owner";
+                    case NAMED_USER -> "Named Approver";
+                })
+                .distinct()
+                .toList();
+        return roles.isEmpty() ? ApprovalFlowMapper.resolveDisplayName(instance.getLevelName(), instance.getLevelOrder())
+                : String.join(" / ", roles);
     }
 
     @Override

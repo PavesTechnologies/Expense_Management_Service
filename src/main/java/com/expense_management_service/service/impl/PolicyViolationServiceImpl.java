@@ -45,6 +45,10 @@ import java.util.UUID;
 @Slf4j
 public class PolicyViolationServiceImpl implements PolicyViolationService {
 
+    /** Mirrors {@code ExpenseLineItemServiceImpl}'s line-item status values. */
+    private static final String LINE_STATUS_ACTIVE = "ACTIVE";
+    private static final String LINE_STATUS_BLOCKED = "BLOCKED";
+
     private final ExpenseReportRepository expenseReportRepository;
     private final ExpenseLineItemRepository expenseLineItemRepository;
     private final PolicyViolationRepository policyViolationRepository;
@@ -107,12 +111,16 @@ public class PolicyViolationServiceImpl implements PolicyViolationService {
                         "PolicyViolation not found with id: " + violationId + " on line item " + lineItemId));
 
         String actingEmployeeId = currentUserService.getCurrentUser().employeeId();
+        String previousJustification = violation.getJustification();
         violation.setJustification(request.justification().trim());
         violation.setJustifiedAt(LocalDateTime.now());
         violation.setJustifiedBy(actingEmployeeId);
         PolicyViolation saved = policyViolationRepository.save(violation);
+        // An explained BLOCK violation no longer holds the line item back: the approver decides.
+        lineItem.setLineStatus(PolicyViolation.blocksLineItem(
+                policyViolationRepository.findByLineItem_LineItemId(lineItem.getLineItemId())) ? LINE_STATUS_BLOCKED : LINE_STATUS_ACTIVE);
         auditLogService.create(new AuditLogRequest("PolicyViolation", violationId, "JUSTIFIED",
-                null, request.justification().trim(), actingEmployeeId));
+                previousJustification, request.justification().trim(), actingEmployeeId));
         log.info("Justification recorded for policy violation {} on line item {}", violationId, lineItemId);
         return policyViolationMapper.toResponse(saved);
     }

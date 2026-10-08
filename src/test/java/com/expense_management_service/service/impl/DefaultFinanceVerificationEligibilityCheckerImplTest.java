@@ -79,12 +79,23 @@ class DefaultFinanceVerificationEligibilityCheckerImplTest {
     }
 
     @Test
-    void check_blocksVerify_whenBlockViolationExists_evenWithoutJustification() {
+    void check_blocksVerify_whenBlockViolationHasNoJustification() {
         ExpenseLineItem lineItem = lineItem(false, false, "ACTIVE");
         PolicyViolation block = PolicyViolation.builder().enforcementType(PolicyEnforcementType.BLOCK).build();
         when(policyViolationRepository.findByLineItem_LineItemId(lineItem.getLineItemId())).thenReturn(List.of(block));
 
         assertThat(checker.check(lineItem).eligible()).isFalse();
+    }
+
+    @Test
+    void check_allowsVerify_whenBlockViolationHasJustification() {
+        // Explained BLOCK violations reach Finance, who decide on the justification themselves.
+        ExpenseLineItem lineItem = lineItem(false, false, "ACTIVE");
+        PolicyViolation block = PolicyViolation.builder().enforcementType(PolicyEnforcementType.BLOCK)
+                .justification("Only hotel available near the client site that week").build();
+        when(policyViolationRepository.findByLineItem_LineItemId(lineItem.getLineItemId())).thenReturn(List.of(block));
+
+        assertThat(checker.check(lineItem).eligible()).isTrue();
     }
 
     @Test

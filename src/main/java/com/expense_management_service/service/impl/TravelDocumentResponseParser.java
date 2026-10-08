@@ -1,5 +1,6 @@
 package com.expense_management_service.service.impl;
 
+import com.expense_management_service.dto.ocr.FieldConfidence;
 import com.expense_management_service.dto.ocr.ParsedReceiptData;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -71,8 +72,16 @@ public class TravelDocumentResponseParser {
                 .findFirst()
                 .orElse(null);
 
+        // A travel document is the only reason this parser runs; the extractor still decides, so a
+        // misrouted hotel or restaurant form isn't forced into TRAVEL.
+        String formText = fields.entrySet().stream()
+                .map(entry -> entry.getKey() + " " + entry.getValue())
+                .collect(Collectors.joining("\n"));
+        String category = new CategoryExtractor().extractFromText(operatorName, formText).value();
+
         return new ParsedReceiptData(operatorName, ticketNumber, travelDate, travelTime, currencyCode,
-                null, null, fareAmount, paymentMethod, BigDecimal.ZERO);
+                null, null, fareAmount, paymentMethod, BigDecimal.ZERO,
+                FieldConfidence.empty(), List.of(), null, category);
     }
 
     private String firstValueByLabelKeywords(Map<String, String> fields, List<String> keywords) {

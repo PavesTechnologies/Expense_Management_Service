@@ -20,6 +20,9 @@ import java.util.UUID;
  *                          separately, never just one component
  * @param totalAmount       the receipt's grand total (named {@code amount} internally on the entity)
  * @param paymentMethod     e.g. "UPI", "Cash", "Credit Card" — {@code null} if not found on the receipt
+ * @param categoryId        suggested active expense category, resolved from the receipt's text
+ *                          (e.g. a bus ticket → the Travel category); {@code null} if nothing fits
+ * @param categoryName      name of that suggested category, {@code null} with it
  * @param possibleDuplicate computed at read time — true if an existing completed OCR result for
  *                          the same employee shares merchant, amount, currency, and date.
  *                          Advisory only; never blocks anything, the employee decides.
@@ -39,6 +42,8 @@ public record ReceiptOcrResponse(
         BigDecimal taxAmount,
         BigDecimal totalAmount,
         String paymentMethod,
+        UUID categoryId,
+        String categoryName,
         BigDecimal confidenceScore,
         OcrStatus processingStatus,
         String failureReason,

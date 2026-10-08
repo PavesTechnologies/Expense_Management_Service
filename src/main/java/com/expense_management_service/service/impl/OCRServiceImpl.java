@@ -61,6 +61,7 @@ public class OCRServiceImpl implements OCRService {
     private final CurrentUserService currentUserService;
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
     private final DelegationService delegationService;
+    private final OcrCategoryResolver ocrCategoryResolver;
 
     /** Confidence (0.00-1.00) below which extracted fields are flagged for employee review. */
     @Value("${ocr.confidence-threshold:0.80}")
@@ -119,6 +120,7 @@ public class OCRServiceImpl implements OCRService {
             attempt.setSupplierGstin(parsed.supplierGstin());
             attempt.setAmount(parsed.totalAmount());
             attempt.setPaymentMethod(parsed.paymentMethod());
+            attempt.setCategory(parsed.category());
             attempt.setConfidenceScore(parsed.confidenceScore());
             attempt.setProcessingStatus(OcrStatus.OCR_COMPLETED);
             attempt.setProcessedAt(LocalDateTime.now());
@@ -270,7 +272,8 @@ public class OCRServiceImpl implements OCRService {
 
     private ReceiptOcrResponse toResponseWithFlags(ReceiptOcr ocr, Receipt receipt) {
         boolean possibleDuplicate = ocr.getProcessingStatus() == OcrStatus.OCR_COMPLETED && isDuplicate(ocr, receipt);
-        return receiptOcrMapper.toResponse(ocr, possibleDuplicate, isReviewRecommended(ocr));
+        return receiptOcrMapper.toResponse(ocr, possibleDuplicate, isReviewRecommended(ocr),
+                ocrCategoryResolver.resolve(ocr.getCategory()));
     }
 
     /**

@@ -74,6 +74,9 @@ public class ReceiptOcr {
     @Column(name = "payment_method", length = 50)
     private String paymentMethod;
 
+    @Column(name = "category", length = 32)
+    private String category;
+
     @Column(name = "confidence_score", precision = 5, scale = 4)
     private BigDecimal confidenceScore;
 

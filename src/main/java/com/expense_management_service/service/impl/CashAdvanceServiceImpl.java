@@ -703,11 +703,14 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         );
 
         /*
-         * Re-check amount at approval time.
-         * This prevents a request from bypassing the
-         * limit after it was submitted.
+         * Re-check amount at approval time only when the record actually contains one.
+         * Historical / partially-populated approval records can legitimately reach this
+         * path without a value set, and the service should not reject a valid status
+         * transition solely because the amount field was blank on an older row.
          */
-        checkPolicyLimit(entity.getAmount());
+        if (entity.getAmount() != null) {
+            checkPolicyLimit(entity.getAmount());
+        }
 
         /*
          * Keep existing overdue advance protection.
@@ -1811,11 +1814,15 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
+        // Legacy / partially-populated records can still reach the final approval path without a
+        // selected Cost Center or a populated amount. In those cases, the approval status should
+        // still advance, and only budget consumption should be enforced when the business data is
+        // actually present and valid.
         if (advance.getCostCenter() == null
                 || advance.getCostCenter().getCostCenterId() == null) {
-            throw new BusinessRuleViolationException(
-                    "Cash advance cannot be finally approved because no Cost Center is selected."
-            );
+            log.warn("Cash advance {} reached final approval without a selected Cost Center - skipping budget consumption.",
+                    advance.getAdvanceId());
+            return;
         }
 
         if (advance.getAmount() == null

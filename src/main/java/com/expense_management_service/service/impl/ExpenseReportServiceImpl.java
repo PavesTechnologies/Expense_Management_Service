@@ -11,6 +11,7 @@ import com.expense_management_service.common.exception.EmployeeInactiveException
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseReport;
@@ -31,6 +32,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -109,13 +111,26 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<ExpenseReportResponse> getAll() {
+    public PageResponse<ExpenseReportResponse> getAll(Pageable pageable) {
+        return getAll(pageable, null, null);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<ExpenseReportResponse> getAll(Pageable pageable, String status, String search) {
         // Always the caller's own reports, whatever their role — this backs "My Expenses" and the
         // personal dashboard. Reviewers (Admin/Manager/Finance/AP) reach other employees' reports
         // through their own queues, and can still open one directly via getById/assertViewable.
         CurrentUser caller = currentUserService.getCurrentUser();
-        return expenseReportRepository.findByEmployeeId(caller.employeeId()).stream()
-                .map(this::toResponse).toList();
+        String normalizedQuery = sanitizeSearch(search);
+        ReportStatus normalizedStatus = parseStatus(status);
+
+        var page = (normalizedStatus == null && normalizedQuery == null)
+                ? expenseReportRepository.findByEmployeeId(caller.employeeId(), pageable)
+                : expenseReportRepository.searchByEmployeeIdAndStatusAndQuery(
+                        caller.employeeId(), normalizedStatus, normalizedQuery, pageable);
+
+        return PageResponse.of(page.map(this::toResponse));
     }
 
     @Override
@@ -128,6 +143,25 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         }
         expenseReportRepository.delete(entity);
         log.info("Deleted Draft expense report {}", reportId);
+    }
+
+    private ReportStatus parseStatus(String status) {
+        if (status == null || status.isBlank() || "ALL".equalsIgnoreCase(status)) {
+            return null;
+        }
+        try {
+            return ReportStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    private String sanitizeSearch(String search) {
+        if (search == null) {
+            return null;
+        }
+        String sanitized = search.trim();
+        return sanitized.isEmpty() ? null : sanitized;
     }
 
     private void assertEmployeeActive(CurrentUser caller) {

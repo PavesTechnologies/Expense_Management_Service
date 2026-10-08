@@ -6,6 +6,7 @@ import com.expense_management_service.common.exception.EmployeeInactiveException
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseReport;
@@ -24,6 +25,8 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -35,6 +38,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -210,6 +214,26 @@ class ExpenseReportServiceImplTest {
     }
 
     @Test
+    void getAll_filtersByStatusAndSearchText_forMyExpenses() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        PageImpl<ExpenseReport> page = new PageImpl<>(List.of(ExpenseReport.builder()
+                .reportId(UUID.randomUUID())
+                .employeeId(employeeId)
+                .reportStatus(ReportStatus.DRAFT)
+                .title("Client visit - Q1")
+                .reportNumber("EXP-2026-ABCD1234")
+                .build()), PageRequest.of(0, 10), 1);
+        when(expenseReportRepository.searchByEmployeeIdAndStatusAndQuery(eq(employeeId), eq(ReportStatus.DRAFT), eq("visit"), any()))
+                .thenReturn(page);
+
+        PageResponse<ExpenseReportResponse> response = expenseReportService.getAll(PageRequest.of(0, 10), "DRAFT", "visit");
+
+        assertThat(response.content()).hasSize(1);
+        assertThat(response.content().get(0).reportStatus()).isEqualTo("DRAFT");
+        assertThat(response.content().get(0).reportNumber()).startsWith("EXP-");
+    }
+
+    @Test
     void update_throwsAccessDenied_whenCallerIsNotOwner() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
@@ -328,11 +352,13 @@ class ExpenseReportServiceImplTest {
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         ExpenseReport own = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId(employeeId)
                 .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build();
-        when(expenseReportRepository.findByEmployeeId(employeeId)).thenReturn(List.of(own));
+        when(expenseReportRepository.findByEmployeeId(eq(employeeId), any()))
+            .thenReturn(new PageImpl<>(List.of(own)));
 
-        List<ExpenseReportResponse> result = expenseReportService.getAll();
+        var result = expenseReportService.getAll(PageRequest.of(0, 10));
 
-        assertThat(result).hasSize(1);
+        assertThat(result.content()).hasSize(1);
+        verify(expenseReportRepository).findByEmployeeId(eq(employeeId), any());
         verify(expenseReportRepository, never()).findAll();
     }
 
@@ -341,13 +367,14 @@ class ExpenseReportServiceImplTest {
         for (String role : List.of("ADMIN", "FINANCE", "MANAGER")) {
             CurrentUser privileged = new CurrentUser(UUID.randomUUID(), null, "user-" + role, "u@example.com", role, List.of(role), List.of());
             when(currentUserService.getCurrentUser()).thenReturn(privileged);
-            when(expenseReportRepository.findByEmployeeId("user-" + role)).thenReturn(List.of(
-                    ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("user-" + role).reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build()));
+                when(expenseReportRepository.findByEmployeeId(eq("user-" + role), any())).thenReturn(
+                    new PageImpl<>(List.of(ExpenseReport.builder().reportId(UUID.randomUUID())
+                        .employeeId("user-" + role).reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build())));
 
-            List<ExpenseReportResponse> result = expenseReportService.getAll();
+                var result = expenseReportService.getAll(PageRequest.of(0, 10));
 
-            assertThat(result).hasSize(1);
-            assertThat(result.get(0).employeeId()).isEqualTo("user-" + role);
+                assertThat(result.content()).hasSize(1);
+                assertThat(result.content().get(0).employeeId()).isEqualTo("user-" + role);
         }
         verify(expenseReportRepository, never()).findAll();
     }

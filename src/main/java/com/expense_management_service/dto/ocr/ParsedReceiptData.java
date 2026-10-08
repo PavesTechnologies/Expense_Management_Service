@@ -45,7 +45,9 @@ public record ParsedReceiptData(
         /** Tax components as printed (CGST 900 + SGST 900); empty when the receipt shows a single tax figure. */
         java.util.List<OcrTaxComponent> taxComponents,
         /** Supplier GSTIN printed on the receipt, if found. */
-        String supplierGstin
+        String supplierGstin,
+        /** Auto-extracted expense category (e.g., "TRAVEL", "MEALS"), or {@code null} if not categorized. */
+        String category
 ) {
     /** Shape without tax evidence (parsers that don't read components). */
     public ParsedReceiptData(
@@ -53,7 +55,7 @@ public record ParsedReceiptData(
             BigDecimal subtotal, BigDecimal taxAmount, BigDecimal totalAmount, String paymentMethod,
             BigDecimal confidenceScore, FieldConfidence fieldConfidence) {
         this(merchantName, invoiceNumber, receiptDate, receiptTime, currencyCode, subtotal, taxAmount, totalAmount,
-                paymentMethod, confidenceScore, fieldConfidence, java.util.List.of(), null);
+                paymentMethod, confidenceScore, fieldConfidence, java.util.List.of(), null, null);
     }
 
     /**
@@ -75,6 +77,6 @@ public record ParsedReceiptData(
             BigDecimal confidenceScore
     ) {
         this(merchantName, invoiceNumber, receiptDate, receiptTime, currencyCode,
-                subtotal, taxAmount, totalAmount, paymentMethod, confidenceScore, FieldConfidence.empty());
+                subtotal, taxAmount, totalAmount, paymentMethod, confidenceScore, FieldConfidence.empty(), java.util.List.of(), null, null);
     }
 }

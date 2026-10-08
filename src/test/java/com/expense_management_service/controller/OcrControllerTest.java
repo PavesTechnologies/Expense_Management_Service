@@ -65,7 +65,7 @@ class OcrControllerTest {
     private static ReceiptOcrResponse sampleResponse(UUID receiptId, OcrStatus status) {
         return new ReceiptOcrResponse(UUID.randomUUID(), receiptId, "Acme Taxi", "INV-001",
                 LocalDate.of(2026, 1, 15), null, "USD", new BigDecimal("100.00"), new BigDecimal("23.45"),
-                new BigDecimal("123.45"), "UPI", new BigDecimal("0.90"),
+                new BigDecimal("123.45"), "UPI", null, null, new BigDecimal("0.90"),
                 status, null, LocalDateTime.now(), 850L, "AWS_TEXTRACT", "AnalyzeExpense", false, false);
     }
 

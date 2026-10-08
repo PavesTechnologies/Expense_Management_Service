@@ -1,5 +1,6 @@
 package com.expense_management_service.service.impl;
 
+import com.expense_management_service.dto.ocr.FieldConfidence;
 import com.expense_management_service.dto.ocr.OcrExtractionResult;
 import com.expense_management_service.dto.ocr.ParsedReceiptData;
 import com.expense_management_service.service.OcrDocumentStrategy;
@@ -60,8 +61,11 @@ public class DetectDocumentTextOcrStrategy implements OcrDocumentStrategy {
         log.debug("[OCR] DetectDocumentText fallback extracted {} lines, currency={}, confidence={}",
                 lineBlocks.size(), currencyCode, confidenceScore);
 
+        String category = new CategoryExtractor().extractFromText(null, fullText).value();
+
         ParsedReceiptData data = new ParsedReceiptData(
-                null, null, null, null, currencyCode, null, null, null, null, confidenceScore);
+                null, null, null, null, currencyCode, null, null, null, null, confidenceScore,
+                FieldConfidence.empty(), List.of(), null, category);
         return new OcrExtractionResult(data, true, OCR_VERSION);
     }
 

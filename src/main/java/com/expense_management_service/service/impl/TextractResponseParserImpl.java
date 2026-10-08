@@ -55,12 +55,13 @@ public class TextractResponseParserImpl implements TextractResponseParser {
     private final TaxExtractor taxExtractor = new TaxExtractor();
     private final AmountExtractor amountExtractor = new AmountExtractor();
     private final PaymentMethodExtractor paymentMethodExtractor = new PaymentMethodExtractor();
+    private final CategoryExtractor categoryExtractor = new CategoryExtractor();
 
     @Override
     public ParsedReceiptData parse(AnalyzeExpenseResponse rawResponse) {
         if (rawResponse == null || rawResponse.expenseDocuments() == null || rawResponse.expenseDocuments().isEmpty()) {
             log.warn("Textract returned no expense documents to parse");
-            return new ParsedReceiptData(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO);
+            return new ParsedReceiptData(null, null, null, null, null, null, null, null, null, BigDecimal.ZERO, FieldConfidence.empty(), java.util.List.of(), null, null);
         }
 
         ExpenseDocument document = rawResponse.expenseDocuments().get(0);
@@ -75,19 +76,20 @@ public class TextractResponseParserImpl implements TextractResponseParser {
         ExtractionResult<BigDecimal> totalAmount = amountExtractor.extractTotal(index, subtotal.value(), taxAmount.value());
         ExtractionResult<String> currencyCode = currencyExtractor.extract(index);
         ExtractionResult<String> paymentMethod = paymentMethodExtractor.extract(index);
+        ExtractionResult<String> category = categoryExtractor.extract(index, merchant.value());
 
         FieldConfidence fieldConfidence = new FieldConfidence(
                 merchant.confidence(), receiptDate.confidence(), totalAmount.confidence(),
                 taxAmount.confidence(), currencyCode.confidence());
         BigDecimal overallConfidence = aggregateConfidence(fieldConfidence);
 
-        log.debug("[OCR] Parsed receipt: merchant={}, date={}, total={}, currency={}, overallConfidence={}",
-                merchant.value(), receiptDate.value(), totalAmount.value(), currencyCode.value(), overallConfidence);
+        log.debug("[OCR] Parsed receipt: merchant={}, date={}, total={}, currency={}, category={}, overallConfidence={}",
+                merchant.value(), receiptDate.value(), totalAmount.value(), currencyCode.value(), category.value(), overallConfidence);
 
         return new ParsedReceiptData(
                 merchant.value(), invoiceNumber.value(), receiptDate.value(), receiptTime.value(), currencyCode.value(),
                 subtotal.value(), taxAmount.value(), totalAmount.value(), paymentMethod.value(),
-                overallConfidence, fieldConfidence, taxExtractor.extractComponents(index), taxExtractor.extractGstin(index));
+                overallConfidence, fieldConfidence, taxExtractor.extractComponents(index), taxExtractor.extractGstin(index), category.value());
     }
 
     /**

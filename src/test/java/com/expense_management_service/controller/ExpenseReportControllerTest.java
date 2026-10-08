@@ -3,12 +3,15 @@ package com.expense_management_service.controller;
 import com.expense_management_service.config.SecurityConfig;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.security.JwtAuthConverter;
 import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ExpenseReportService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
@@ -157,12 +160,25 @@ class ExpenseReportControllerTest {
 
     @Test
     void getAll_returns200_forEmployee() throws Exception {
-        when(expenseReportService.getAll()).thenReturn(List.of(sampleResponse(UUID.randomUUID(), "DRAFT")));
+        when(expenseReportService.getAll(any(), any(), any())).thenReturn(PageResponse.of(
+            new PageImpl<>(List.of(sampleResponse(UUID.randomUUID(), "DRAFT")), PageRequest.of(0, 10), 1)));
 
-        mockMvc.perform(get("/xms/employee/expense-reports")
+        mockMvc.perform(get("/xms/employee/expense-reports?page=1&limit=10&sortBy=createdAt&sortDirection=desc")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].reportStatus").value("DRAFT"));
+            .andExpect(jsonPath("$.data.content[0].reportStatus").value("DRAFT"))
+            .andExpect(jsonPath("$.data.totalElements").value(1));
+    }
+
+    @Test
+    void getHistory_returns200_forEmployee() throws Exception {
+        when(expenseReportService.getAll(any(), any(), any())).thenReturn(PageResponse.of(
+            new PageImpl<>(List.of(sampleResponse(UUID.randomUUID(), "APPROVED")), PageRequest.of(0, 10), 1)));
+
+        mockMvc.perform(get("/xms/employee/expense-reports/history")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.content[0].reportStatus").value("APPROVED"));
     }
 
     // ---- delete ----

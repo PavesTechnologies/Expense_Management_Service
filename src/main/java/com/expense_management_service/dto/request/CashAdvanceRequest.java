@@ -12,6 +12,7 @@ public record CashAdvanceRequest(
         @Size(max = 255) String employeeId,
         @NotNull @Positive BigDecimal amount,
         @NotNull UUID currencyId,
+        UUID costCenterId,
         BigDecimal baseAmount,
         String purpose,
         String title,
@@ -31,7 +32,7 @@ public record CashAdvanceRequest(
             LocalDate settlementDueDate,
             BigDecimal outstandingBalance
     ) {
-        this(employeeId, amount, currencyId, baseAmount, purpose, null, null, status, settlementDueDate, settlementDueDate, outstandingBalance);
+        this(employeeId, amount, currencyId, null, baseAmount, purpose, null, null, status, settlementDueDate, settlementDueDate, outstandingBalance);
     }
 
     public CashAdvanceRequest(
@@ -45,7 +46,7 @@ public record CashAdvanceRequest(
             LocalDate neededByDate,
             BigDecimal outstandingBalance
     ) {
-        this(employeeId, amount, currencyId, baseAmount, purpose, null, null, status, settlementDueDate, neededByDate, outstandingBalance);
+        this(employeeId, amount, currencyId, null, baseAmount, purpose, null, null, status, settlementDueDate, neededByDate, outstandingBalance);
     }
 }
 

@@ -630,12 +630,39 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             throw new IllegalArgumentException("Report " + reportId + " has flagged line items and is not eligible for bulk approval");
         }
 
-        for (ApprovalLineItemReview review : pendingReviews) {
-            reviewLineItem(reportId, review.getLineItem().getLineItemId(), actingEmployeeId,
-                    new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+        Set<UUID> reviewedSplitIds = new java.util.HashSet<>();
+
+        boolean canApproveSharedLineItems = approvalAssignmentRepository.findByLevelInstance_InstanceId(activeInstance.getInstanceId()).stream()
+                .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
+                .filter(a -> a.getSplitReviews().isEmpty())
+                .anyMatch(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()));
+
+        if (canApproveSharedLineItems) {
+            for (ApprovalLineItemReview review : pendingReviews) {
+                reviewLineItem(reportId, review.getLineItem().getLineItemId(), actingEmployeeId,
+                        new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+            }
         }
 
-        log.info("Bulk-approved {} line item(s) on report {} by {}", pendingReviews.size(), reportId, actingEmployeeId);
+        for (ApprovalAssignment assignment : approvalAssignmentRepository.findByLevelInstance_InstanceId(activeInstance.getInstanceId()).stream()
+                .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
+                .filter(a -> !a.getSplitReviews().isEmpty())
+                .filter(a -> delegationService.canAct(actingEmployeeId, a.getApproverId()))
+                .toList()) {
+            for (ApprovalSplitReview review : assignment.getSplitReviews()) {
+                if (review.getStatus() != LineItemReviewStatus.PENDING) {
+                    continue;
+                }
+                UUID splitId = review.getSplit().getSplitId();
+                if (review.getSplit().getRemovedAt() != null || !reviewedSplitIds.add(splitId)) {
+                    continue;
+                }
+                reviewSplit(reportId, splitId, actingEmployeeId,
+                        new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null));
+            }
+        }
+
+        log.info("Bulk-approved report {} by {} (shared line items + own split approvals)", reportId, actingEmployeeId);
         return toResponse(findReport(reportId));
     }
 

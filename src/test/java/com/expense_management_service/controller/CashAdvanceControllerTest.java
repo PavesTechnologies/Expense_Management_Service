@@ -80,9 +80,11 @@ class CashAdvanceControllerTest {
 
     @Test
     void getMyApprovals_returns200_forManager() throws Exception {
+        UUID costCenterId = UUID.randomUUID();
         CashAdvanceResponse response = new CashAdvanceResponse(
-                advanceId, "EMP001", "MGR001", new BigDecimal("500.00"), currencyId, "USD",
+                advanceId, "EMP001", "MGR001", costCenterId, "Travel", new BigDecimal("500.00"), currencyId, "USD",
                 new BigDecimal("500.00"), "Travel", "SUBMITTED", LocalDate.now().plusDays(7),
+                LocalDate.now().plusDays(7),
                 new BigDecimal("500.00"), null, null
         );
 
@@ -94,7 +96,9 @@ class CashAdvanceControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data[0].advanceId").value(advanceId.toString()))
-                .andExpect(jsonPath("$.data[0].status").value("SUBMITTED"));
+                .andExpect(jsonPath("$.data[0].status").value("SUBMITTED"))
+                .andExpect(jsonPath("$.data[0].costCenterId").value(costCenterId.toString()))
+                .andExpect(jsonPath("$.data[0].costCenterName").value("Travel"));
     }
 
     @Test

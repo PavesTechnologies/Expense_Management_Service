@@ -72,6 +72,8 @@ public class CashAdvanceMapper {
                 entity.getAdvanceId(),
                 entity.getEmployeeId(),
                 entity.getManagerId(),
+                entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterId() : null,
+                entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterName() : null,
                 entity.getAmount(),
                 entity.getCurrency() != null ? entity.getCurrency().getCurrencyId() : null,
                 entity.getCurrency() != null ? entity.getCurrency().getCurrencyCode() : null,

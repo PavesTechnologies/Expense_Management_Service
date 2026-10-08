@@ -19,8 +19,22 @@ public interface ExpenseReportRepository extends JpaRepository<ExpenseReport, UU
     Optional<ExpenseReport> findByEmployeeIdAndFiscalYearAndTitleIgnoreCase(
             String employeeId, String fiscalYear, String title);
 
-    /** Scopes the report list to the requesting Employee's own reports. */
-    List<ExpenseReport> findByEmployeeId(String employeeId);
+        /** Scopes the paginated expense history to the requesting Employee's reports. */
+    Page<ExpenseReport> findByEmployeeId(String employeeId, Pageable pageable);
+
+    @Query("""
+            SELECT r FROM ExpenseReport r
+            WHERE r.employeeId = :employeeId
+              AND (:status IS NULL OR r.reportStatus = :status)
+              AND (:query IS NULL OR :query = ''
+                   OR lower(r.title) LIKE lower(concat('%', :query, '%'))
+                   OR lower(r.reportNumber) LIKE lower(concat('%', :query, '%')))
+            """)
+    Page<ExpenseReport> searchByEmployeeIdAndStatusAndQuery(
+            @Param("employeeId") String employeeId,
+            @Param("status") ReportStatus status,
+            @Param("query") String query,
+            Pageable pageable);
 
     /**
      * Paginated "My History" (§14): a single query rather than a UNION, since both outcome

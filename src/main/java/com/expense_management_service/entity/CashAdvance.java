@@ -36,6 +36,17 @@ public class CashAdvance {
     @Column(name = "manager_id", length = 255)
     private String managerId;
 
+    /*
+     * Cost Center selected for this cash advance.
+     *
+     * The cash advance budget is validated against the
+     * CostCenterBudget belonging to this CostCenter.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "cost_center_id")
+    @ToString.Exclude
+    private CostCenter costCenter;
+
     @Column(name = "amount", precision = 19, scale = 4, nullable = false)
     private BigDecimal amount;
 
@@ -68,15 +79,19 @@ public class CashAdvance {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    @OneToMany(mappedBy = "cashAdvance", cascade = {CascadeType.PERSIST, CascadeType.MERGE})
+    @OneToMany(
+            mappedBy = "cashAdvance",
+            cascade = {CascadeType.PERSIST, CascadeType.MERGE}
+    )
     @Builder.Default
     @ToString.Exclude
     private List<CashAdvanceAdjustment> cashAdvanceAdjustments = new ArrayList<>();
 
-    @OneToMany(mappedBy = "cashAdvance", cascade = {CascadeType.PERSIST, CascadeType.MERGE})
+    @OneToMany(
+            mappedBy = "cashAdvance",
+            cascade = {CascadeType.PERSIST, CascadeType.MERGE}
+    )
     @Builder.Default
     @ToString.Exclude
     private List<CashAdvanceRepayment> repayments = new ArrayList<>();
 }
-
-

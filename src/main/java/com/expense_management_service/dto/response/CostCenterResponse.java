@@ -12,6 +12,14 @@ public record CostCenterResponse(
         String ownerEmployeeId,
         String status,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        Boolean allowUnbudgeted
 ) {
+
+    public CostCenterResponse(UUID costCenterId, String costCenterCode, String costCenterName, UUID departmentUuid,
+                              String description, String ownerEmployeeId, String status,
+                              LocalDateTime createdAt, LocalDateTime updatedAt) {
+        this(costCenterId, costCenterCode, costCenterName, departmentUuid, description, ownerEmployeeId, status,
+                createdAt, updatedAt, null);
+    }
 }

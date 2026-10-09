@@ -41,7 +41,6 @@ import java.time.LocalDate;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 
 import org.springframework.data.domain.Page;
@@ -127,14 +126,15 @@ class CashAdvanceServiceImplTest {
     @Test
     void create_shouldDefaultEmployeeIdAndStatusAndResolveManager() {
         CashAdvanceRequest request = new CashAdvanceRequest(
-                null,
                 new BigDecimal("500.00"),
                 currencyId,
                 null,
+                new BigDecimal("500.00"),
                 "Travel expenses",
                 null,
+                null,
                 LocalDate.now().plusDays(10),
-                null
+                LocalDate.now().plusDays(10)
         );
 
         EmployeeCache employeeCache = EmployeeCache.builder()
@@ -164,27 +164,29 @@ class CashAdvanceServiceImplTest {
     @Test
     void create_shouldRejectTodayOrPastDate() {
         CashAdvanceRequest todayRequest = new CashAdvanceRequest(
-                null,
                 new BigDecimal("500.00"),
                 currencyId,
                 null,
+                new BigDecimal("500.00"),
                 "Travel expenses",
                 null,
+                null,
                 LocalDate.now(),
-                null
+                LocalDate.now()
         );
 
         assertThrows(BusinessRuleViolationException.class, () -> cashAdvanceService.create(todayRequest));
 
         CashAdvanceRequest pastRequest = new CashAdvanceRequest(
-                null,
                 new BigDecimal("500.00"),
                 currencyId,
                 null,
+                new BigDecimal("500.00"),
                 "Travel expenses",
                 null,
+                null,
                 LocalDate.now().minusDays(1),
-                null
+                LocalDate.now().minusDays(1)
         );
 
         assertThrows(BusinessRuleViolationException.class, () -> cashAdvanceService.create(pastRequest));
@@ -462,7 +464,6 @@ class CashAdvanceServiceImplTest {
 
     @Test
     void create_shouldAlwaysDeriveEmployeeIdFromJWT() {
-        String requestEmployeeId = "HACKER";
         CashAdvanceRequest request = new CashAdvanceRequest(
                 new BigDecimal("500.00"),
                 currencyId,

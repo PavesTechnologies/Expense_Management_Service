@@ -175,72 +175,15 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                         ? entity.getStatus().toUpperCase()
                         : "";
 
-        String reqStatusUpper =
-                request.status() != null
-                        ? request.status().toUpperCase().trim()
-                        : "";
-
-        if (List.of(
-                "CLOSED",
-                "SETTLED",
-                "SETTLEMENT_PENDING",
-                "PARTIALLY_SETTLED"
-        ).contains(reqStatusUpper)) {
-
-            if (!isFinanceCaller() && !isAdminCaller()) {
-
-                throw new BusinessRuleViolationException(
-                        "Only Finance Executives can process cash advance settlements"
-                );
-            }
+        // Status and outstandingBalance cannot be updated via request - they're managed server-side
+        // Validate that entity is in DRAFT or SUBMITTED status before allowing updates
+        if (!List.of("DRAFT", "SUBMITTED").contains(currentStatusUpper)) {
+            throw new BusinessRuleViolationException(
+                    "Cannot update cash advance in status: " + entity.getStatus()
+            );
         }
 
-        if (List.of(
-                "CLOSED",
-                "SETTLED"
-        ).contains(reqStatusUpper)) {
-
-            BigDecimal targetBalance =
-                    request.outstandingBalance() != null
-                            ? request.outstandingBalance()
-                            : entity.getOutstandingBalance();
-
-            if (targetBalance != null
-                    && targetBalance.compareTo(BigDecimal.ZERO) > 0) {
-
-                throw new BusinessRuleViolationException(
-                        "Cannot close cash advance when outstanding balance is greater than zero ("
-                                + targetBalance
-                                + ")"
-                );
-            }
-        }
-
-        if (!List.of(
-                "CLOSED",
-                "SETTLEMENT_PENDING",
-                "SETTLED",
-                "PARTIALLY_SETTLED"
-        ).contains(reqStatusUpper)) {
-
-            if ("APPROVED".equalsIgnoreCase(currentStatusUpper)
-                    || "DISBURSED".equalsIgnoreCase(currentStatusUpper)
-                    || "IN_PROGRESS".equalsIgnoreCase(currentStatusUpper)
-                    || "SETTLED".equalsIgnoreCase(currentStatusUpper)
-                    || "CLOSED".equalsIgnoreCase(currentStatusUpper)
-                    || "SUBMITTED".equalsIgnoreCase(currentStatusUpper)
-                    || "PENDING_APPROVAL".equalsIgnoreCase(currentStatusUpper)
-                    || "PENDING_COST_CENTER_APPROVAL".equalsIgnoreCase(currentStatusUpper)
-                    || "PENDING_FINANCE_APPROVAL".equalsIgnoreCase(currentStatusUpper)) {
-
-                throw new BusinessRuleViolationException(
-                        "Cannot update cash advance in status: "
-                                + entity.getStatus()
-                );
-            }
-
-            validateAndExtractFutureDate(request);
-        }
+        validateAndExtractFutureDate(request);
 
         cashAdvanceMapper.updateEntity(entity, request);
 

@@ -1,0 +1,62 @@
+package com.expense_management_service.service;
+
+import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.FinanceHistoryItemResponse;
+import com.expense_management_service.dto.response.FinanceLineItemReviewResponse;
+import com.expense_management_service.dto.response.FinanceQueueItemResponse;
+import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.enums.FinanceVerificationStatus;
+import com.expense_management_service.dto.response.FinancePaymentSummaryResponse;
+import org.springframework.data.domain.Pageable;
+
+import java.util.List;
+import java.util.UUID;
+
+/**
+ * Finance Verification's own action surface - deliberately separate from {@link
+ * ApprovalWorkflowService} (rather than overloading {@code reviewLineItem}) because Finance
+ * actions carry Finance-specific eligibility gating and audit snapshots {@code
+ * ApprovalWorkflowService.reviewLineItem} never needs. Authorization is role+status based (§8):
+ * any {@code FINANCE_EXECUTIVE} may act on any report currently at Finance Verification, not just
+ * whichever approver a {@code FinanceTeamApprover} mapping happens to resolve for that report's
+ * cost center - matching how the AP Payment queue/actions already work. Re-enters {@code
+ * ApprovalWorkflowService.advanceAfterLevelReviewed} for level/report progression once every line
+ * item is VERIFIED, so there is exactly one place that owns SEQUENTIAL/quorum/next-level logic.
+ */
+public interface FinanceVerificationService {
+
+    /** Verifies one line item at the report's currently-active FINANCE_VERIFICATION level, after running eligibility checks. */
+    /** Lines whose tax is flagged (MISMATCH / REQUIRES_FINANCE_REVIEW) need {@code taxChecked} = true (BR-TAX-011). */
+    ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, boolean taxChecked);
+
+    default ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId) {
+        return verifyLineItem(reportId, lineItemId, actingEmployeeId, false);
+    }
+
+    /** FINANCE_EXECUTIVE per-line tax correction while the line awaits Finance verification (BR-TAX-012). */
+    ExpenseReportResponse adjustLineTax(UUID reportId, UUID lineItemId, String actingEmployeeId,
+                                        com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest request);
+
+    /**
+     * Raises a query on one line item without rejecting the whole report (§Query vs Reject) - the
+     * report moves to AWAITING_CORRECTION, every other already-VERIFIED line item at this instance
+     * is left untouched, and the level cannot complete while this query is open.
+     */
+    ExpenseReportResponse queryLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, String reason);
+
+    /** Role+status based "My Finance Queue" (§8) - every report currently PENDING_FINANCE_VERIFICATION, visible to any FINANCE_EXECUTIVE regardless of per-report assignment. */
+    PageResponse<FinanceQueueItemResponse> getFinanceQueue(String actingEmployeeId, Pageable pageable);
+
+    /** Current-submission-cycle Finance review status + audit snapshot for every line item, across every FINANCE_VERIFICATION level of this cycle. */
+    List<FinanceLineItemReviewResponse> getFinanceReviews(UUID reportId, String actingEmployeeId);
+
+    /**
+     * Finance Verification history - reports whose current-cycle Finance level already reached
+     * {@code VERIFIED} (completed) or {@code QUERIED} (at least one line item sent back for
+     * correction). {@code PENDING} is not a valid history status - use {@link #getFinanceQueue}.
+     */
+    PageResponse<FinanceHistoryItemResponse> getFinanceHistory(FinanceVerificationStatus status, Pageable pageable);
+
+    /** How many finance-verified reports are still with AP vs. already paid. */
+    FinancePaymentSummaryResponse getPaymentSummary();
+}

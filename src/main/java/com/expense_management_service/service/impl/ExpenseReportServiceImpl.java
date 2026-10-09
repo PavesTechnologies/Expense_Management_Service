@@ -1,27 +1,29 @@
 package com.expense_management_service.service.impl;
 
 import java.time.LocalDate;
-import java.time.Year;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
-import com.expense_management_service.common.ReportStatusConstants;
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.DuplicateResourceException;
 import com.expense_management_service.common.exception.EmployeeInactiveException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.integration.ums.UmsClient;
 import com.expense_management_service.integration.ums.dto.UmsUserResponse;
+import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.mapper.ExpenseReportMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
@@ -30,6 +32,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -48,6 +51,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     private final UmsClient umsClient;
     private final CurrentUserService currentUserService;
     private final ExpenseReportMapper expenseReportMapper;
+    private final PolicyViolationRepository policyViolationRepository;
 
     /** Minimum character length for the business purpose free-text field — configurable per FR: "minimum 10 characters (configurable)". */
     @Value("${expense-report.business-purpose.min-length:10}")
@@ -68,7 +72,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         ExpenseReport entity = expenseReportMapper.toEntity(request);
         entity.setEmployeeId(caller.employeeId());
         entity.setFiscalYear(fiscalYear);
-        entity.setReportStatus(ReportStatusConstants.DRAFT);
+        entity.setReportStatus(ReportStatus.DRAFT);
         entity.setReportNumber(generateReportNumber(fiscalYear));
         entity.setCostCenter(costCenter);
         entity.setCurrency(currency);
@@ -107,24 +111,57 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<ExpenseReportResponse> getAll() {
+    public PageResponse<ExpenseReportResponse> getAll(Pageable pageable) {
+        return getAll(pageable, null, null);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<ExpenseReportResponse> getAll(Pageable pageable, String status, String search) {
+        // Always the caller's own reports, whatever their role — this backs "My Expenses" and the
+        // personal dashboard. Reviewers (Admin/Manager/Finance/AP) reach other employees' reports
+        // through their own queues, and can still open one directly via getById/assertViewable.
         CurrentUser caller = currentUserService.getCurrentUser();
-        List<ExpenseReport> reports = isPrivilegedReviewer(caller)
-                ? expenseReportRepository.findAll()
-                : expenseReportRepository.findByEmployeeId(caller.employeeId());
-        return reports.stream().map(this::toResponse).toList();
+        String normalizedQuery = sanitizeSearch(search);
+        ReportStatus normalizedStatus = parseStatus(status);
+
+        var page = (normalizedStatus == null && normalizedQuery == null)
+                ? expenseReportRepository.findByEmployeeId(caller.employeeId(), pageable)
+                : expenseReportRepository.searchByEmployeeIdAndStatusAndQuery(
+                        caller.employeeId(), normalizedStatus, normalizedQuery, pageable);
+
+        return PageResponse.of(page.map(this::toResponse));
     }
 
     @Override
     public void delete(UUID reportId) {
         ExpenseReport entity = findEntity(reportId);
         assertOwnerOrAdmin(entity);
-        if (!ReportStatusConstants.isDeletable(entity.getReportStatus())) {
+        if (!entity.getReportStatus().isDeletable()) {
             throw new BusinessRuleViolationException(
                     "Expense report cannot be deleted in status " + entity.getReportStatus() + " — only a Draft report may be deleted");
         }
         expenseReportRepository.delete(entity);
         log.info("Deleted Draft expense report {}", reportId);
+    }
+
+    private ReportStatus parseStatus(String status) {
+        if (status == null || status.isBlank() || "ALL".equalsIgnoreCase(status)) {
+            return null;
+        }
+        try {
+            return ReportStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    private String sanitizeSearch(String search) {
+        if (search == null) {
+            return null;
+        }
+        String sanitized = search.trim();
+        return sanitized.isEmpty() ? null : sanitized;
     }
 
     private void assertEmployeeActive(CurrentUser caller) {
@@ -178,7 +215,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     }
 
     private void assertEditable(ExpenseReport entity) {
-        if (!ReportStatusConstants.isEditable(entity.getReportStatus())) {
+        if (!entity.getReportStatus().isEditable()) {
             throw new BusinessRuleViolationException(
                     "Expense report cannot be edited in status " + entity.getReportStatus());
         }
@@ -186,7 +223,8 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
 
     private boolean isPrivilegedReviewer(CurrentUser caller) {
         return hasRole(caller, RoleConstants.ADMIN) || hasRole(caller, RoleConstants.FINANCE)
-                || hasRole(caller, RoleConstants.MANAGER);
+                || hasRole(caller, RoleConstants.MANAGER) || hasRole(caller, RoleConstants.FINANCE_EXECUTIVE)
+                || hasRole(caller, RoleConstants.AP_EXECUTIVE);
     }
 
     private boolean hasRole(CurrentUser caller, String role) {
@@ -218,9 +256,27 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
                 .orElseThrow(() -> new ResourceNotFoundException("ExpenseReport not found with id: " + reportId));
     }
 
-    /** Calendar year the report is created in — the fiscal period boundary for title-uniqueness scoping. */
+    /** The fiscal period the report is created in — see {@link #fiscalYearFor}. */
     private String currentFiscalYear() {
-        return String.valueOf(Year.from(LocalDate.now()).getValue());
+        return fiscalYearFor(LocalDate.now());
+    }
+
+    /**
+     * Fiscal year label in "YYYY-YYYY" form for the fiscal period containing {@code date}, using this
+     * organization's April-to-March convention (fiscal year "2026-2027" runs 1 Apr 2026 - 31 Mar 2027).
+     * <p>
+     * Bug fix (production-readiness follow-up): this used to return the bare calendar year (e.g.
+     * "2026"), which could never match a {@code CostCenterBudget.fiscalYear} entered in the required
+     * "2026-2027" format — every submission against a real budget failed with "No budget is configured
+     * for Cost Center ..." even though one existed, because {@code
+     * BudgetEncumbranceServiceImpl.validateAndEncumber} looks the budget up by exact-string {@code
+     * report.getFiscalYear()}, and the two values never matched. Extracted as a pure, package-visible
+     * function (rather than only inline in {@link #currentFiscalYear}) so the April/March boundary
+     * itself is directly unit-testable against fixed dates, without needing to mock "now".
+     */
+    static String fiscalYearFor(LocalDate date) {
+        int startYear = date.getMonthValue() >= 4 ? date.getYear() : date.getYear() - 1;
+        return startYear + "-" + (startYear + 1);
     }
 
     private String generateReportNumber(String fiscalYear) {
@@ -228,8 +284,10 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     }
 
     private ExpenseReportResponse toResponse(ExpenseReport entity) {
-        boolean editable = ReportStatusConstants.isEditable(entity.getReportStatus());
-        boolean deletable = ReportStatusConstants.isDeletable(entity.getReportStatus());
-        return expenseReportMapper.toResponse(entity, editable, deletable);
+        boolean editable = entity.getReportStatus().isEditable();
+        boolean deletable = entity.getReportStatus().isDeletable();
+        List<PolicyViolation> violations = policyViolationRepository.findByLineItem_Report_ReportId(entity.getReportId());
+        int unjustified = (int) violations.stream().filter(v -> v.getJustification() == null).count();
+        return expenseReportMapper.toResponse(entity, editable, deletable, violations.size(), unjustified);
     }
 }

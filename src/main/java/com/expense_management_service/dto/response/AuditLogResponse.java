@@ -11,6 +11,10 @@ public record AuditLogResponse(
         String oldValue,
         String newValue,
         String performedBy,
-        LocalDateTime performedAt
+        LocalDateTime performedAt,
+        /** Why the change was made (tax overrides, Finance adjustments, deactivations). */
+        String reason,
+        /** EMPLOYEE, OCR, FINANCE, ADMIN or SYSTEM; null for entries written before it existed. */
+        String source
 ) {
 }

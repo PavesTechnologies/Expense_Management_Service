@@ -1,0 +1,418 @@
+package com.expense_management_service.service.impl;
+
+import com.expense_management_service.common.exception.ResourceNotFoundException;
+import com.expense_management_service.dto.response.ApprovalStatusResponse;
+import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.entity.AuditLog;
+import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.enums.PaymentRoutingStatus;
+import com.expense_management_service.enums.ReportStatus;
+import com.expense_management_service.entity.CostCenter;
+import com.expense_management_service.repository.AuditLogRepository;
+import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
+import com.expense_management_service.service.ApprovalWorkflowService;
+import com.expense_management_service.service.ApprovalEventPublisher;
+import com.expense_management_service.service.BudgetEncumbranceService;
+import com.expense_management_service.service.CostCenterBudgetService;
+import com.expense_management_service.service.ExpenseLineItemService;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
+import org.mockito.junit.jupiter.MockitoSettings;
+import org.mockito.quality.Strictness;
+import org.springframework.security.access.AccessDeniedException;
+
+import java.math.BigDecimal;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+@MockitoSettings(strictness = Strictness.LENIENT)
+@ExtendWith(MockitoExtension.class)
+class ApPaymentServiceImplTest {
+
+    @Mock private ExpenseReportRepository expenseReportRepository;
+    @Mock private ExpenseLineItemService expenseLineItemService;
+    @Mock private ApprovalWorkflowService approvalWorkflowService;
+    @Mock private ApprovalEventPublisher approvalEventPublisher;
+    @Mock private AuditLogRepository auditLogRepository;
+    @Mock private PolicyViolationRepository policyViolationRepository;
+    @Mock private CostCenterBudgetService costCenterBudgetService;
+    @Mock private BudgetEncumbranceService budgetEncumbranceService;
+
+    private ApPaymentServiceImpl service;
+
+    private final UUID reportId = UUID.randomUUID();
+
+    @BeforeEach
+    void setUp() {
+        var factory = new ExpenseReportResponseFactory(new com.expense_management_service.mapper.ExpenseReportMapper(), policyViolationRepository);
+        service = new ApPaymentServiceImpl(expenseReportRepository, expenseLineItemService, approvalWorkflowService,
+                approvalEventPublisher, auditLogRepository, factory, costCenterBudgetService, budgetEncumbranceService);
+        when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
+    }
+
+    private ExpenseReport report(ReportStatus reportStatus, PaymentRoutingStatus paymentRoutingStatus) {
+        return ExpenseReport.builder().reportId(reportId).employeeId("5100001")
+                .reportStatus(reportStatus).paymentRoutingStatus(paymentRoutingStatus).build();
+    }
+
+    private ExpenseReport approvedForPaymentReportWithBudgetFields() {
+        CostCenter costCenter = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("CC-1").build();
+        return ExpenseReport.builder().reportId(reportId).employeeId("5100001")
+                .reportStatus(ReportStatus.APPROVED).paymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT)
+                .costCenter(costCenter).fiscalYear("2026").totalAmount(new BigDecimal("12500.00")).build();
+    }
+
+    // ---------------------------------------------------------------------
+    // markPaymentCompleted - valid transition
+    // ---------------------------------------------------------------------
+
+    @Test
+    void markPaymentCompleted_succeeds_whenApprovedForPayment() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseReportResponse response = service.markPaymentCompleted(reportId, "5100099");
+
+        assertThat(response).isNotNull();
+        assertThat(response.paymentRoutingStatus()).isEqualTo(PaymentRoutingStatus.PAYMENT_COMPLETED.name());
+        assertThat(report.getPaymentRoutingStatus()).isEqualTo(PaymentRoutingStatus.PAYMENT_COMPLETED);
+        assertThat(report.getPaymentCompletedBy()).isEqualTo("5100099");
+        assertThat(report.getPaymentCompletedAt()).isNotNull();
+        verify(approvalEventPublisher).publish(eq("PAYMENT_COMPLETED"), eq(reportId), any());
+    }
+
+    @Test
+    void markPaymentCompleted_writesAuditLogEntry() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.markPaymentCompleted(reportId, "5100099");
+
+        var captor = org.mockito.ArgumentCaptor.forClass(AuditLog.class);
+        verify(auditLogRepository).save(captor.capture());
+        AuditLog saved = captor.getValue();
+        assertThat(saved.getEntityName()).isEqualTo("ExpenseReport");
+        assertThat(saved.getEntityId()).isEqualTo(reportId);
+        assertThat(saved.getAction()).isEqualTo("PAYMENT_COMPLETED");
+        assertThat(saved.getOldValue()).isEqualTo("APPROVED_FOR_PAYMENT");
+        assertThat(saved.getNewValue()).isEqualTo("PAYMENT_COMPLETED");
+        assertThat(saved.getPerformedBy()).isEqualTo("5100099");
+        assertThat(saved.getPerformedAt()).isNotNull();
+    }
+
+    // ---------------------------------------------------------------------
+    // markPaymentCompleted - Cost Center budget deduction
+    // ---------------------------------------------------------------------
+
+    @Test
+    void markPaymentCompleted_consumesBudget_exactlyOnce_withTheReportsCostCenterFiscalYearAndTotalAmount() {
+        ExpenseReport report = approvedForPaymentReportWithBudgetFields();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.markPaymentCompleted(reportId, "5100099");
+
+        verify(costCenterBudgetService, times(1))
+                .consumeBudget(report.getCostCenter(), "2026", new BigDecimal("12500.00"));
+    }
+
+    @Test
+    void markPaymentCompleted_rollsBackReportChanges_whenBudgetConsumptionFails() {
+        ExpenseReport report = approvedForPaymentReportWithBudgetFields();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        doThrow(new IllegalStateException("concurrent budget update conflict"))
+                .when(costCenterBudgetService).consumeBudget(any(), any(), any());
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+                .isInstanceOf(IllegalStateException.class);
+
+        // Budget consumption happens before the report is mutated/saved, so a failure there must
+        // leave the report untouched - reportStatus/paymentRoutingStatus stay exactly as they were,
+        // and the (would-be) transactional rollback has nothing besides this in-memory entity to
+        // undo. Persisting the PAYMENT_COMPLETED fields never happens on this failing path.
+        assertThat(report.getPaymentRoutingStatus()).isEqualTo(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        assertThat(report.getPaymentCompletedBy()).isNull();
+        assertThat(report.getPaymentCompletedAt()).isNull();
+        verify(expenseReportRepository, never()).save(any());
+        verify(auditLogRepository, never()).save(any());
+        verify(approvalEventPublisher, never()).publish(any(), any(), any());
+    }
+
+    @Test
+    void markPaymentCompleted_calledTwice_consumesBudgetOnlyOnce_andSecondCallThrows() {
+        ExpenseReport report = approvedForPaymentReportWithBudgetFields();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.markPaymentCompleted(reportId, "5100099");
+        // Second attempt against the same (now PAYMENT_COMPLETED) report - the existing
+        // previous != APPROVED_FOR_PAYMENT guard must reject it before ever reaching consumeBudget.
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100088"))
+                .isInstanceOf(IllegalArgumentException.class);
+
+        verify(costCenterBudgetService, times(1)).consumeBudget(any(), any(), any());
+    }
+
+    // ---------------------------------------------------------------------
+    // markPaymentCompleted - budget consumption via BudgetEncumbrance (Phase 6)
+    // ---------------------------------------------------------------------
+
+    @Test
+    void markPaymentCompleted_consumesViaEncumbrances_andSkipsTheFallbackDirectConsumeBudgetCall_whenAnyExist() {
+        ExpenseReport report = approvedForPaymentReportWithBudgetFields();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(2);
+        when(budgetEncumbranceService.consumeActiveForReport(reportId, 2)).thenReturn(true);
+
+        service.markPaymentCompleted(reportId, "5100099");
+
+        verify(budgetEncumbranceService).consumeActiveForReport(reportId, 2);
+        verify(costCenterBudgetService, never()).consumeBudget(any(), any(), any());
+    }
+
+    @Test
+    void markPaymentCompleted_fallsBackToDirectConsumeBudget_whenReportHasNoEncumbrancesAtAll() {
+        // Models an in-flight report that reached APPROVED_FOR_PAYMENT before Phase 5's encumbrance
+        // wiring existed - consumeActiveForReport correctly finds nothing (returns false), and budget
+        // must still be consumed exactly once via the original, pre-Phase-3 direct path.
+        ExpenseReport report = approvedForPaymentReportWithBudgetFields();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
+        when(budgetEncumbranceService.consumeActiveForReport(reportId, 1)).thenReturn(false);
+
+        service.markPaymentCompleted(reportId, "5100099");
+
+        verify(budgetEncumbranceService).consumeActiveForReport(reportId, 1);
+        verify(costCenterBudgetService, times(1))
+                .consumeBudget(report.getCostCenter(), "2026", new BigDecimal("12500.00"));
+    }
+
+    // ---------------------------------------------------------------------
+    // markPaymentCompleted - invalid transitions (spec §13 AP-status tests)
+    // ---------------------------------------------------------------------
+
+    @Test
+    void markPaymentCompleted_throws_whenAlreadyPaymentCompleted() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.PAYMENT_COMPLETED);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+                .isInstanceOf(IllegalArgumentException.class);
+        verify(expenseReportRepository, never()).save(any());
+        verify(auditLogRepository, never()).save(any());
+    }
+
+    @Test
+    void markPaymentCompleted_throws_whenDraft() {
+        ExpenseReport report = report(ReportStatus.DRAFT, PaymentRoutingStatus.NONE);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void markPaymentCompleted_throws_whenPendingApproval() {
+        ExpenseReport report = report(ReportStatus.PENDING_APPROVAL, PaymentRoutingStatus.NONE);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void markPaymentCompleted_throws_whenPendingFinanceVerification() {
+        ExpenseReport report = report(ReportStatus.PENDING_FINANCE_VERIFICATION, PaymentRoutingStatus.NONE);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void markPaymentCompleted_throws_whenAwaitingCorrection() {
+        ExpenseReport report = report(ReportStatus.AWAITING_CORRECTION, PaymentRoutingStatus.NONE);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void markPaymentCompleted_throws_whenApprovedButPaymentRoutingStatusNone() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.NONE);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void markPaymentCompleted_throws_whenInvoiceHandoffPending() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.INVOICE_HANDOFF_PENDING);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void markPaymentCompleted_throws_whenReportNotFound() {
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    // ---------------------------------------------------------------------
+    // getApQueue / getPaymentDetails
+    // ---------------------------------------------------------------------
+
+    @Test
+    void getApQueue_queriesApprovedAndApprovedForPayment() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        when(expenseReportRepository.findByReportStatusAndPaymentRoutingStatus(
+                ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT, pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of()));
+
+        service.getApQueue(pageable);
+
+        verify(expenseReportRepository).findByReportStatusAndPaymentRoutingStatus(
+                ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT, pageable);
+    }
+
+    @Test
+    void getPaymentDetails_returnsDetails_whenApprovedForPayment() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseLineItemService.getAllForReport(reportId)).thenReturn(List.of());
+        when(approvalWorkflowService.getApprovalStatus(reportId))
+                .thenReturn(new ApprovalStatusResponse(2, "Finance", "Finance", 2, false, false));
+
+        var details = service.getPaymentDetails(reportId);
+
+        assertThat(details.report()).isNotNull();
+        assertThat(details.lineItems()).isEmpty();
+        assertThat(details.approvalStatus().currentLevelOrder()).isEqualTo(2);
+    }
+
+    @Test
+    void getPaymentDetails_returnsDetails_whenAlreadyPaymentCompleted() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.PAYMENT_COMPLETED);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseLineItemService.getAllForReport(reportId)).thenReturn(List.of());
+        when(approvalWorkflowService.getApprovalStatus(reportId))
+                .thenReturn(new ApprovalStatusResponse(2, "Finance", "Finance", 2, false, false));
+
+        assertThat(service.getPaymentDetails(reportId)).isNotNull();
+    }
+
+    @Test
+    void getPaymentDetails_throwsAccessDenied_whenNotYetApprovedForPayment() {
+        ExpenseReport report = report(ReportStatus.PENDING_FINANCE_VERIFICATION, PaymentRoutingStatus.NONE);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.getPaymentDetails(reportId))
+                .isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    void getPaymentDetails_returnsDetails_whenHandoffFailed() {
+        // AP_VISIBLE_STATUSES was widened alongside the new history tabs - a HANDOFF_FAILED report
+        // must be viewable, not just APPROVED_FOR_PAYMENT/PAYMENT_COMPLETED.
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.HANDOFF_FAILED);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseLineItemService.getAllForReport(reportId)).thenReturn(List.of());
+        when(approvalWorkflowService.getApprovalStatus(reportId))
+                .thenReturn(new ApprovalStatusResponse(2, "Finance", "Finance", 2, false, false));
+
+        assertThat(service.getPaymentDetails(reportId)).isNotNull();
+    }
+
+    // ---------------------------------------------------------------------
+    // getApHistory
+    // ---------------------------------------------------------------------
+
+    @Test
+    void getApHistory_queriesByTheGivenPaymentRoutingStatus() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        when(expenseReportRepository.findByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of()));
+
+        service.getApHistory(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable);
+
+        verify(expenseReportRepository).findByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable);
+    }
+
+    @Test
+    void getApHistory_mapsReportsToQueueItems() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.PAYMENT_COMPLETED);
+        when(expenseReportRepository.findByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(report), pageable, 1));
+
+        var page = service.getApHistory(PaymentRoutingStatus.PAYMENT_COMPLETED, pageable);
+
+        assertThat(page.totalElements()).isEqualTo(1);
+        assertThat(page.content().get(0).reportId()).isEqualTo(reportId);
+        assertThat(page.content().get(0).paymentRoutingStatus()).isEqualTo("PAYMENT_COMPLETED");
+    }
+
+    @Test
+    void getApHistory_throws_whenStatusIsApprovedForPayment() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getApHistory(PaymentRoutingStatus.APPROVED_FOR_PAYMENT, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getApHistory_throws_whenStatusIsNone() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getApHistory(PaymentRoutingStatus.NONE, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getApHistory_throws_whenStatusIsNull() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+
+        assertThatThrownBy(() -> service.getApHistory(null, pageable))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void getSummary_countsPendingPaidAndFailed() {
+        when(expenseReportRepository.countByReportStatusAndPaymentRoutingStatus(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT)).thenReturn(8L);
+        when(expenseReportRepository.countByPaymentRoutingStatusAndPaymentCompletedAtGreaterThanEqual(eq(PaymentRoutingStatus.PAYMENT_COMPLETED), any())).thenReturn(3L);
+        when(expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED)).thenReturn(12L);
+        when(expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.HANDOFF_FAILED)).thenReturn(1L);
+
+        var summary = service.getSummary();
+
+        assertThat(summary.pendingCount()).isEqualTo(8);
+        assertThat(summary.paidThisMonthCount()).isEqualTo(3);
+        assertThat(summary.paidCount()).isEqualTo(12);
+        assertThat(summary.handoffFailedCount()).isEqualTo(1);
+    }
+}

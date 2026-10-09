@@ -3,6 +3,7 @@ package com.expense_management_service.dto.response;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 public record ExpenseLineItemResponse(
@@ -31,9 +32,15 @@ public record ExpenseLineItemResponse(
         String costCenterName,
         UUID projectId,
         String projectName,
+        /** Frozen at submission time — see {@code ExpenseLineItem.resolvedClientId}'s javadoc. Null for non-billable line items. */
+        UUID resolvedClientId,
+        String resolvedClientName,
         Boolean clientBillable,
         String lineStatus,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        List<PolicyWarningResponse> policyWarnings,
+        /** The tax snapshot (code, components, source, status); null only for hand-built test fixtures. */
+        LineTaxResponse tax
 ) {
 }

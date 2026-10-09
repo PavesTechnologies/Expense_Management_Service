@@ -33,3 +33,7 @@ build/
 .vscode/
 *.env
 
+### Local run artifacts ###
+app-run*.log
+app-run.pid
+

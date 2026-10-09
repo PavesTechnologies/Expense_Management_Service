@@ -1,0 +1,518 @@
+<title>Split & Encumbrance Engine</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+  :root{
+    --ink:#1C2624;
+    --ink-soft:#4B5750;
+    --paper:#EAEEEA;
+    --panel:#F7F9F6;
+    --panel-2:#F1F4F0;
+    --line:#C9D0C8;
+    --line-soft:#DAE0D8;
+    --accent:#1F6F64;
+    --accent-strong:#154E46;
+    --accent-soft:#DCEAE6;
+    --badge-blue:#375A8C;
+    --badge-blue-soft:#DEE6F0;
+    --good:#2E7D5B;
+    --good-soft:#DCEEE3;
+    --warn:#96721A;
+    --warn-soft:#F1E7CE;
+    --bad:#9C4536;
+    --bad-soft:#F3DEDA;
+    --shadow: 0 1px 2px rgba(28,38,36,0.06);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ink:#E6ECE8;
+      --ink-soft:#AEBBB3;
+      --paper:#121917;
+      --panel:#1A2321;
+      --panel-2:#1F2926;
+      --line:#313D39;
+      --line-soft:#28332F;
+      --accent:#5BC3B2;
+      --accent-strong:#8AD8CA;
+      --accent-soft:#1C3733;
+      --badge-blue:#8FB0DD;
+      --badge-blue-soft:#20293A;
+      --good:#63C797;
+      --good-soft:#1B3327;
+      --warn:#D8B25C;
+      --warn-soft:#3A2F17;
+      --bad:#E28776;
+      --bad-soft:#3A2420;
+      --shadow: 0 1px 2px rgba(0,0,0,0.4);
+    }
+  }
+  :root[data-theme="dark"]{
+    --ink:#E6ECE8;
+    --ink-soft:#AEBBB3;
+    --paper:#121917;
+    --panel:#1A2321;
+    --panel-2:#1F2926;
+    --line:#313D39;
+    --line-soft:#28332F;
+    --accent:#5BC3B2;
+    --accent-strong:#8AD8CA;
+    --accent-soft:#1C3733;
+    --badge-blue:#8FB0DD;
+    --badge-blue-soft:#20293A;
+    --good:#63C797;
+    --good-soft:#1B3327;
+    --warn:#D8B25C;
+    --warn-soft:#3A2F17;
+    --bad:#E28776;
+    --bad-soft:#3A2420;
+    --shadow: 0 1px 2px rgba(0,0,0,0.4);
+  }
+
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:'IBM Plex Sans', system-ui, sans-serif;
+    font-size:15.5px; line-height:1.6;
+  }
+  h1,h2,h3{ font-family:'IBM Plex Serif', Georgia, serif; text-wrap:balance; color:var(--ink); margin:0; }
+  code, .mono{ font-family:'IBM Plex Mono', ui-monospace, monospace; }
+  a{ color:var(--accent-strong); }
+
+  .shell{ display:grid; grid-template-columns: 250px minmax(0,860px); gap:48px; max-width:1180px; margin:0 auto; padding:40px 24px 100px; }
+  .shell > *{ min-width:0; }
+  @media (max-width: 900px){ .shell{ grid-template-columns: 1fr; } .rail{ position:static !important; order:2; } }
+
+  /* ---------- masthead ---------- */
+  .masthead{ grid-column: 1 / -1; margin-bottom:8px; }
+  .eyebrow{ font-family:'IBM Plex Mono'; font-size:12px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent-strong); }
+  .masthead h1{ font-size:38px; font-weight:700; margin:10px 0 10px; }
+  .masthead p.lede{ max-width:62ch; color:var(--ink-soft); font-size:16px; margin:0 0 22px; }
+
+  .stat-strip{ display:grid; grid-template-columns:repeat(5,1fr); gap:1px; background:var(--line); border:1px solid var(--line); border-radius:4px; overflow:hidden; }
+  .stat{ background:var(--panel); padding:14px 16px; }
+  .stat .n{ font-family:'IBM Plex Serif'; font-weight:700; font-size:24px; color:var(--accent-strong); font-variant-numeric:tabular-nums; }
+  .stat .l{ font-size:11.5px; color:var(--ink-soft); text-transform:uppercase; letter-spacing:.06em; margin-top:2px; }
+  @media (max-width:620px){ .stat-strip{ grid-template-columns:repeat(2,1fr);} }
+
+  /* ---------- rail ---------- */
+  .rail{ position:sticky; top:28px; align-self:start; font-size:13.5px; }
+  .rail-title{ font-family:'IBM Plex Mono'; font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-soft); margin-bottom:10px; }
+  .rail ol{ list-style:none; margin:0 0 22px; padding:0; border-left:1px solid var(--line); }
+  .rail li{ margin:0; }
+  .rail a{ display:flex; gap:8px; padding:5px 0 5px 14px; margin-left:-1px; border-left:1px solid transparent; text-decoration:none; color:var(--ink-soft); }
+  .rail a:hover{ color:var(--ink); border-left-color:var(--accent); }
+  .rail .num{ font-family:'IBM Plex Mono'; color:var(--accent-strong); font-weight:600; width:16px; flex:none; }
+  .rail-sub{ border-left:1px solid var(--line); padding-left:0; }
+  .rail-sub a{ font-size:12.5px; }
+
+  /* ---------- phase sections ---------- */
+  section.phase{ padding-top:26px; margin-top:26px; border-top:1px solid var(--line); scroll-margin-top:24px; }
+  section.phase:first-of-type{ border-top:none; }
+  .phase-head{ display:flex; align-items:baseline; gap:14px; margin-bottom:6px; }
+  .phase-num{ font-family:'IBM Plex Mono'; font-size:13px; font-weight:600; color:var(--panel); background:var(--accent); border-radius:3px; padding:2px 7px; flex:none; }
+  .phase-head h2{ font-size:22px; }
+  .phase-status{ margin-left:auto; font-family:'IBM Plex Mono'; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); }
+
+  .biz{ background:var(--panel); border:1px solid var(--line-soft); border-radius:4px; padding:14px 16px; margin:14px 0 18px; font-size:14.5px; }
+  .biz .k{ font-family:'IBM Plex Mono'; font-size:10.5px; text-transform:uppercase; letter-spacing:.1em; color:var(--accent-strong); display:block; margin-bottom:5px; }
+
+  h3.sub{ font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-soft); font-family:'IBM Plex Mono'; margin:20px 0 10px; }
+
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:22px; }
+  @media (max-width:720px){ .grid2{ grid-template-columns:1fr; } }
+
+  dl.fields{ margin:0; font-size:13.5px; }
+  dl.fields > div{ display:flex; flex-wrap:wrap; gap:4px 10px; padding:5px 0; border-bottom:1px solid var(--line-soft); min-width:0; }
+  dl.fields > div:last-child{ border-bottom:none; }
+  dl.fields dt{ font-family:'IBM Plex Mono'; font-weight:500; color:var(--ink); flex:0 1 auto; max-width:100%; overflow-wrap:break-word; }
+  dl.fields dd{ margin:0; color:var(--ink-soft); flex:1 1 220px; min-width:0; }
+
+  .entity-card{ border:1px solid var(--line); border-radius:4px; background:var(--panel); padding:12px 14px; margin-bottom:14px; }
+  .entity-card .name{ font-family:'IBM Plex Mono'; font-weight:600; font-size:13.5px; }
+  .tag{ display:inline-block; font-family:'IBM Plex Mono'; font-size:9.5px; text-transform:uppercase; letter-spacing:.06em; padding:1px 6px; border-radius:9px; margin-left:6px; position:relative; top:-1px; }
+  .tag.new{ background:var(--badge-blue-soft); color:var(--badge-blue); }
+  .tag.mod{ background:var(--warn-soft); color:var(--warn); }
+
+  ul.endpoints{ list-style:none; margin:0; padding:0; font-size:13px; }
+  ul.endpoints li{ display:flex; gap:8px; align-items:baseline; padding:6px 0; border-bottom:1px solid var(--line-soft); }
+  ul.endpoints li:last-child{ border-bottom:none; }
+  .verb{ font-family:'IBM Plex Mono'; font-size:10.5px; font-weight:600; padding:1px 6px; border-radius:3px; flex:none; width:38px; text-align:center; }
+  .verb.get{ background:var(--good-soft); color:var(--good); }
+  .verb.post{ background:var(--badge-blue-soft); color:var(--badge-blue); }
+  .verb.put{ background:var(--warn-soft); color:var(--warn); }
+  .path{ font-family:'IBM Plex Mono'; font-size:12.5px; }
+  .endpoint-note{ display:block; color:var(--ink-soft); font-size:12px; margin-top:1px; }
+
+  .bugbox{ border:1px solid var(--bad); background:var(--bad-soft); border-radius:4px; padding:12px 14px; margin:16px 0; font-size:13.5px; }
+  .bugbox .k{ font-family:'IBM Plex Mono'; font-size:10.5px; text-transform:uppercase; letter-spacing:.1em; color:var(--bad); display:block; margin-bottom:5px; font-weight:600; }
+
+  .rule-box{ border:1px dashed var(--line); border-radius:4px; padding:10px 14px; margin:12px 0; font-size:13px; color:var(--ink-soft); }
+  .rule-box b{ color:var(--ink); }
+
+  .test-line{ display:flex; gap:18px; margin-top:16px; font-family:'IBM Plex Mono'; font-size:12px; color:var(--ink-soft); flex-wrap:wrap; }
+  .test-line .pill{ background:var(--good-soft); color:var(--good); padding:2px 8px; border-radius:9px; font-weight:600; }
+
+  table.ref{ width:100%; border-collapse:collapse; font-size:13px; }
+  table.ref th{ text-align:left; font-family:'IBM Plex Mono'; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-soft); border-bottom:1px solid var(--line); padding:6px 8px; }
+  table.ref td{ padding:7px 8px; border-bottom:1px solid var(--line-soft); vertical-align:top; }
+  table.ref tr:last-child td{ border-bottom:none; }
+  .scroll-x{ overflow-x:auto; }
+
+  .closing{ margin-top:32px; padding-top:22px; border-top:1px solid var(--line); font-size:13.5px; color:var(--ink-soft); }
+  .closing b{ color:var(--ink); }
+</style>
+
+<div class="shell">
+  <div class="masthead">
+    <span class="eyebrow">Engineering Report · Backend Only</span>
+    <h1>Expense Split, Budget Encumbrance &amp; Approval Engine</h1>
+    <p class="lede">Complete phase-by-phase record of the work that lets one expense line item be split across several Cost Centers, reserves budget the moment a report is submitted instead of when it's paid, and routes each Cost Center's own owner into the approval chain — built across Phases 0&ndash;8 on the <code>sindhu</code> branch.</p>
+    <div class="stat-strip">
+      <div class="stat"><div class="n">9</div><div class="l">Phases (0&ndash;8)</div></div>
+      <div class="stat"><div class="n">46</div><div class="l">Files touched</div></div>
+      <div class="stat"><div class="n">3</div><div class="l">New entities</div></div>
+      <div class="stat"><div class="n">5</div><div class="l">New endpoints</div></div>
+      <div class="stat"><div class="n">875</div><div class="l">Tests passing</div></div>
+    </div>
+  </div>
+
+  <nav class="rail">
+    <div class="rail-title">Contents</div>
+    <ol>
+      <li><a href="#p0"><span class="num">00</span> Architecture mapping</a></li>
+      <li><a href="#p1"><span class="num">01</span> Data foundations</a></li>
+      <li><a href="#p2"><span class="num">02</span> Split validation</a></li>
+      <li><a href="#p3"><span class="num">03</span> Budget encumbrance</a></li>
+      <li><a href="#p4"><span class="num">04</span> Approval routing</a></li>
+      <li><a href="#p5"><span class="num">05</span> Correction &amp; lifecycle</a></li>
+      <li><a href="#p6"><span class="num">06</span> AP completion</a></li>
+      <li><a href="#p7"><span class="num">07</span> Queue &amp; bulk approve</a></li>
+      <li><a href="#p8"><span class="num">08</span> Integration testing</a></li>
+    </ol>
+    <div class="rail-title">Reference</div>
+    <ol class="rail-sub">
+      <li><a href="#endpoints-master">All endpoints</a></li>
+      <li><a href="#entities-master">All entities</a></li>
+      <li><a href="#bugs-master">Bugs found &amp; fixed</a></li>
+      <li><a href="#limits">Known limitations</a></li>
+    </ol>
+  </nav>
+
+  <main>
+
+    <section class="phase" id="p0">
+      <div class="phase-head"><span class="phase-num">00</span><h2>Existing Architecture Mapping</h2><span class="phase-status">Analysis only</span></div>
+      <div class="biz"><span class="k">Why this phase existed</span>Before touching a live approval/budget engine, we mapped exactly how it worked today — so every later phase could add behavior without breaking normal, non-split expense reports.</div>
+      <h3 class="sub">What was confirmed, unchanged</h3>
+      <dl class="fields">
+        <div><dt>ExpenseReport.costCenter</dt><dd>stays non-nullable — every report still has exactly one header Cost Center</dd></div>
+        <div><dt>CostAllocation</dt><dd>the legacy allocation entity is left in place, untouched, pending a separate frontend-cutover decision</dd></div>
+        <div><dt>ApprovalWorkflowServiceImpl / DefaultApproverSourceResolverImpl / ChainCorrectnessServiceImpl / MaterialChangeEvaluator / ApPaymentServiceImpl</dt><dd>fenced off from Phase 1 — each was opened only in the phase that specifically needed it (4, 4, 4/8, untouched, 6)</dd></div>
+      </dl>
+      <div class="rule-box">Output: an 8-point correction list plus an explicit "do not touch yet" boundary, both re-confirmed before any code was written.</div>
+    </section>
+
+    <section class="phase" id="p1">
+      <div class="phase-head"><span class="phase-num">01</span><h2>Data Foundations</h2></div>
+      <div class="biz"><span class="k">Business outcome</span>Introduces the data model for "split one expense across multiple Cost Centers" and "reserve budget early" — with zero effect on any existing, unsplit report.</div>
+
+      <h3 class="sub">New entities</h3>
+      <div class="entity-card">
+        <span class="name">ExpenseSplit</span><span class="tag new">new</span>
+        <dl class="fields">
+          <div><dt>splitId</dt><dd>PK, UUID</dd></div>
+          <div><dt>lineItem, costCenter</dt><dd>FK, both NOT NULL</dd></div>
+          <div><dt>splitType</dt><dd>PERCENTAGE | FIXED_AMOUNT, snapshotted at creation</dd></div>
+          <div><dt>percentage</dt><dd>decimal(7,2), only for PERCENTAGE mode</dd></div>
+          <div><dt>allocatedAmount</dt><dd>decimal(19,4) NOT NULL — resolved monetary value in Org Base Currency</dd></div>
+          <div><dt>splitOrder</dt><dd>int NOT NULL — deterministic rounding-remainder target</dd></div>
+          <div><dt>unique</dt><dd>(lineItemId, costCenterId)</dd></div>
+        </dl>
+      </div>
+      <div class="entity-card">
+        <span class="name">ApprovalSplitReview</span><span class="tag new">new</span>
+        <dl class="fields">
+          <div><dt>reviewId</dt><dd>PK, UUID</dd></div>
+          <div><dt>split, assignment</dt><dd>FK — keyed by (split, assignment), not (split, level) — this is what lets one combined owner cover several splits</dd></div>
+          <div><dt>status</dt><dd>reuses LineItemReviewStatus: PENDING / APPROVED / NEEDS_CORRECTION</dd></div>
+          <div><dt>comment, actedBy, actionedAt, version</dt><dd>same shape as ApprovalLineItemReview</dd></div>
+          <div><dt>unique</dt><dd>(splitId, assignmentId)</dd></div>
+        </dl>
+      </div>
+      <div class="entity-card">
+        <span class="name">BudgetEncumbrance</span><span class="tag new">new</span>
+        <dl class="fields">
+          <div><dt>encumbranceId</dt><dd>PK, UUID</dd></div>
+          <div><dt>budget</dt><dd>FK, nullable — null means unbudgeted spending</dd></div>
+          <div><dt>report</dt><dd>FK NOT NULL</dd></div>
+          <div><dt>split</dt><dd>FK, nullable — null represents the report's "unsplit remainder"</dd></div>
+          <div><dt>submissionCycle</dt><dd>int NOT NULL</dd></div>
+          <div><dt>amount</dt><dd>decimal(19,4) NOT NULL, Org Base Currency</dd></div>
+          <div><dt>status</dt><dd>ACTIVE → RELEASED or → CONSUMED</dd></div>
+          <div><dt>unbudgeted</dt><dd>boolean, default false</dd></div>
+          <div><dt>createdAt, releasedAt, consumedAt, version</dt><dd>full lifecycle timestamps + optimistic lock</dd></div>
+        </dl>
+      </div>
+
+      <div class="grid2">
+        <div>
+          <h3 class="sub">New enums</h3>
+          <dl class="fields">
+            <div><dt>SplitType</dt><dd>PERCENTAGE, FIXED_AMOUNT</dd></div>
+            <div><dt>BudgetEncumbranceStatus</dt><dd>ACTIVE, RELEASED, CONSUMED</dd></div>
+          </dl>
+          <h3 class="sub">Modified entities</h3>
+          <dl class="fields">
+            <div><dt>ExpenseLineItem</dt><dd>+ expenseSplits <span class="tag mod">extended</span></dd></div>
+            <div><dt>ApprovalAssignment</dt><dd>+ splitReviews <span class="tag mod">extended</span></dd></div>
+            <div><dt>CostCenter</dt><dd>+ allowUnbudgeted (boolean, NOT NULL)</dd></div>
+            <div><dt>CostCenterBudget</dt><dd>+ rolloverFromPrevious, allowRollover, rolloverCap, warningThreshold</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h3 class="sub">Migration</h3>
+          <p style="font-size:13.5px;color:var(--ink-soft);margin-top:0;">V15__budget_policy_flags_backfill.sql — backfills <code>allow_rollover</code> / <code>allow_unbudgeted</code> to FALSE on existing rows, then locks both NOT NULL. Every other new table/column is left to <code>hibernate.ddl-auto=update</code>, matching this project's existing convention.</p>
+          <h3 class="sub">New repositories</h3>
+          <p style="font-size:13.5px;color:var(--ink-soft);margin-top:0;">ExpenseSplitRepository, ApprovalSplitReviewRepository, BudgetEncumbranceRepository (initial shape).</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="phase" id="p2">
+      <div class="phase-head"><span class="phase-num">02</span><h2>Split Validation &amp; Management</h2></div>
+      <div class="biz"><span class="k">Business outcome</span>An employee can split one expense line item across 2 or more Cost Centers, by percentage or by fixed amount — with the system guaranteeing the split always adds up exactly to the line item total, and never silently merging or guessing at ambiguous input.</div>
+
+      <h3 class="sub">Locked rules</h3>
+      <div class="rule-box"><b>Rule 1</b> — a split set is 0 rows (normal expense) or 2+; exactly 1 is always rejected.</div>
+      <div class="rule-box"><b>Rule 2</b> — the same Cost Center twice on one line item is rejected outright, never auto-merged.</div>
+      <div class="rule-box"><b>Rule 3</b> — FIXED_AMOUNT splits must sum to the line item total within ±0.01, no rounding absorption.</div>
+      <div class="rule-box"><b>Rule 4</b> — PERCENTAGE splits must sum to 100% within ±0.01%.</div>
+      <div class="rule-box"><b>Rule 5</b> — for PERCENTAGE mode, the rounding remainder is absorbed entirely into the <em>last</em> split in entry order, so the stored sum reconciles exactly.</div>
+      <div class="rule-box">All splits on one line item share one mode — PERCENTAGE and FIXED_AMOUNT can never mix within the same line item.</div>
+
+      <div class="grid2">
+        <div>
+          <h3 class="sub">New DTOs</h3>
+          <dl class="fields">
+            <div><dt>ExpenseSplitRequest</dt><dd>costCenterId, splitType, percentage, allocatedAmount</dd></div>
+            <div><dt>ExpenseSplitReplaceRequest</dt><dd>List&lt;ExpenseSplitRequest&gt; — whole-set replace, not per-row CRUD</dd></div>
+            <div><dt>ExpenseSplitResponse</dt><dd>splitId, lineItemId, costCenterId/Name, splitType, percentage, allocatedAmount, splitOrder, createdAt</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h3 class="sub">Endpoints</h3>
+          <ul class="endpoints">
+            <li><span class="verb get">GET</span><div><span class="path">/xms/employee/expense-line-items/{lineItemId}/splits</span><span class="endpoint-note">list the current splits</span></div></li>
+            <li><span class="verb put">PUT</span><div><span class="path">/xms/employee/expense-line-items/{lineItemId}/splits</span><span class="endpoint-note">replace the whole set; roles ADMIN/GENERAL/FINANCE/MANAGER, ownership enforced in the service</span></div></li>
+          </ul>
+        </div>
+      </div>
+      <p style="font-size:13.5px;color:var(--ink-soft);">Authorization is deliberately stricter than the legacy <code>CostAllocationService</code> it sits alongside: every call requires the acting employee to own the report, and the report must be in an editable status.</p>
+      <div class="test-line"><span class="pill">16 tests</span> ExpenseSplitServiceImplTest — every rule above, plus the Phase 6 currency-basis fix</div>
+    </section>
+
+    <section class="phase" id="p3">
+      <div class="phase-head"><span class="phase-num">03</span><h2>Budget Encumbrance Engine</h2></div>
+      <div class="biz"><span class="k">Business outcome</span>Budget is now reserved the moment a report is <em>submitted</em>, not when it's finally paid — so two people can no longer both spend the same last dollar of a Cost Center's budget while their reports are mid-approval. Admins also get three new budget controls: carrying forward unused budget from a prior year (capped), a low-budget warning, and an explicit "allow spending with no budget configured" override.</div>
+
+      <h3 class="sub">Effective Available Budget</h3>
+      <div class="rule-box" style="font-family:'IBM Plex Mono';font-size:13px;">availableBudget − SUM(amount) across every ACTIVE BudgetEncumbrance against that budget row</div>
+      <p style="font-size:13.5px;color:var(--ink-soft);">Never stored — computed at read time, every time. <code>CostCenterBudget.availableBudget</code> itself is never touched by encumbrance logic; only the existing, unmodified <code>consumeBudget()</code> ever changes it, and only at AP payment (Phase 6).</p>
+
+      <div class="grid2">
+        <div>
+          <h3 class="sub">BudgetEncumbranceService (new)</h3>
+          <dl class="fields">
+            <div><dt>validateAndEncumber(report, cycle)</dt><dd>atomic all-or-nothing; locks every distinct Cost Center's budget row in sorted UUID order (deadlock-safe); same Cost Center across several splits is checked once, combined</dd></div>
+            <div><dt>releaseActiveForCycle(reportId, cycle)</dt><dd>ACTIVE → RELEASED; no-op if none active</dd></div>
+            <div><dt>consumeActiveForReport(reportId, cycle)</dt><dd>ACTIVE → CONSUMED via the existing consumeBudget; returns whether anything was found</dd></div>
+            <div><dt>effectiveAvailable(budget)</dt><dd>the read-time formula above</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h3 class="sub">New budget-policy fields</h3>
+          <dl class="fields">
+            <div><dt>CostCenterBudget.rolloverFromPrevious</dt><dd>validated ≤ MIN(source's true unencumbered remainder, rolloverCap)</dd></div>
+            <div><dt>allowRollover, rolloverCap, warningThreshold</dt><dd>admin-set per budget row</dd></div>
+            <div><dt>CostCenterBudgetRequest.rolloverSourceBudgetId</dt><dd>request-only, never persisted — fiscalYear is free text, so "last year's row" can't be auto-derived safely</dd></div>
+            <div><dt>CostCenter.allowUnbudgeted</dt><dd>lets a Cost Center accept encumbrances with zero budget configured</dd></div>
+          </dl>
+        </div>
+      </div>
+      <div class="rule-box">First pessimistic lock (<code>PESSIMISTIC_WRITE</code>) ever introduced in this codebase — used only by <code>validateAndEncumber</code>, never by <code>consumeBudget</code>.</div>
+      <p style="font-size:13px;color:var(--ink-soft);">Built and fully tested standalone in this phase — deliberately <b>not yet</b> called from submission or AP completion, so the capability could be verified in isolation first (wired in Phases 5 &amp; 6).</p>
+      <div class="test-line"><span class="pill">22 tests</span> CostCenterBudgetServiceImpl &nbsp; <span class="pill">15 tests</span> CostCenterBudgetController &nbsp; <span class="pill">19 tests</span> BudgetEncumbranceServiceImpl</div>
+    </section>
+
+    <section class="phase" id="p4">
+      <div class="phase-head"><span class="phase-num">04</span><h2>Approval Routing for Splits</h2></div>
+      <div class="biz"><span class="k">Business outcome</span>When an expense is split across Cost Centers, each Cost Center's own owner now approves their own portion — not one person rubber-stamping the whole report. If the same person owns two of the split Cost Centers, they get <em>one</em> combined task, not two. A report that's part split, part normal still needs both the split owners <em>and</em> the original approver to sign off.</div>
+
+      <h3 class="sub">Locked design decisions</h3>
+      <div class="rule-box">Split-owner assignments always activate <b>immediately, in parallel</b> — the level's SEQUENTIAL/ANY_OF/ALL_OF quorum only governs its normal (non-split) entries, since each owner approves a disjoint slice with nothing to sequence.</div>
+      <div class="rule-box">Scoped to APPROVAL-type levels only; Finance Verification is untouched this phase.</div>
+      <div class="rule-box">A split-owner assignment auto-skipped by the existing duplicate-approver pass has its splits <b>waived</b> from level completion — the same reasoning as why that skip exists at all.</div>
+
+      <div class="grid2">
+        <div>
+          <h3 class="sub">Core mechanics</h3>
+          <dl class="fields">
+            <div><dt>createSplitOwnerAssignments</dt><dd>resolves one owner per distinct split Cost Center; same-owner splits combine into one ApprovalAssignment</dd></div>
+            <div><dt>isEntireInstanceDone</dt><dd>= normal line-item track done AND every non-skipped split-owner's own splits approved</dd></div>
+            <div><dt>reviewSplit(reportId, splitId, actor, decision)</dt><dd>the split-aware sibling of reviewLineItem — one owner's rejection never blocks a different owner</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h3 class="sub">Endpoint</h3>
+          <ul class="endpoints">
+            <li><span class="verb post">POST</span><div><span class="path">/xms/approvals/{reportId}/splits/{splitId}/review</span><span class="endpoint-note">approve or flag one split's Cost Center Owner responsibility</span></div></li>
+          </ul>
+        </div>
+      </div>
+      <div class="rule-box">Zero changes needed to <code>ChainCorrectnessServiceImpl</code> or <code>DefaultApproverSourceResolverImpl</code> — both already operate generically on <code>ApprovalAssignment</code> rows, so self-approval redirect and duplicate-skip work on split-owner assignments for free (proven for real in Phase 8).</div>
+      <div class="test-line"><span class="pill">+10 tests</span> ApprovalWorkflowServiceImplTest (41 total in file)</div>
+    </section>
+
+    <section class="phase" id="p5">
+      <div class="phase-head"><span class="phase-num">05</span><h2>Correction &amp; Encumbrance Lifecycle</h2></div>
+      <div class="biz"><span class="k">Business outcome</span>Reserved budget doesn't sit "phantom-locked" forever — the moment a report is cancelled, recalled, rejected, or fully restarted after correction, its budget reservation is released, and a fresh one is made only if the report is actually resubmitted.</div>
+
+      <div class="grid2">
+        <div>
+          <h3 class="sub">Where encumbrances get created</h3>
+          <dl class="fields">
+            <div><dt>submit()</dt><dd>validateAndEncumber runs before the approval chain is even materialized — insufficient budget aborts with nothing created</dd></div>
+            <div><dt>fullRestart()</dt><dd>releases the old cycle first, then encumbers the new one — so the same money is never double-counted against itself</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h3 class="sub">Where encumbrances get released</h3>
+          <dl class="fields">
+            <div><dt>cancelAllOpenInstances()</dt><dd>the single existing choke point already used by recall, cancel, rejectReport, and full-restart's old-cycle teardown — one change covers all four</dd></div>
+            <div><dt>resumeInPlace()</dt><dd>deliberately untouched — a same-cycle Manager correction never re-validates the encumbrance amount (documented, accepted gap)</dd></div>
+          </dl>
+        </div>
+      </div>
+      <div class="test-line"><span class="pill">+7 tests</span> encumber-on-submit · insufficient-budget-abort · release-on-recall/cancel/reject · resume-in-place untouched · restart ordering (release-then-encumber, verified in sequence)</div>
+    </section>
+
+    <section class="phase" id="p6">
+      <div class="phase-head"><span class="phase-num">06</span><h2>AP Payment Completion</h2></div>
+      <div class="biz"><span class="k">Business outcome</span>When Accounts Payable marks a report paid, the org's real budget is decremented correctly per Cost Center a split touched — not as one lump sum against the report's header Cost Center — and, for a foreign-currency expense, in the correctly converted amount.</div>
+
+      <div class="bugbox">
+        <span class="k">Bug found &amp; fixed — currency basis</span>
+        <code>ExpenseSplitServiceImpl</code> (Phase 2) was splitting <code>lineItem.amount</code> — the line item's own display currency — instead of <code>lineItem.baseAmount</code>, the Org Base Currency figure that <code>CostCenterBudget</code> is actually denominated in. <code>BudgetEncumbranceServiceImpl</code>'s unsplit-remainder sum had the same issue. Invisible for a base-currency line item (the two are equal there); real for any foreign-currency one. Fixed in both classes, with your explicit sign-off to reopen two already-confirmed phases; 2 new tests prove it with a foreign-currency fixture (amount = 10000, baseAmount = 8500).
+      </div>
+
+      <dl class="fields">
+        <div><dt>BudgetEncumbranceService.consumeActiveForReport</dt><dd>now returns boolean — found-and-consumed vs. nothing-to-consume</dd></div>
+        <div><dt>ApprovalWorkflowService.getCurrentSubmissionCycle(reportId)</dt><dd>new — lets AP ask "which cycle" without depending on the approval engine's own repository</dd></div>
+        <div><dt>ApPaymentServiceImpl.markPaymentCompleted</dt><dd>tries encumbrance-based consumption first; falls back to the original direct <code>consumeBudget(costCenter, fiscalYear, report.totalAmount())</code> call only when a report has zero encumbrances at all — covering reports already in flight before this wiring existed, with no double-consumption possible</dd></div>
+      </dl>
+      <div class="test-line"><span class="pill">+2 tests</span> currency-basis fix &nbsp; <span class="pill">+2 tests</span> ApPaymentServiceImplTest (19 total in file)</div>
+    </section>
+
+    <section class="phase" id="p7">
+      <div class="phase-head"><span class="phase-num">07</span><h2>Queue, History &amp; Bulk Approve</h2></div>
+      <div class="biz"><span class="k">Business outcome</span>A Cost Center Owner now sees their own pending splits in "My Approvals," can see the full review history of every split on a report, and can bulk-approve everything they personally have pending in one action — without ever touching a different owner's work.</div>
+
+      <div class="bugbox">
+        <span class="k">Bug found &amp; fixed — wrong assignment marked complete</span>
+        <code>reviewLineItem</code>'s authorization lookup didn't exclude split-owner assignments. A split-owner who also happened to be resolvable for the shared line-item review would have their <em>own</em> split-owner assignment wrongly marked COMPLETED — even though their actual splits were still untouched. Fixed by excluding assignments with any split reviews from that lookup; surfaced by the very bulk-approve scenario this phase added.
+      </div>
+
+      <div class="grid2">
+        <div>
+          <h3 class="sub">New DTOs / fields</h3>
+          <dl class="fields">
+            <div><dt>PendingSplitResponse</dt><dd>splitId, reviewId, lineItemId, costCenterId/Code/Name, allocatedAmount</dd></div>
+            <div><dt>SplitReviewResponse</dt><dd>current-cycle status/comment/actedBy per split, plus level context</dd></div>
+            <div><dt>ApprovalQueueItemResponse.pendingSplits</dt><dd>new field — scoped per-assignment, not level-wide like pendingLineItems</dd></div>
+          </dl>
+        </div>
+        <div>
+          <h3 class="sub">Endpoint</h3>
+          <ul class="endpoints">
+            <li><span class="verb get">GET</span><div><span class="path">/xms/approvals/{reportId}/split-reviews</span><span class="endpoint-note">split-aware sibling of the existing line-item-reviews endpoint</span></div></li>
+          </ul>
+          <h3 class="sub">bulkApprove — rewritten</h3>
+          <p style="font-size:13px;color:var(--ink-soft);margin:0;">Now determines per caller whether they hold a normal-track assignment, split-owner assignment(s), or both — and only attempts the track(s) they actually have.</p>
+        </div>
+      </div>
+      <div class="test-line"><span class="pill">+4 tests</span> queue isolation between owners · split-review history · bulk-approve scoping (53 total across both files)</div>
+    </section>
+
+    <section class="phase" id="p8">
+      <div class="phase-head"><span class="phase-num">08</span><h2>Cross-Cutting Integration Testing</h2></div>
+      <div class="biz"><span class="k">Business outcome</span>Proof the whole system works together, end to end — not just each piece in isolation. This is exactly the class of testing that caught the two bugs found in Phases 6 and 7.</div>
+      <p style="font-size:13.5px;color:var(--ink-soft);">New test class <code>SplitApprovalBudgetIntegrationTest</code> wires the <b>real</b> <code>ApprovalWorkflowServiceImpl</code> + <code>ChainCorrectnessServiceImpl</code> + <code>BudgetEncumbranceServiceImpl</code> together (repositories mocked, no database) — a new pattern for this codebase, where every other test mocks out the other collaborators.</p>
+      <table class="ref" style="margin-top:10px;">
+        <tr><th>Scenario</th><th>Proves</th></tr>
+        <tr><td>Full split lifecycle</td><td>submit → both owners + header approve independently → APPROVED → encumbrances stay ACTIVE</td></tr>
+        <tr><td>Self-approval redirect</td><td>submitter owns a split's Cost Center → real chain-correctness redirects to their manager</td></tr>
+        <tr><td>Duplicate-approver skip</td><td>same person resolved twice at one level → second assignment skipped → level still completes</td></tr>
+        <tr><td>Insufficient budget</td><td>submission blocked atomically — zero instances, assignments, or encumbrances created</td></tr>
+        <tr><td>Mixed split + unsplit report</td><td>both tracks (shared line item + owner's own split) must independently complete</td></tr>
+      </table>
+      <div class="test-line" style="margin-top:14px;"><span class="pill">5 tests</span> new integration class &nbsp; <span class="pill">875 total</span> full suite, 1 pre-existing unrelated environment failure only</div>
+    </section>
+
+    <section class="phase" id="endpoints-master">
+      <div class="phase-head"><h2 style="font-size:20px;">Reference — Every Endpoint Touched</h2></div>
+      <div class="scroll-x">
+      <table class="ref">
+        <tr><th>Method</th><th>Path</th><th>Status</th></tr>
+        <tr><td class="mono">GET / PUT</td><td class="mono">/xms/employee/expense-line-items/{lineItemId}/splits</td><td>New (Phase 2)</td></tr>
+        <tr><td class="mono">POST</td><td class="mono">/xms/approvals/{reportId}/splits/{splitId}/review</td><td>New (Phase 4)</td></tr>
+        <tr><td class="mono">GET</td><td class="mono">/xms/approvals/{reportId}/split-reviews</td><td>New (Phase 7)</td></tr>
+        <tr><td class="mono">POST</td><td class="mono">/xms/approvals/{reportId}/submit</td><td>Behavior extended (Phase 4/5) — same path</td></tr>
+        <tr><td class="mono">POST</td><td class="mono">/xms/approvals/{reportId}/bulk-approve</td><td>Behavior extended (Phase 7) — same path</td></tr>
+        <tr><td class="mono">POST</td><td class="mono">/xms/approvals/{reportId}/recall · /cancel · /reject</td><td>Behavior extended (Phase 5) — same paths</td></tr>
+        <tr><td class="mono">GET</td><td class="mono">/xms/approvals/my-queue</td><td>Response shape extended (Phase 7) — same path</td></tr>
+        <tr><td class="mono">POST / PUT / GET / DELETE</td><td class="mono">/xms/admin/cost-center-budgets[/{budgetId}]</td><td>Request/response shape extended (Phase 3) — same paths</td></tr>
+      </table>
+      </div>
+    </section>
+
+    <section class="phase" id="entities-master">
+      <div class="phase-head"><h2 style="font-size:20px;">Reference — Every Entity Touched</h2></div>
+      <div class="scroll-x">
+      <table class="ref">
+        <tr><th>Entity</th><th>Status</th><th>Change</th></tr>
+        <tr><td class="mono">ExpenseSplit</td><td><span class="tag new">new</span></td><td>one Cost Center allocation within a split line item</td></tr>
+        <tr><td class="mono">ApprovalSplitReview</td><td><span class="tag new">new</span></td><td>per-split review, keyed by (split, assignment)</td></tr>
+        <tr><td class="mono">BudgetEncumbrance</td><td><span class="tag new">new</span></td><td>ACTIVE/RELEASED/CONSUMED soft-reserve record</td></tr>
+        <tr><td class="mono">ExpenseLineItem</td><td><span class="tag mod">modified</span></td><td>+ expenseSplits collection</td></tr>
+        <tr><td class="mono">ApprovalAssignment</td><td><span class="tag mod">modified</span></td><td>+ splitReviews collection</td></tr>
+        <tr><td class="mono">CostCenter</td><td><span class="tag mod">modified</span></td><td>+ allowUnbudgeted</td></tr>
+        <tr><td class="mono">CostCenterBudget</td><td><span class="tag mod">modified</span></td><td>+ rolloverFromPrevious, allowRollover, rolloverCap, warningThreshold</td></tr>
+      </table>
+      </div>
+    </section>
+
+    <section class="phase" id="bugs-master">
+      <div class="phase-head"><h2 style="font-size:20px;">Bugs Found &amp; Fixed Along the Way</h2></div>
+      <table class="ref">
+        <tr><th>#</th><th>Phase found</th><th>What it was</th></tr>
+        <tr><td class="mono">1</td><td>6</td><td>Splits/encumbrances used native display currency instead of Org Base Currency — invisible unless a line item is priced in a foreign currency</td></tr>
+        <tr><td class="mono">2</td><td>7</td><td>A split-owner's own assignment could be wrongly marked complete by approving an unrelated shared line item</td></tr>
+        <tr><td class="mono">3</td><td>8</td><td>Test-only: a classic Mockito anti-pattern (nested <code>when()</code> inside an open stub) — no production impact</td></tr>
+      </table>
+    </section>
+
+    <section class="phase" id="limits">
+      <div class="phase-head"><h2 style="font-size:20px;">Known, Accepted Limitations</h2></div>
+      <dl class="fields">
+        <div><dt>resumeInPlace staleness</dt><dd>a same-cycle Manager correction never re-validates the encumbrance amount against a corrected total — accepted, documented (Phase 5)</dd></div>
+        <div><dt>Dual-role queue display</dt><dd>if one person is both the header owner and a split owner at the same level, "My Queue" can only surface one of the two roles in a single row (Phase 7)</dd></div>
+        <div><dt>CostAllocation</dt><dd>the legacy allocation entity remains in place, unmodified, pending a separate frontend-cutover decision (Phase 0)</dd></div>
+      </dl>
+    </section>
+
+    <div class="closing">
+      Everything above is verified with <b>875 automated tests passing</b> across the full suite (one pre-existing, unrelated environmental failure — a test-only <code>UMS_ISSUER_URI</code> placeholder — present before this work began and untouched by it). <b>19 existing files modified, 27 new files added</b>, spanning entities, repositories, mappers, services, controllers, DTOs, and one database migration.
+    </div>
+
+  </main>
+</div>

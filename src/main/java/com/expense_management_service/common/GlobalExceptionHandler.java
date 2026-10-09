@@ -6,6 +6,7 @@ import com.expense_management_service.common.exception.EmployeeInactiveException
 import com.expense_management_service.common.exception.ResourceInUseException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.common.exception.UmsIntegrationException;
+import com.expense_management_service.service.TextractIntegrationException;
 import com.expense_management_service.storage.StorageException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -44,6 +45,7 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException ex) {
+        log.warn("Access denied ({}): {}", ex.getClass().getSimpleName(), ex.getMessage());
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(ApiResponse.error("You do not have permission to perform this action"));
     }
@@ -74,8 +76,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
+        log.error("DataIntegrityViolationException occurred: ", ex);
+        String detailMessage = ex.getMostSpecificCause() != null && ex.getMostSpecificCause().getMessage() != null
+                ? ex.getMostSpecificCause().getMessage()
+                : "Database data integrity constraint was violated";
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ApiResponse.error("This record cannot be saved or deleted because it is still referenced by other records"));
+                .body(ApiResponse.error(detailMessage));
     }
 
     @ExceptionHandler(DuplicateResourceException.class)
@@ -100,6 +106,13 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(UmsIntegrationException.class)
     public ResponseEntity<ApiResponse<Void>> handleUmsIntegration(UmsIntegrationException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(com.expense_management_service.common.exception.IntegrationUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleIntegrationUnavailable(
+            com.expense_management_service.common.exception.IntegrationUnavailableException ex) {
+        log.warn("{}", ex.getMessage(), ex.getCause());
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(ex.getMessage()));
     }
 
@@ -139,6 +152,13 @@ public class GlobalExceptionHandler {
         log.error("S3 storage operation failed", ex);
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(ApiResponse.error("File storage is temporarily unavailable — please try again"));
+    }
+
+    @ExceptionHandler(TextractIntegrationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTextractFailure(TextractIntegrationException ex) {
+        log.error("AWS Textract operation failed", ex);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(ApiResponse.error("OCR is temporarily unavailable — you can continue with manual entry"));
     }
 
     @ExceptionHandler(Exception.class)

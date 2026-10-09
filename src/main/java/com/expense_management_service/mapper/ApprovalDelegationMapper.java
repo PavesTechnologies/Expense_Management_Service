@@ -3,6 +3,7 @@ package com.expense_management_service.mapper;
 import com.expense_management_service.dto.request.ApprovalDelegationRequest;
 import com.expense_management_service.dto.response.ApprovalDelegationResponse;
 import com.expense_management_service.entity.ApprovalDelegation;
+import com.expense_management_service.enums.DelegationStatus;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -14,7 +15,7 @@ public class ApprovalDelegationMapper {
                 .delegateId(request.delegateId())
                 .startDate(request.startDate())
                 .endDate(request.endDate())
-                .status(request.status())
+                .status(toDelegationStatus(request.status()))
                 .build();
     }
 
@@ -23,7 +24,7 @@ public class ApprovalDelegationMapper {
         entity.setDelegateId(request.delegateId());
         entity.setStartDate(request.startDate());
         entity.setEndDate(request.endDate());
-        entity.setStatus(request.status());
+        entity.setStatus(toDelegationStatus(request.status()));
     }
 
     public ApprovalDelegationResponse toResponse(ApprovalDelegation entity) {
@@ -33,7 +34,13 @@ public class ApprovalDelegationMapper {
                 entity.getDelegateId(),
                 entity.getStartDate(),
                 entity.getEndDate(),
-                entity.getStatus()
+                entity.getStatus() != null ? entity.getStatus().name() : null,
+                entity.getCreatedAt(),
+                entity.getUpdatedAt()
         );
+    }
+
+    private DelegationStatus toDelegationStatus(String status) {
+        return status != null ? DelegationStatus.valueOf(status) : null;
     }
 }

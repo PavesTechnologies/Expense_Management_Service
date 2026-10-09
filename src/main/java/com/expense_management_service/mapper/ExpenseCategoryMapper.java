@@ -5,6 +5,8 @@ import com.expense_management_service.dto.response.ExpenseCategoryResponse;
 import com.expense_management_service.entity.ExpenseCategory;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
+
 @Component
 public class ExpenseCategoryMapper {
 
@@ -35,6 +37,10 @@ public class ExpenseCategoryMapper {
     }
 
     public ExpenseCategoryResponse toResponse(ExpenseCategory entity) {
+        return toResponse(entity, null);
+    }
+
+    public ExpenseCategoryResponse toResponse(ExpenseCategory entity, BigDecimal taxRate) {
         return new ExpenseCategoryResponse(
                 entity.getCategoryId(),
                 entity.getCategoryCode(),
@@ -45,6 +51,7 @@ public class ExpenseCategoryMapper {
                 entity.getReceiptRequired(),
                 entity.getMaxLimit(),
                 entity.getTaxCode(),
+                taxRate,
                 entity.getEffectiveFrom(),
                 entity.getEffectiveTo(),
                 entity.getStatus(),

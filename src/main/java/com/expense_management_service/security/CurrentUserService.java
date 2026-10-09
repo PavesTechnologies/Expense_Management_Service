@@ -1,6 +1,7 @@
 package com.expense_management_service.security;
 
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Service;
 
@@ -13,6 +14,7 @@ import static com.expense_management_service.security.SecurityConstants.CLAIM_NA
 import static com.expense_management_service.security.SecurityConstants.CLAIM_OBS_USER_UUID;
 import static com.expense_management_service.security.SecurityConstants.CLAIM_PERMISSIONS;
 import static com.expense_management_service.security.SecurityConstants.CLAIM_ROLES;
+import static com.expense_management_service.security.SecurityConstants.CLAIM_USER_ID;
 
 /**
  * Reads the currently authenticated caller off the {@link SecurityContextHolder}.
@@ -30,6 +32,7 @@ public class CurrentUserService {
 
         return new CurrentUser(
                 UUID.fromString(jwt.getClaimAsString(CLAIM_OBS_USER_UUID)),
+                readUmsUserId(jwt),
                 jwt.getClaimAsString(CLAIM_EMPLOYEE_ID),
                 jwt.getClaimAsString(CLAIM_EMAIL),
                 jwt.getClaimAsString(CLAIM_NAME),
@@ -44,6 +47,38 @@ public class CurrentUserService {
 
     public String getEmployeeId() {
         return getCurrentUser().employeeId();
+    }
+
+    /**
+     * The caller's numeric UMS user id, required by {@code PmsClient.getMyActiveProjects}.
+     * Throws rather than returning null if the JWT doesn't carry the {@code user_id} claim —
+     * this is a reserved-but-previously-unwired claim (see {@code SecurityConstants}), so a
+     * missing value here means the assumption that UMS issues it needs re-checking against a
+     * real token, not a silent downstream NullPointerException inside a PMS call.
+     */
+    public Long getUmsUserId() {
+        Long umsUserId = getCurrentUser().umsUserId();
+        if (umsUserId == null) {
+            throw new IllegalStateException(
+                    "The current JWT does not carry a numeric '" + CLAIM_USER_ID + "' claim — "
+                            + "cannot resolve the caller's UMS user id, which PMS project lookups require.");
+        }
+        return umsUserId;
+    }
+
+    private Long readUmsUserId(Jwt jwt) {
+        Object rawValue = jwt.getClaims().get(CLAIM_USER_ID);
+        if (rawValue == null) {
+            return null;
+        }
+        if (rawValue instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.parseLong(rawValue.toString());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
     }
 
     public String getEmail() {

@@ -5,11 +5,15 @@ import java.util.List;
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.ExpenseReportService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
@@ -29,6 +33,7 @@ import java.util.UUID;
 public class ExpenseReportController {
 
     private final ExpenseReportService expenseReportService;
+    private final ApprovalWorkflowService approvalWorkflowService;
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -45,15 +50,23 @@ public class ExpenseReportController {
     }
 
     @GetMapping("/{reportId}")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE')")
     public ApiResponse<ExpenseReportResponse> getById(@PathVariable UUID reportId) {
         return ApiResponse.success(expenseReportService.getById(reportId));
     }
 
-    @GetMapping
+    @GetMapping({"", "/history"})
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER')")
-    public ApiResponse<List<ExpenseReportResponse>> getAll() {
-        return ApiResponse.success(expenseReportService.getAll());
+    public ApiResponse<PageResponse<ExpenseReportResponse>> getAll(
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int limit,
+            @RequestParam(defaultValue = "createdAt") String sortBy,
+            @RequestParam(defaultValue = "desc") String sortDirection,
+            @RequestParam(required = false) String status,
+            @RequestParam(required = false) String search) {
+        int zeroBasedPage = Math.max(page - 1, 0);
+        Sort sort = Sort.by(Sort.Direction.fromString(sortDirection), sortBy);
+        return ApiResponse.success(expenseReportService.getAll(PageRequest.of(zeroBasedPage, limit, sort), status, search));
     }
 
     @DeleteMapping("/{reportId}")
@@ -61,5 +74,11 @@ public class ExpenseReportController {
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
     public void delete(@PathVariable UUID reportId) {
         expenseReportService.delete(reportId);
+    }
+
+    @PostMapping("/{reportId}/submit")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
+    public ApiResponse<ExpenseReportResponse> submit(@PathVariable UUID reportId) {
+        return ApiResponse.success("Expense report submitted for approval", approvalWorkflowService.submit(reportId));
     }
 }

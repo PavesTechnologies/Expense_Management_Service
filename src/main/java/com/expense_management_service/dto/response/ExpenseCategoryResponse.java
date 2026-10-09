@@ -15,6 +15,8 @@ public record ExpenseCategoryResponse(
         Boolean receiptRequired,
         BigDecimal maxLimit,
         String taxCode,
+        /** Rate (%) of {@code taxCode} if it is active and in effect today, else null — pre-fills GST on line items. */
+        BigDecimal taxRate,
         LocalDate effectiveFrom,
         LocalDate effectiveTo,
         String status,

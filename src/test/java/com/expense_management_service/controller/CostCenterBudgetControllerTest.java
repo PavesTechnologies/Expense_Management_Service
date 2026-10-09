@@ -59,7 +59,8 @@ class CostCenterBudgetControllerTest {
 
     private static CostCenterBudgetResponse sampleResponse(UUID id) {
         return new CostCenterBudgetResponse(id, UUID.randomUUID(), "Backend Development", "FY2026",
-                BigDecimal.valueOf(10000), BigDecimal.valueOf(8000), LocalDateTime.now(), LocalDateTime.now());
+                BigDecimal.valueOf(10000), BigDecimal.valueOf(8000), null, false, null, null,
+                LocalDateTime.now(), LocalDateTime.now());
     }
 
     private static CostCenterBudgetRequest sampleRequest() {

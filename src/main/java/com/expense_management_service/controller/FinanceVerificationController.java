@@ -1,0 +1,115 @@
+package com.expense_management_service.controller;
+
+import java.util.List;
+import java.util.UUID;
+
+import com.expense_management_service.common.ApiResponse;
+import com.expense_management_service.dto.request.FinanceQueryRequest;
+import com.expense_management_service.dto.response.ApprovalStatusResponse;
+import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.FinanceHistoryItemResponse;
+import com.expense_management_service.dto.response.FinanceLineItemReviewResponse;
+import com.expense_management_service.dto.response.FinanceQueueItemResponse;
+import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.enums.FinanceVerificationStatus;
+import com.expense_management_service.security.CurrentUserService;
+import com.expense_management_service.service.ApprovalWorkflowService;
+import com.expense_management_service.service.FinanceVerificationService;
+import com.expense_management_service.dto.response.FinancePaymentSummaryResponse;
+import jakarta.validation.Valid;
+import lombok.RequiredArgsConstructor;
+
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.web.bind.annotation.*;
+
+/**
+ * Finance Verification's own action surface - deliberately separate from {@code
+ * ApprovalWorkflowController} (§Refactoring rule: no second workflow engine, but a distinct API
+ * surface for a distinct action vocabulary).
+ * <p>
+ * Authorization is role+status based (§8): the caller must hold the {@code FINANCE_EXECUTIVE}
+ * role ({@code @PreAuthorize} here) and the target report must actually be at (or have passed
+ * through) Finance Verification ({@code FinanceVerificationServiceImpl}'s own status/instance
+ * checks). Deliberately not gated by any per-report/per-cost-center assignment - a Finance
+ * Executive doesn't need to be the specific approver a {@code FinanceTeamApprover} mapping
+ * resolves to for a report's cost center in order to act on it. Matches how the AP Payment
+ * queue/actions already work.
+ * <p>
+ * Deliberately does not include {@code ADMIN} in this check - add {@code
+ * hasAnyRole('FINANCE_EXECUTIVE','ADMIN')} later if an admin override is actually wanted.
+ */
+@RestController
+@RequestMapping("/xms/finance-verification")
+@RequiredArgsConstructor
+public class FinanceVerificationController {
+
+    private static final String CAN_ACT_AS_FINANCE = "hasAnyRole('FINANCE_EXECUTIVE','FINANCE','ADMIN')";
+
+    private final FinanceVerificationService financeVerificationService;
+    private final ApprovalWorkflowService approvalWorkflowService;
+    private final CurrentUserService currentUserService;
+
+    @PostMapping("/{reportId}/line-items/{lineItemId}/verify")
+    @PreAuthorize(CAN_ACT_AS_FINANCE)
+    public ApiResponse<ExpenseReportResponse> verifyLineItem(@PathVariable UUID reportId, @PathVariable UUID lineItemId,
+                                                              @RequestBody(required = false) com.expense_management_service.dto.request.FinanceVerifyRequest request) {
+        boolean taxChecked = request != null && Boolean.TRUE.equals(request.taxChecked());
+        return ApiResponse.success("Line item verified",
+                financeVerificationService.verifyLineItem(reportId, lineItemId, currentUserService.getEmployeeId(), taxChecked));
+    }
+
+    /** Per-line tax correction. FINANCE_EXECUTIVE only - never the global tax configuration (BR-TAX-012). */
+    @PostMapping("/{reportId}/line-items/{lineItemId}/tax-adjustment")
+    @PreAuthorize("hasRole('FINANCE_EXECUTIVE')")
+    public ApiResponse<ExpenseReportResponse> adjustLineTax(@PathVariable UUID reportId, @PathVariable UUID lineItemId,
+                                                             @Valid @RequestBody com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest request) {
+        return ApiResponse.success("Tax adjusted",
+                financeVerificationService.adjustLineTax(reportId, lineItemId, currentUserService.getEmployeeId(), request));
+    }
+
+    @PostMapping("/{reportId}/line-items/{lineItemId}/query")
+    @PreAuthorize(CAN_ACT_AS_FINANCE)
+    public ApiResponse<ExpenseReportResponse> queryLineItem(@PathVariable UUID reportId, @PathVariable UUID lineItemId,
+                                                             @Valid @RequestBody FinanceQueryRequest request) {
+        return ApiResponse.success("Finance query raised",
+                financeVerificationService.queryLineItem(reportId, lineItemId, currentUserService.getEmployeeId(), request.reason()));
+    }
+
+    @GetMapping("/my-queue")
+    @PreAuthorize(CAN_ACT_AS_FINANCE)
+    public ApiResponse<PageResponse<FinanceQueueItemResponse>> getMyQueue(
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.success(financeVerificationService.getFinanceQueue(currentUserService.getEmployeeId(),
+                // Newest submissions first.
+                PageRequest.of(page, size, Sort.by(Sort.Order.desc("submittedAt"), Sort.Order.desc("createdAt")))));
+    }
+
+    @GetMapping("/{reportId}/reviews")
+    @PreAuthorize(CAN_ACT_AS_FINANCE)
+    public ApiResponse<List<FinanceLineItemReviewResponse>> getFinanceReviews(@PathVariable UUID reportId) {
+        return ApiResponse.success(financeVerificationService.getFinanceReviews(reportId, currentUserService.getEmployeeId()));
+    }
+
+    @GetMapping("/{reportId}/status")
+    @PreAuthorize(CAN_ACT_AS_FINANCE)
+    public ApiResponse<ApprovalStatusResponse> getStatus(@PathVariable UUID reportId) {
+        return ApiResponse.success(approvalWorkflowService.getApprovalStatus(reportId));
+    }
+
+    @GetMapping("/payment-summary")
+    @PreAuthorize(CAN_ACT_AS_FINANCE)
+    public ApiResponse<FinancePaymentSummaryResponse> getPaymentSummary() {
+        return ApiResponse.success(financeVerificationService.getPaymentSummary());
+    }
+
+    /** History tabs (Verified / Queried) - PENDING is not a valid value here, use {@link #getMyQueue}. */
+    @GetMapping("/history")
+    @PreAuthorize(CAN_ACT_AS_FINANCE)
+    public ApiResponse<PageResponse<FinanceHistoryItemResponse>> getHistory(
+            @RequestParam FinanceVerificationStatus status,
+            @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.success(financeVerificationService.getFinanceHistory(status, PageRequest.of(page, size)));
+    }
+}

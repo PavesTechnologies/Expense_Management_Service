@@ -43,8 +43,10 @@ public class PolicyRuleController {
 
     @GetMapping
     @PreAuthorize("hasAnyRole('ADMIN','FINANCE','MANAGER')")
-    public ApiResponse<List<PolicyRuleResponse>> getAll() {
-        return ApiResponse.success(policyRuleService.getAll());
+    public ApiResponse<List<PolicyRuleResponse>> getAll(@RequestParam(required = false) UUID categoryId) {
+        return ApiResponse.success(categoryId != null
+                ? policyRuleService.getAllForCategory(categoryId)
+                : policyRuleService.getAll());
     }
 
     @DeleteMapping("/{policyId}")

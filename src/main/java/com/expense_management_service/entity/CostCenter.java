@@ -43,12 +43,30 @@ public class CostCenter {
     @Column(name = "description", length = 1000)
     private String description;
 
-    /** UUID of the owning employee in UMS, stored as its string form (see {@link com.expense_management_service.dto.request.CostCenterRequest#ownerEmployeeUuid()}). */
+    /**
+     * The owning employee's EOS {@code employeeId} - the same identifier space as every other
+     * approver reference in this system (EmployeeCache.managerEmployeeId, ApprovalDelegation
+     * delegator/delegate, approval-flow approver sources). Previously stored a UMS {@code user_id}
+     * instead (a different identifier space), which meant COST_CENTER_OWNER approver resolution
+     * could never resolve to a real employee - fixed alongside the V6 migration.
+     */
     @Column(name = "owner_employee_id", length = 255)
     private String ownerEmployeeId;
 
     @Column(name = "status", length = 255)
     private String status;
+
+    /**
+     * Governs behavior when NO {@code CostCenterBudget} row exists at all for this cost center's
+     * applicable fiscal year - deliberately lives here, not on {@code CostCenterBudget}, precisely
+     * because that is the one row this flag must still be readable without. {@code true} allows a
+     * submission to proceed with a {@code BudgetEncumbrance} flagged {@code unbudgeted = true}
+     * instead of hard-failing; it never overrides a genuine insufficient-budget failure on a cost
+     * center that DOES have a budget row.
+     */
+    @Column(name = "allow_unbudgeted", nullable = false)
+    @Builder.Default
+    private Boolean allowUnbudgeted = false;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
@@ -62,11 +80,6 @@ public class CostCenter {
     @Builder.Default
     @ToString.Exclude
     private List<CostCenterBudget> costCenterBudgets = new ArrayList<>();
-
-    @OneToMany(mappedBy = "costCenter")
-    @Builder.Default
-    @ToString.Exclude
-    private List<ApprovalMatrix> approvalMatrices = new ArrayList<>();
 
     @OneToMany(mappedBy = "costCenter")
     @Builder.Default

@@ -243,6 +243,55 @@ class ExchangeRateServiceImplTest {
     }
 
     @Test
+    void convertAmount_returnsAmountUnchanged_whenSameCurrency_withoutLookingUpARate() {
+        BigDecimal result = exchangeRateService.convertAmount(
+                BigDecimal.valueOf(100), usd.getCurrencyId(), usd.getCurrencyId(), LocalDate.now());
+
+        assertThat(result).isEqualByComparingTo("100");
+        verify(exchangeRateRepository, never())
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
+                        any(), any(), any());
+    }
+
+    @Test
+    void convertAmount_returnsNull_whenAmountIsNull() {
+        BigDecimal result = exchangeRateService.convertAmount(null, usd.getCurrencyId(), inr.getCurrencyId(), LocalDate.now());
+
+        assertThat(result).isNull();
+    }
+
+    @Test
+    void convertAmount_multipliesByHistoricalRateAndRoundsToTargetCurrencyDecimalPlaces() {
+        LocalDate asOfDate = LocalDate.of(2026, 3, 15);
+        ExchangeRate rate = ExchangeRate.builder()
+                .exchangeRateId(UUID.randomUUID()).fromCurrency(usd).toCurrency(inr)
+                .rate(BigDecimal.valueOf(83.256)).effectiveDate(asOfDate).build();
+        when(exchangeRateRepository
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
+                        usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
+                .thenReturn(Optional.of(rate));
+        when(currencyRepository.findById(inr.getCurrencyId())).thenReturn(Optional.of(inr));
+
+        BigDecimal result = exchangeRateService.convertAmount(
+                BigDecimal.valueOf(10), usd.getCurrencyId(), inr.getCurrencyId(), asOfDate);
+
+        // 10 * 83.256 = 832.56, rounded to INR's 2 decimal places (inr.decimalPlaces == 2, per setUp)
+        assertThat(result).isEqualByComparingTo("832.56");
+    }
+
+    @Test
+    void convertAmount_throwsResourceNotFoundException_whenNoRateExistsOnOrBeforeDate() {
+        LocalDate asOfDate = LocalDate.of(2026, 3, 15);
+        when(exchangeRateRepository
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
+                        usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> exchangeRateService.convertAmount(BigDecimal.TEN, usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
     void refreshRates_derivesPairsFromActiveCurrencyMasterData_notFromExistingExchangeRateRows() {
         // USD has never had an exchange_rate row created for it — the refresh must still pick it up
         // purely because it is Active in the Currency table.

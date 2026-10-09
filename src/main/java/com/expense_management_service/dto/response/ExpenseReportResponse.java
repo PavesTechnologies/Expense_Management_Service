@@ -14,8 +14,12 @@ public record ExpenseReportResponse(
         UUID costCenterId,
         String costCenterName,
         String reportStatus,
+        String paymentRoutingStatus,
+        String invoiceHandoffStatus,
         UUID currencyId,
         String currencyCode,
+        /** Currency of {@code totalAmount} - the organization base currency, not the report's own {@code currencyCode}. */
+        String baseCurrencyCode,
         BigDecimal totalAmount,
         BigDecimal reimbursableAmount,
         LocalDateTime submittedAt,
@@ -25,6 +29,8 @@ public record ExpenseReportResponse(
         LocalDateTime updatedAt,
         int lineItemCount,
         boolean editable,
-        boolean deletable
+        boolean deletable,
+        int policyWarningCount,
+        int policyUnjustifiedCount
 ) {
 }

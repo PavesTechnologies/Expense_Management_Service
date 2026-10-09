@@ -6,15 +6,18 @@ import com.expense_management_service.common.exception.EmployeeInactiveException
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.integration.ums.UmsClient;
 import com.expense_management_service.integration.ums.dto.UmsUserResponse;
 import com.expense_management_service.mapper.ExpenseReportMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,11 +25,12 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.LocalDate;
-import java.time.Year;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -34,6 +38,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -52,6 +57,8 @@ class ExpenseReportServiceImplTest {
     private UmsClient umsClient;
     @Mock
     private CurrentUserService currentUserService;
+    @Mock
+    private PolicyViolationRepository policyViolationRepository;
 
     private ExpenseReportServiceImpl expenseReportService;
 
@@ -65,20 +72,20 @@ class ExpenseReportServiceImplTest {
     void setUp() {
         expenseReportService = new ExpenseReportServiceImpl(
                 expenseReportRepository, costCenterRepository, currencyRepository, umsClient,
-                currentUserService, new ExpenseReportMapper());
+                currentUserService, new ExpenseReportMapper(), policyViolationRepository);
         ReflectionTestUtils.setField(expenseReportService, "businessPurposeMinLength", 10);
 
         costCenterId = UUID.randomUUID();
         currencyId = UUID.randomUUID();
-        fiscalYear = String.valueOf(Year.now().getValue());
+        fiscalYear = ExpenseReportServiceImpl.fiscalYearFor(LocalDate.now());
     }
 
     private CurrentUser employeeCaller() {
-        return new CurrentUser(employeeUuid, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
+        return new CurrentUser(employeeUuid, null, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
     }
 
     private CurrentUser adminCaller() {
-        return new CurrentUser(UUID.randomUUID(), "9999999", "admin@example.com", "Admin", List.of("ADMIN"), List.of());
+        return new CurrentUser(UUID.randomUUID(), null, "9999999", "admin@example.com", "Admin", List.of("ADMIN"), List.of());
     }
 
     private ExpenseReportRequest validRequest() {
@@ -95,6 +102,37 @@ class ExpenseReportServiceImplTest {
         Currency currency = Currency.builder().currencyId(currencyId).currencyCode("USD").status("ACTIVE").build();
         lenient().when(costCenterRepository.findById(costCenterId)).thenReturn(Optional.of(costCenter));
         lenient().when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+    }
+
+    // ---------------------------------------------------------------------
+    // fiscalYearFor - the April-to-March boundary (bug fix: budget lookup requires "YYYY-YYYY")
+    // ---------------------------------------------------------------------
+
+    @Test
+    void fiscalYearFor_aprilFirst_startsTheNewFiscalYear() {
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2026, 4, 1))).isEqualTo("2026-2027");
+    }
+
+    @Test
+    void fiscalYearFor_marchThirtyFirst_stillBelongsToThePriorFiscalYear() {
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2027, 3, 31))).isEqualTo("2026-2027");
+    }
+
+    @Test
+    void fiscalYearFor_januaryDate_resolvesToTheFiscalYearThatStartedTheApriBefore() {
+        // A report/expense dated 2027-01-15 is NOT fiscal year "2027" or "2027-2028" - it's still
+        // within the fiscal year that started 1 Apr 2026, exactly the mismatch that caused the bug.
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2027, 1, 15))).isEqualTo("2026-2027");
+    }
+
+    @Test
+    void fiscalYearFor_decemberDate_belongsToTheFiscalYearThatStartedThatCalendarYearsApril() {
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2026, 12, 31))).isEqualTo("2026-2027");
+    }
+
+    @Test
+    void fiscalYearFor_aprilFirstOfTheFollowingYear_rollsOverToTheNextFiscalYear() {
+        assertThat(ExpenseReportServiceImpl.fiscalYearFor(LocalDate.of(2027, 4, 1))).isEqualTo("2027-2028");
     }
 
     @Test
@@ -176,10 +214,30 @@ class ExpenseReportServiceImplTest {
     }
 
     @Test
+    void getAll_filtersByStatusAndSearchText_forMyExpenses() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        PageImpl<ExpenseReport> page = new PageImpl<>(List.of(ExpenseReport.builder()
+                .reportId(UUID.randomUUID())
+                .employeeId(employeeId)
+                .reportStatus(ReportStatus.DRAFT)
+                .title("Client visit - Q1")
+                .reportNumber("EXP-2026-ABCD1234")
+                .build()), PageRequest.of(0, 10), 1);
+        when(expenseReportRepository.searchByEmployeeIdAndStatusAndQuery(eq(employeeId), eq(ReportStatus.DRAFT), eq("visit"), any()))
+                .thenReturn(page);
+
+        PageResponse<ExpenseReportResponse> response = expenseReportService.getAll(PageRequest.of(0, 10), "DRAFT", "visit");
+
+        assertThat(response.content()).hasSize(1);
+        assertThat(response.content().get(0).reportStatus()).isEqualTo("DRAFT");
+        assertThat(response.content().get(0).reportNumber()).startsWith("EXP-");
+    }
+
+    @Test
     void update_throwsAccessDenied_whenCallerIsNotOwner() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
-                .reportStatus("DRAFT").fiscalYear(fiscalYear).title("Old title").build();
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).title("Old title").build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -193,7 +251,7 @@ class ExpenseReportServiceImplTest {
     void update_allowsAdmin_toEditAnyReport() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
-                .reportStatus("DRAFT").fiscalYear(fiscalYear).title("Old title").build();
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).title("Old title").build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(adminCaller());
         stubActiveCostCenterAndCurrency();
@@ -210,7 +268,7 @@ class ExpenseReportServiceImplTest {
     void update_throwsBusinessRuleViolation_whenReportNotEditable() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
-                .reportStatus("SUBMITTED").fiscalYear(fiscalYear).title("Old title").build();
+                .reportStatus(ReportStatus.PENDING_APPROVAL).fiscalYear(fiscalYear).title("Old title").build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -224,12 +282,40 @@ class ExpenseReportServiceImplTest {
     void getById_throwsAccessDenied_whenEmployeeRequestsSomeoneElsesReport() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
-                .reportStatus("DRAFT").fiscalYear(fiscalYear).build();
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
         assertThatThrownBy(() -> expenseReportService.getById(reportId))
                 .isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    void getById_allowsApExecutive_toViewSomeoneElsesReport() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
+                .reportStatus(ReportStatus.APPROVED).fiscalYear(fiscalYear).build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), null, "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+
+        ExpenseReportResponse response = expenseReportService.getById(reportId);
+
+        assertThat(response.reportId()).isEqualTo(reportId);
+    }
+
+    @Test
+    void getById_allowsFinanceExecutive_toViewSomeoneElsesReport() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
+                .reportStatus(ReportStatus.PENDING_APPROVAL).fiscalYear(fiscalYear).build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), null, "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+
+        ExpenseReportResponse response = expenseReportService.getById(reportId);
+
+        assertThat(response.reportId()).isEqualTo(reportId);
     }
 
     @Test
@@ -242,36 +328,61 @@ class ExpenseReportServiceImplTest {
     }
 
     @Test
+    void getById_includesPolicyWarningCounts() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+
+        var justified = com.expense_management_service.entity.PolicyViolation.builder()
+                .violationId(UUID.randomUUID()).justification("explained").build();
+        var unjustified = com.expense_management_service.entity.PolicyViolation.builder()
+                .violationId(UUID.randomUUID()).build();
+        when(policyViolationRepository.findByLineItem_Report_ReportId(reportId)).thenReturn(List.of(justified, unjustified));
+
+        ExpenseReportResponse response = expenseReportService.getById(reportId);
+
+        assertThat(response.policyWarningCount()).isEqualTo(2);
+        assertThat(response.policyUnjustifiedCount()).isEqualTo(1);
+    }
+
+    @Test
     void getAll_scopesToOwnReports_forEmployeeRole() {
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         ExpenseReport own = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId(employeeId)
-                .reportStatus("DRAFT").fiscalYear(fiscalYear).build();
-        when(expenseReportRepository.findByEmployeeId(employeeId)).thenReturn(List.of(own));
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build();
+        when(expenseReportRepository.findByEmployeeId(eq(employeeId), any()))
+            .thenReturn(new PageImpl<>(List.of(own)));
 
-        List<ExpenseReportResponse> result = expenseReportService.getAll();
+        var result = expenseReportService.getAll(PageRequest.of(0, 10));
 
-        assertThat(result).hasSize(1);
+        assertThat(result.content()).hasSize(1);
+        verify(expenseReportRepository).findByEmployeeId(eq(employeeId), any());
         verify(expenseReportRepository, never()).findAll();
     }
 
     @Test
-    void getAll_returnsEveryReport_forFinanceRole() {
-        CurrentUser finance = new CurrentUser(UUID.randomUUID(), "financeUser", "f@example.com", "Finance", List.of("FINANCE"), List.of());
-        when(currentUserService.getCurrentUser()).thenReturn(finance);
-        when(expenseReportRepository.findAll()).thenReturn(List.of(
-                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("a").reportStatus("DRAFT").fiscalYear(fiscalYear).build(),
-                ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("b").reportStatus("SUBMITTED").fiscalYear(fiscalYear).build()));
+    void getAll_scopesToOwnReports_evenForAdminAndFinanceRoles() {
+        for (String role : List.of("ADMIN", "FINANCE", "MANAGER")) {
+            CurrentUser privileged = new CurrentUser(UUID.randomUUID(), null, "user-" + role, "u@example.com", role, List.of(role), List.of());
+            when(currentUserService.getCurrentUser()).thenReturn(privileged);
+                when(expenseReportRepository.findByEmployeeId(eq("user-" + role), any())).thenReturn(
+                    new PageImpl<>(List.of(ExpenseReport.builder().reportId(UUID.randomUUID())
+                        .employeeId("user-" + role).reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).build())));
 
-        List<ExpenseReportResponse> result = expenseReportService.getAll();
+                var result = expenseReportService.getAll(PageRequest.of(0, 10));
 
-        assertThat(result).hasSize(2);
-        verify(expenseReportRepository, never()).findByEmployeeId(any());
+                assertThat(result.content()).hasSize(1);
+                assertThat(result.content().get(0).employeeId()).isEqualTo("user-" + role);
+        }
+        verify(expenseReportRepository, never()).findAll();
     }
 
     @Test
     void delete_removesReport_whenOwnerAndDraft() {
         UUID reportId = UUID.randomUUID();
-        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus("DRAFT").build();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus(ReportStatus.DRAFT).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -283,7 +394,7 @@ class ExpenseReportServiceImplTest {
     @Test
     void delete_throwsBusinessRuleViolation_whenReportAlreadySubmitted() {
         UUID reportId = UUID.randomUUID();
-        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus("SUBMITTED").build();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).reportStatus(ReportStatus.PENDING_APPROVAL).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 
@@ -296,7 +407,7 @@ class ExpenseReportServiceImplTest {
     @Test
     void delete_throwsAccessDenied_whenCallerIsNotOwnerOrAdmin() {
         UUID reportId = UUID.randomUUID();
-        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else").reportStatus("DRAFT").build();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else").reportStatus(ReportStatus.DRAFT).build();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
 

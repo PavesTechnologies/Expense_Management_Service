@@ -1,0 +1,331 @@
+package com.expense_management_service.service.impl;
+
+import com.expense_management_service.common.exception.ResourceNotFoundException;
+import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.FinanceHistoryItemResponse;
+import com.expense_management_service.dto.response.FinanceLineItemReviewResponse;
+import com.expense_management_service.dto.response.FinancePendingLineItemResponse;
+import com.expense_management_service.dto.response.FinanceQueueItemResponse;
+import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.entity.ApprovalAssignment;
+import com.expense_management_service.entity.ApprovalLevelInstance;
+import com.expense_management_service.entity.ExpenseLineItem;
+import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.FinanceVerificationReview;
+import com.expense_management_service.entity.GlAccount;
+import com.expense_management_service.enums.AssignmentStatus;
+import com.expense_management_service.enums.FinanceVerificationStatus;
+import com.expense_management_service.enums.LevelInstanceStatus;
+import com.expense_management_service.enums.LevelType;
+import com.expense_management_service.enums.ReportStatus;
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
+import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
+import com.expense_management_service.repository.ExpenseLineItemRepository;
+import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.entity.VerificationQuery;
+import com.expense_management_service.mapper.ApprovalFlowMapper;
+import com.expense_management_service.repository.FinanceVerificationReviewRepository;
+import com.expense_management_service.repository.VerificationQueryRepository;
+import com.expense_management_service.service.ApprovalEventPublisher;
+import com.expense_management_service.service.ApprovalWorkflowService;
+import com.expense_management_service.service.FinanceEligibilityResult;
+import com.expense_management_service.service.FinanceVerificationEligibilityChecker;
+import com.expense_management_service.service.FinanceVerificationService;
+import com.expense_management_service.dto.response.FinancePaymentSummaryResponse;
+import com.expense_management_service.enums.PaymentRoutingStatus;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+@Transactional
+@Slf4j
+public class FinanceVerificationServiceImpl implements FinanceVerificationService {
+
+    /** Report totals are stored in the organization base currency (sum of line baseAmount), so they are labelled with it. */
+    @Value("${exchange.rate.base-currency}")
+    private String baseCurrencyCode;
+
+    private final ExpenseReportRepository expenseReportRepository;
+    private final ApprovalLevelInstanceRepository approvalLevelInstanceRepository;
+    private final ApprovalAssignmentRepository approvalAssignmentRepository;
+    private final FinanceVerificationReviewRepository financeVerificationReviewRepository;
+    private final ExpenseLineItemRepository expenseLineItemRepository;
+    private final FinanceVerificationEligibilityChecker financeVerificationEligibilityChecker;
+    private final ApprovalEventPublisher approvalEventPublisher;
+    private final ApprovalWorkflowService approvalWorkflowService;
+    private final ExpenseReportResponseFactory expenseReportResponseFactory;
+    private final VerificationQueryRepository verificationQueryRepository;
+    private final com.expense_management_service.service.TaxSnapshotService taxSnapshotService;
+
+    @Override
+    public ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, boolean taxChecked) {
+        FinanceActionContext ctx = resolveContext(reportId, lineItemId, actingEmployeeId);
+
+        var taxStatus = ctx.lineItem().getTaxValidationStatus();
+        if (!taxChecked && (taxStatus == com.expense_management_service.enums.TaxValidationStatus.MISMATCH
+                || taxStatus == com.expense_management_service.enums.TaxValidationStatus.REQUIRES_FINANCE_REVIEW)) {
+            throw new IllegalArgumentException("This line's tax is flagged for review - confirm you checked it (or adjust it) before verifying.");
+        }
+
+        FinanceEligibilityResult eligibility = financeVerificationEligibilityChecker.check(ctx.lineItem());
+        if (!eligibility.eligible()) {
+            throw new IllegalArgumentException("Cannot verify line item. Reason: " + eligibility.reason());
+        }
+
+        GlAccount glAccount = ctx.lineItem().getCategory().getGlAccount();
+        FinanceVerificationReview review = ctx.review();
+        review.setGlAccountIdAtVerification(glAccount.getGlAccountId());
+        review.setGlAccountCodeSnapshot(glAccount.getGlAccountCode());
+        review.setPolicyExceptionResolvedFlag(true);
+        review.setReceiptValidatedFlag(true);
+        review.setStatus(FinanceVerificationStatus.VERIFIED);
+        review.setActedBy(actingEmployeeId);
+        review.setActionedAt(LocalDateTime.now());
+        financeVerificationReviewRepository.save(review);
+        if (taxStatus != null) {
+            taxSnapshotService.markFinanceVerified(ctx.lineItem());
+        }
+        approvalEventPublisher.publish("LINE_ITEM_VERIFIED", reportId, "lineItem=" + lineItemId + " by=" + actingEmployeeId);
+
+        approvalWorkflowService.advanceAfterLevelReviewed(reportId, ctx.activeInstance().getInstanceId(), ctx.authorizing().getApproverId());
+
+        log.info("Line item {} verified on report {} by {}", lineItemId, reportId, actingEmployeeId);
+        return expenseReportResponseFactory.toResponse(findReport(reportId));
+    }
+
+    @Override
+    public ExpenseReportResponse adjustLineTax(UUID reportId, UUID lineItemId, String actingEmployeeId,
+                                               com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest request) {
+        // Same gate as verify/query: the report is at Finance and this line's review is still pending.
+        FinanceActionContext ctx = resolveContext(reportId, lineItemId, actingEmployeeId);
+        taxSnapshotService.financeAdjust(ctx.lineItem(), request.taxCodeId(), request.taxAmount(),
+                request.itcRecoverablePercent(), request.reason());
+        approvalEventPublisher.publish("LINE_ITEM_TAX_ADJUSTED", reportId, "lineItem=" + lineItemId + " by=" + actingEmployeeId);
+        log.info("Tax adjusted on line item {} of report {} by {}: {}", lineItemId, reportId, actingEmployeeId, request.reason());
+        return expenseReportResponseFactory.toResponse(findReport(reportId));
+    }
+
+    @Override
+    public ExpenseReportResponse queryLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, String reason) {
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("A reason is required to raise a Finance query");
+        }
+        FinanceActionContext ctx = resolveContext(reportId, lineItemId, actingEmployeeId);
+
+        verificationQueryRepository.save(VerificationQuery.builder()
+                .lineItem(ctx.lineItem())
+                .levelInstance(ctx.activeInstance())
+                .raisedBy(actingEmployeeId)
+                .queryText(reason)
+                .status(FinanceVerificationStrategy.QUERY_STATUS_RAISED)
+                .raisedAt(LocalDateTime.now())
+                .build());
+
+        FinanceVerificationReview review = ctx.review();
+        review.setStatus(FinanceVerificationStatus.QUERIED);
+        review.setComment(reason);
+        review.setActedBy(actingEmployeeId);
+        review.setActionedAt(LocalDateTime.now());
+        financeVerificationReviewRepository.save(review);
+
+        ctx.report().setReportStatus(ReportStatus.AWAITING_CORRECTION);
+        expenseReportRepository.save(ctx.report());
+        approvalEventPublisher.publish("VERIFICATION_QUERY_RAISED", reportId, "lineItem=" + lineItemId + " by=" + actingEmployeeId);
+
+        log.info("Finance query raised on line item {} of report {} by {}: {}", lineItemId, reportId, actingEmployeeId, reason);
+        return expenseReportResponseFactory.toResponse(findReport(reportId));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<FinanceQueueItemResponse> getFinanceQueue(String actingEmployeeId, Pageable pageable) {
+        // Role+status based (§8): any Finance Executive sees every report awaiting Finance
+        // Verification, regardless of whether they (or anyone) were specifically resolved as the
+        // configured approver for that report's cost center - the FINANCE_EXECUTIVE role check
+        // already happened at the controller layer. Matches how the AP Payment queue works.
+        Page<ExpenseReport> reportsPage = expenseReportRepository.findByReportStatus(
+                ReportStatus.PENDING_FINANCE_VERIFICATION, pageable);
+
+        List<FinanceQueueItemResponse> items = reportsPage.getContent().stream()
+                .map(this::toQueueItem)
+                .toList();
+
+        return PageResponse.of(new PageImpl<>(items, pageable, reportsPage.getTotalElements()));
+    }
+
+    private FinanceQueueItemResponse toQueueItem(ExpenseReport report) {
+        ApprovalLevelInstance instance = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleAndStatus(
+                        report.getReportId(), currentCycle(report.getReportId()), LevelInstanceStatus.ACTIVE)
+                .filter(i -> i.getLevelType() == LevelType.FINANCE_VERIFICATION)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Report " + report.getReportId() + " is PENDING_FINANCE_VERIFICATION but has no ACTIVE Finance level instance"));
+
+        var pendingReviews = financeVerificationReviewRepository
+                .findByLevelInstance_InstanceIdAndStatus(instance.getInstanceId(), FinanceVerificationStatus.PENDING);
+
+        List<FinancePendingLineItemResponse> pendingLineItems = pendingReviews.stream()
+                .map(review -> {
+                    ExpenseLineItem lineItem = review.getLineItem();
+                    FinanceEligibilityResult eligibility = financeVerificationEligibilityChecker.check(lineItem);
+                    GlAccount glAccount = lineItem.getCategory() != null ? lineItem.getCategory().getGlAccount() : null;
+                    return new FinancePendingLineItemResponse(
+                            lineItem.getLineItemId(), review.getReviewId(),
+                            lineItem.getCategory() != null ? lineItem.getCategory().getCategoryName() : null,
+                            lineItem.getMerchantName(), lineItem.getDescription(), lineItem.getExpenseDate(),
+                            lineItem.getAmount(), lineItem.getCurrency() != null ? lineItem.getCurrency().getCurrencyCode() : null,
+                            glAccount != null ? glAccount.getGlAccountCode() : null,
+                            eligibility.eligible(), eligibility.reason(), Boolean.TRUE.equals(lineItem.getClientBillable()),
+                            lineItem.getTaxAmount(), lineItem.getTaxCode(),
+                            lineItem.getTaxValidationStatus() != null ? lineItem.getTaxValidationStatus().name() : null);
+                })
+                .toList();
+
+        return new FinanceQueueItemResponse(
+                report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTotalAmount(),
+                baseCurrencyCode,
+                report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
+                report.getReportStatus() != null ? report.getReportStatus().name() : null,
+                report.getSubmittedAt(),
+                instance.getLevelOrder(), pendingLineItems);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<FinanceLineItemReviewResponse> getFinanceReviews(UUID reportId, String actingEmployeeId) {
+        findReport(reportId);
+
+        int cycle = currentCycle(reportId);
+        var financeInstances = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(reportId, cycle).stream()
+                .filter(instance -> instance.getLevelType() == LevelType.FINANCE_VERIFICATION)
+                .toList();
+
+        List<FinanceLineItemReviewResponse> result = new ArrayList<>();
+        for (ApprovalLevelInstance instance : financeInstances) {
+            for (FinanceVerificationReview review : financeVerificationReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId())) {
+                result.add(new FinanceLineItemReviewResponse(
+                        review.getLineItem().getLineItemId(), review.getReviewId(), review.getStatus(), review.getComment(),
+                        review.getActedBy(), review.getActionedAt(), review.getGlAccountCodeSnapshot(),
+                        review.getPolicyExceptionResolvedFlag(), review.getReceiptValidatedFlag(),
+                        instance.getLevelOrder(), instance.getLevelName(),
+                        ApprovalFlowMapper.resolveDisplayName(instance.getLevelName(), instance.getLevelOrder())));
+            }
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<FinanceHistoryItemResponse> getFinanceHistory(FinanceVerificationStatus status, Pageable pageable) {
+        if (status == null || status == FinanceVerificationStatus.PENDING) {
+            throw new IllegalArgumentException("Finance Verification history only supports VERIFIED or QUERIED, not " + status);
+        }
+
+        var instances = status == FinanceVerificationStatus.VERIFIED
+                ? approvalLevelInstanceRepository.findCompletedFinanceVerificationInstances(pageable)
+                : approvalLevelInstanceRepository.findQueriedFinanceVerificationInstances(pageable);
+
+        return PageResponse.of(instances.map(instance -> toHistoryItem(instance, status)));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public FinancePaymentSummaryResponse getPaymentSummary() {
+        return new FinancePaymentSummaryResponse(
+                expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT),
+                expenseReportRepository.countByPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED));
+    }
+
+    private FinanceHistoryItemResponse toHistoryItem(ApprovalLevelInstance instance, FinanceVerificationStatus status) {
+        ExpenseReport report = instance.getReport();
+        FinanceVerificationReview representative = financeVerificationReviewRepository
+                .findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                .filter(review -> status != FinanceVerificationStatus.QUERIED || review.getStatus() == FinanceVerificationStatus.QUERIED)
+                .max(Comparator.comparing(FinanceVerificationReview::getActionedAt, Comparator.nullsFirst(Comparator.naturalOrder())))
+                .orElse(null);
+
+        return new FinanceHistoryItemResponse(
+                report.getReportId(), report.getReportNumber(), report.getEmployeeId(), report.getTotalAmount(),
+                baseCurrencyCode,
+                report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
+                report.getReportStatus() != null ? report.getReportStatus().name() : null,
+                status.name(), instance.getLevelOrder(),
+                representative != null ? representative.getActedBy() : null,
+                representative != null ? representative.getActionedAt() : null,
+                representative != null ? representative.getComment() : null,
+                report.getPaymentRoutingStatus() != null ? report.getPaymentRoutingStatus().name() : null,
+                report.getPaymentCompletedAt(),
+                report.getInvoiceHandoffStatus() != null ? report.getInvoiceHandoffStatus().name() : null);
+    }
+
+    /**
+     * Shared lookup + idempotency guard for both VERIFY and QUERY - kept as one place so the two
+     * actions can never authorize differently. Authorization itself (§8) is role-only: the caller
+     * already holds FINANCE_EXECUTIVE (checked by {@code @PreAuthorize} at the controller), so
+     * anyone with that role may act on any report's currently-active Finance level - matching how
+     * the AP Payment queue's own actions work. {@code authorizing} is only a representative
+     * assignment used to drive the existing completion bookkeeping in {@code
+     * ApprovalWorkflowService.advanceAfterLevelReviewed}, not a per-caller authorization gate.
+     */
+    private FinanceActionContext resolveContext(UUID reportId, UUID lineItemId, String actingEmployeeId) {
+        ExpenseReport report = findReport(reportId);
+        if (report.getReportStatus() != ReportStatus.PENDING_FINANCE_VERIFICATION) {
+            throw new IllegalArgumentException(
+                    "Report " + reportId + " has no Finance Verification level currently active");
+        }
+
+        ApprovalLevelInstance activeInstance = approvalLevelInstanceRepository
+                .findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, currentCycle(reportId), LevelInstanceStatus.ACTIVE)
+                .filter(instance -> instance.getLevelType() == LevelType.FINANCE_VERIFICATION)
+                .orElseThrow(() -> new IllegalStateException(
+                        "Report " + reportId + " is PENDING_FINANCE_VERIFICATION but has no ACTIVE Finance level instance"));
+
+        ApprovalAssignment authorizing = approvalAssignmentRepository.findByLevelInstance_InstanceId(activeInstance.getInstanceId())
+                .stream()
+                .filter(a -> a.getStatus() == AssignmentStatus.ACTIVE)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException(
+                        "Report " + reportId + " has an ACTIVE Finance level instance but no ACTIVE assignment"));
+
+        ExpenseLineItem lineItem = expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId)
+                .orElseThrow(() -> new ResourceNotFoundException("Line item " + lineItemId + " is not part of report " + reportId));
+
+        FinanceVerificationReview review = financeVerificationReviewRepository
+                .findByLineItem_LineItemIdAndLevelInstance_InstanceId(lineItemId, activeInstance.getInstanceId())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "No pending Finance review for line item " + lineItemId + " at this level"));
+        if (review.getStatus() != FinanceVerificationStatus.PENDING) {
+            throw new IllegalArgumentException("This line item has already been reviewed at this level: " + review.getStatus());
+        }
+
+        return new FinanceActionContext(report, activeInstance, authorizing, lineItem, review);
+    }
+
+    private record FinanceActionContext(ExpenseReport report, ApprovalLevelInstance activeInstance,
+                                         ApprovalAssignment authorizing, ExpenseLineItem lineItem, FinanceVerificationReview review) {
+    }
+
+    private int currentCycle(UUID reportId) {
+        return approvalLevelInstanceRepository.findMaxSubmissionCycle(reportId);
+    }
+
+    private ExpenseReport findReport(UUID reportId) {
+        return expenseReportRepository.findById(reportId)
+                .orElseThrow(() -> new ResourceNotFoundException("ExpenseReport not found with id: " + reportId));
+    }
+}

@@ -17,4 +17,10 @@ public interface DepartmentApproverService {
     List<DepartmentApproverResponse> getAll();
 
     void delete(UUID departmentApproverId);
+
+    /** Every Employee Onboarding department with its configured approver (if any), by department name. */
+    List<com.expense_management_service.dto.response.DepartmentApproverOverviewResponse> getDepartmentOverview();
+
+    /** Active UMS users, matched to employee records, that can be picked as a department approver. */
+    List<com.expense_management_service.dto.response.ApproverCandidateResponse> getApproverCandidates();
 }

@@ -91,8 +91,8 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
             CostCenterBudget budget = budgetOpt.get();
             BigDecimal effectiveAvailable = effectiveAvailable(budget);
             if (needed.compareTo(effectiveAvailable) > 0) {
-                throw new IllegalArgumentException("Insufficient budget for Cost Center " + costCenter.getCostCenterCode()
-                        + ": this submission requires " + needed + " but only " + effectiveAvailable + " is effectively available.");
+                throw new IllegalArgumentException(insufficientBudgetMessage(costCenter.getCostCenterCode(), "this submission needs",
+                        needed, budget.getAvailableBudget(), effectiveAvailable));
             }
 
             BigDecimal effectiveAvailableAfter = effectiveAvailable.subtract(needed);
@@ -191,6 +191,25 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
         budgetEncumbranceRepository.saveAll(active);
         log.info("Consumed {} budget encumbrance(s) for report {} cycle {}", active.size(), reportId, submissionCycle);
         return true;
+    }
+
+    /**
+     * Spells out why: the budget page's "Available" is budget less payments made, while a submission
+     * is checked against that less what other submitted-but-unpaid reports have reserved.
+     */
+    static String insufficientBudgetMessage(String costCenterCode, String needsPhrase, BigDecimal needed,
+                                            BigDecimal available, BigDecimal effectiveAvailable) {
+        BigDecimal reserved = available != null ? available.subtract(effectiveAvailable) : null;
+        String why = reserved != null && reserved.signum() > 0
+                ? " (" + money(available) + " left after payments, minus " + money(reserved)
+                        + " reserved by other reports awaiting approval or payment)"
+                : "";
+        return "Insufficient budget for Cost Center " + costCenterCode + ": " + needsPhrase + " " + money(needed)
+                + ", but only " + money(effectiveAvailable) + " is available" + why + ".";
+    }
+
+    private static String money(BigDecimal value) {
+        return value == null ? "0.00" : String.format(java.util.Locale.ROOT, "%,.2f", value);
     }
 
     @Override
@@ -347,8 +366,8 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
             CostCenterBudget budget = budgetOpt.get();
             BigDecimal effectiveAvailable = effectiveAvailable(budget);
             if (incremental.compareTo(effectiveAvailable) > 0) {
-                throw new IllegalArgumentException("Insufficient budget for Cost Center " + costCenter.getCostCenterCode()
-                        + ": this correction requires an additional " + incremental + " but only " + effectiveAvailable + " is effectively available.");
+                throw new IllegalArgumentException(insufficientBudgetMessage(costCenter.getCostCenterCode(), "this correction needs an additional",
+                        incremental, budget.getAvailableBudget(), effectiveAvailable));
             }
 
             BigDecimal effectiveAvailableAfter = effectiveAvailable.subtract(incremental);

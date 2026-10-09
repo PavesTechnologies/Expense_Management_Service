@@ -86,6 +86,18 @@ class DefaultApproverSourceResolverImplTest {
     }
 
     @Test
+    void resolve_returnsEmpty_forDepartmentOwner_whenMappingIsInactive() {
+        UUID departmentUuid = UUID.randomUUID();
+        ApprovalLevelApprover entry = ApprovalLevelApprover.builder().sourceType(ApproverSourceType.DEPARTMENT_OWNER).build();
+        when(employeeCacheRepository.findByEmployeeId("5100001")).thenReturn(Optional.of(
+                EmployeeCache.builder().employeeId("5100001").departmentUuid(departmentUuid.toString()).build()));
+        when(departmentApproverRepository.findByDepartmentUuid(departmentUuid)).thenReturn(Optional.of(
+                DepartmentApprover.builder().departmentUuid(departmentUuid).approverEmployeeId("5100050").status("INACTIVE").build()));
+
+        assertThat(resolver.resolve(entry, report("5100001"))).isEmpty();
+    }
+
+    @Test
     void resolve_returnsCostCenterOwner() {
         ApprovalLevelApprover entry = ApprovalLevelApprover.builder().sourceType(ApproverSourceType.COST_CENTER_OWNER).build();
         CostCenter costCenter = CostCenter.builder().costCenterId(UUID.randomUUID()).ownerEmployeeId("5100077").build();

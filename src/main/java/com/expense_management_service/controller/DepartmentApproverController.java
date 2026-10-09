@@ -5,6 +5,8 @@ import java.util.UUID;
 
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.DepartmentApproverRequest;
+import com.expense_management_service.dto.response.ApproverCandidateResponse;
+import com.expense_management_service.dto.response.DepartmentApproverOverviewResponse;
 import com.expense_management_service.dto.response.DepartmentApproverResponse;
 import com.expense_management_service.service.DepartmentApproverService;
 import jakarta.validation.Valid;
@@ -43,6 +45,18 @@ public class DepartmentApproverController {
     @GetMapping
     public ApiResponse<List<DepartmentApproverResponse>> getAll() {
         return ApiResponse.success(departmentApproverService.getAll());
+    }
+
+    /** Every Employee Onboarding department with its configured approver, for the admin screen. */
+    @GetMapping("/departments")
+    public ApiResponse<List<DepartmentApproverOverviewResponse>> getDepartmentOverview() {
+        return ApiResponse.success(departmentApproverService.getDepartmentOverview());
+    }
+
+    /** Active UMS users matched to employee records, to pick an approver from. */
+    @GetMapping("/approver-candidates")
+    public ApiResponse<List<ApproverCandidateResponse>> getApproverCandidates() {
+        return ApiResponse.success(departmentApproverService.getApproverCandidates());
     }
 
     @DeleteMapping("/{departmentApproverId}")

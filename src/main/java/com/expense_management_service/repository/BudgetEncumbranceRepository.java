@@ -22,6 +22,10 @@ public interface BudgetEncumbranceRepository extends JpaRepository<BudgetEncumbr
     @Query("select coalesce(sum(e.amount), 0) from BudgetEncumbrance e where e.budget.budgetId = :budgetId and e.status = :status")
     BigDecimal sumAmountByBudget_BudgetIdAndStatus(@Param("budgetId") UUID budgetId, @Param("status") BudgetEncumbranceStatus status);
 
+    /** [budgetId, sum(amount)] per budget for one status - the budget list's reserved column in one query. */
+    @Query("select e.budget.budgetId, sum(e.amount) from BudgetEncumbrance e where e.status = :status and e.budget is not null group by e.budget.budgetId")
+    List<Object[]> sumAmountGroupedByBudget(@Param("status") BudgetEncumbranceStatus status);
+
     /**
      * Same rows {@link #sumAmountByBudget_BudgetIdAndStatus} sums, but as a locking (FOR SHARE) read -
      * used only by {@code effectiveAvailable} from inside {@code validateAndEncumber}.

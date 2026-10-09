@@ -38,6 +38,7 @@ import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.mapper.ApprovalFlowMapper;
 import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
+import com.expense_management_service.repository.ApprovalFlowRepository;
 import com.expense_management_service.repository.ApprovalLevelInstanceRepository;
 import com.expense_management_service.repository.ApprovalLineItemReviewRepository;
 import com.expense_management_service.repository.ApprovalSplitReviewRepository;
@@ -130,6 +131,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private CashAdvanceRepository cashAdvanceRepository;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private FinanceVerificationReviewRepository financeVerificationReviewRepository;
+    /** Source of the mandatory Finance Verification level (the catch-all flow's) - see materializeChain. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private ApprovalFlowRepository approvalFlowRepository;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     @org.springframework.context.annotation.Lazy
     private FinanceVerificationService financeVerificationService;
@@ -907,7 +911,14 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     // Chain materialisation & activation
     // ---------------------------------------------------------------------
 
-    /** Snapshot-at-submission (§3.1): materialises every level as a QUEUED instance up front; nothing is ACTIVE yet. */
+    /**
+     * Snapshot-at-submission (§3.1): materialises every level as a QUEUED instance up front; nothing is ACTIVE yet.
+     * <p>
+     * Finance Verification is mandatory for every report: it is what routes an approved report to
+     * AP for payment ({@link #applyPaymentRouting}), so a flow configured with approval levels only
+     * gets the organisation's Finance Verification level appended as its final level - see
+     * {@link #mandatoryFinanceLevel}.
+     */
     private void materializeChain(ExpenseReport report, ApprovalFlow flow, int cycle) {
         List<ApprovalLevel> levels = flow.getLevels().stream()
                 .sorted(Comparator.comparing(ApprovalLevel::getLevelOrder))
@@ -918,48 +929,83 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         String glAccountFingerprint = materialChangeEvaluator.computeGlAccountFingerprint(report);
 
         for (ApprovalLevel level : levels) {
-            ApprovalLevelInstance instance = ApprovalLevelInstance.builder()
-                    .report(report)
-                    .flowId(flow.getFlowId())
-                    .levelOrder(level.getLevelOrder())
-                    .levelName(level.getLevelName())
-                    .quorum(level.getQuorum())
-                    .levelType(level.getLevelType())
-                    .submissionCycle(cycle)
-                    .status(LevelInstanceStatus.QUEUED)
-                    .materializedTotalAmount(report.getTotalAmount())
-                    .materializedCostCenterId(report.getCostCenter() != null ? report.getCostCenter().getCostCenterId() : null)
-                    .materializedClientBillableAny(clientBillableAny)
-                    .materializedGlAccountFingerprint(glAccountFingerprint)
-                    .build();
-            ApprovalLevelInstance savedInstance = approvalLevelInstanceRepository.save(instance);
+            materializeLevel(report, flow, level, level.getLevelOrder(), cycle, clientBillableAny, glAccountFingerprint);
+        }
+
+        if (levels.stream().noneMatch(l -> l.getLevelType() == LevelType.FINANCE_VERIFICATION)) {
+            ApprovalLevel finance = mandatoryFinanceLevel(flow);
+            if (finance != null) {
+                int nextOrder = levels.stream().map(ApprovalLevel::getLevelOrder).max(Integer::compare).orElse(0) + 1;
+                log.info("Flow {} has no Finance Verification level - appending the mandatory one as level {} for report {}",
+                        flow.getFlowId(), nextOrder, report.getReportId());
+                materializeLevel(report, flow, finance, nextOrder, cycle, clientBillableAny, glAccountFingerprint);
+            } else {
+                log.warn("Flow {} has no Finance Verification level and none is configured on the catch-all flow - "
+                        + "report {} will be approved without Finance Verification or AP payment routing",
+                        flow.getFlowId(), report.getReportId());
+            }
+        }
+    }
+
+    /**
+     * The organisation's Finance Verification level: the one configured on the catch-all flow (who
+     * verifies is set there, once, for every flow). Null when there is none to copy - only then is a
+     * report approved without Finance Verification.
+     */
+    private ApprovalLevel mandatoryFinanceLevel(ApprovalFlow flow) {
+        if (approvalFlowRepository == null || Boolean.TRUE.equals(flow.getIsCatchAll())) {
+            return null;
+        }
+        return approvalFlowRepository.findByIsCatchAllTrue()
+                .flatMap(catchAll -> catchAll.getLevels().stream()
+                        .filter(l -> l.getLevelType() == LevelType.FINANCE_VERIFICATION)
+                        .max(Comparator.comparing(ApprovalLevel::getLevelOrder)))
+                .orElse(null);
+    }
+
+    private void materializeLevel(ExpenseReport report, ApprovalFlow flow, ApprovalLevel level, int levelOrder, int cycle,
+                                  boolean clientBillableAny, String glAccountFingerprint) {
+        ApprovalLevelInstance instance = ApprovalLevelInstance.builder()
+                .report(report)
+                .flowId(flow.getFlowId())
+                .levelOrder(levelOrder)
+                .levelName(level.getLevelName())
+                .quorum(level.getQuorum())
+                .levelType(level.getLevelType())
+                .submissionCycle(cycle)
+                .status(LevelInstanceStatus.QUEUED)
+                .materializedTotalAmount(report.getTotalAmount())
+                .materializedCostCenterId(report.getCostCenter() != null ? report.getCostCenter().getCostCenterId() : null)
+                .materializedClientBillableAny(clientBillableAny)
+                .materializedGlAccountFingerprint(glAccountFingerprint)
+                .build();
+        ApprovalLevelInstance savedInstance = approvalLevelInstanceRepository.save(instance);
         updateCashAdvanceStatusForReportReview(report);
 
-            List<ApprovalLevelApprover> entries = level.getApprovers().stream()
-                    .sorted(Comparator.comparing(ApprovalLevelApprover::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
-                    .toList();
+        List<ApprovalLevelApprover> entries = level.getApprovers().stream()
+                .sorted(Comparator.comparing(ApprovalLevelApprover::getEntryOrder, Comparator.nullsLast(Comparator.naturalOrder())))
+                .toList();
 
-            for (ApprovalLevelApprover entry : entries) {
-                approverSourceResolver.resolve(entry, report).ifPresent(approverId ->
-                        approvalAssignmentRepository.save(ApprovalAssignment.builder()
-                                .levelInstance(savedInstance)
-                                .approverId(approverId)
-                                .sourceType(entry.getSourceType())
-                                .entryOrder(entry.getEntryOrder())
-                                .status(AssignmentStatus.PENDING)
-                                .build()));
-            }
+        for (ApprovalLevelApprover entry : entries) {
+            approverSourceResolver.resolve(entry, report).ifPresent(approverId ->
+                    approvalAssignmentRepository.save(ApprovalAssignment.builder()
+                            .levelInstance(savedInstance)
+                            .approverId(approverId)
+                            .sourceType(entry.getSourceType())
+                            .entryOrder(entry.getEntryOrder())
+                            .status(AssignmentStatus.PENDING)
+                            .build()));
+        }
 
-            boolean hasCostCenterOwnerEntry = entries.stream().anyMatch(e -> e.getSourceType() == ApproverSourceType.COST_CENTER_OWNER);
-            if (hasCostCenterOwnerEntry && level.getLevelType() == LevelType.APPROVAL) {
-                createSplitOwnerAssignments(report, savedInstance);
-            }
+        boolean hasCostCenterOwnerEntry = entries.stream().anyMatch(e -> e.getSourceType() == ApproverSourceType.COST_CENTER_OWNER);
+        if (hasCostCenterOwnerEntry && level.getLevelType() == LevelType.APPROVAL) {
+            createSplitOwnerAssignments(report, savedInstance);
+        }
 
-            if (approvalAssignmentRepository.findByLevelInstance_InstanceId(savedInstance.getInstanceId()).isEmpty()) {
-                throw new IllegalStateException("Level " + level.getLevelOrder() + " of flow " + flow.getFlowId()
-                        + " resolved zero approvers - check its approver-source configuration (e.g. a DEPARTMENT_OWNER "
-                        + "with no DepartmentApprover mapping, or a COST_CENTER_OWNER with no owner set)");
-            }
+        if (approvalAssignmentRepository.findByLevelInstance_InstanceId(savedInstance.getInstanceId()).isEmpty()) {
+            throw new IllegalStateException("Level " + levelOrder + " of flow " + flow.getFlowId()
+                    + " resolved zero approvers - check its approver-source configuration (e.g. a DEPARTMENT_OWNER "
+                    + "with no DepartmentApprover mapping, or a COST_CENTER_OWNER with no owner set)");
         }
     }
 

@@ -281,6 +281,53 @@ class ApprovalWorkflowServiceImplTest {
         verify(chainCorrectnessService).applyCorrectnessPasses(report, 1);
     }
 
+    @Test
+    void submit_appendsCatchAllFinanceLevel_whenFlowHasNoFinanceVerification() {
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenAnswer(inv ->
+                Optional.of(((ApprovalLevelApprover) inv.getArgument(0)).getSourceReference()));
+
+        ApprovalFlow catchAll = ApprovalFlow.builder().flowId(UUID.randomUUID()).name("Catch-All").isCatchAll(true).build();
+        ApprovalLevel catchAllFinance = ApprovalLevel.builder().levelId(UUID.randomUUID()).flow(catchAll).levelOrder(3)
+                .levelName("Finance Executive Approval").quorum(LevelQuorum.SEQUENTIAL)
+                .levelType(com.expense_management_service.enums.LevelType.FINANCE_VERIFICATION).build();
+        catchAllFinance.getApprovers().add(ApprovalLevelApprover.builder().entryId(UUID.randomUUID()).level(catchAllFinance)
+                .entryOrder(1).sourceType(ApproverSourceType.NAMED_USER).sourceReference("5100009").build());
+        catchAll.getLevels().add(catchAllFinance);
+        var flowRepository = org.mockito.Mockito.mock(com.expense_management_service.repository.ApprovalFlowRepository.class);
+        when(flowRepository.findByIsCatchAllTrue()).thenReturn(Optional.of(catchAll));
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "approvalFlowRepository", flowRepository);
+
+        service.submit(reportId);
+
+        assertThat(savedInstances).hasSize(2);
+        ApprovalLevelInstance finance = savedInstances.stream()
+                .filter(i -> i.getLevelType() == com.expense_management_service.enums.LevelType.FINANCE_VERIFICATION)
+                .findFirst().orElseThrow();
+        assertThat(finance.getLevelOrder()).isEqualTo(2);
+        assertThat(finance.getLevelName()).isEqualTo("Finance Executive Approval");
+        assertThat(finance.getFlowId()).isEqualTo(flowId);
+        assertThat(finance.getStatus()).isEqualTo(LevelInstanceStatus.QUEUED);
+        assertThat(savedAssignments).extracting(ApprovalAssignment::getApproverId).contains("5100009");
+    }
+
+    @Test
+    void submit_doesNotAddASecondFinanceLevel_whenFlowAlreadyHasOne() {
+        ExpenseReport report = draftReport();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(managerThenFinanceFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(approverId));
+        var flowRepository = org.mockito.Mockito.mock(com.expense_management_service.repository.ApprovalFlowRepository.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "approvalFlowRepository", flowRepository);
+
+        service.submit(reportId);
+
+        assertThat(savedInstances).hasSize(2);
+        org.mockito.Mockito.verifyNoInteractions(flowRepository);
+    }
+
     /** Manager (APPROVAL) then Finance (FINANCE_VERIFICATION) - regression for the levelType-snapshot fix (§Phase 4). */
     private ApprovalFlow managerThenFinanceFlow() {
         ApprovalFlow flow = ApprovalFlow.builder().flowId(flowId).name("Manager then Finance").isCatchAll(false).build();

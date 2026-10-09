@@ -123,13 +123,25 @@ public class CostCenterBudgetServiceImpl implements CostCenterBudgetService {
     @Override
     @Transactional(readOnly = true)
     public CostCenterBudgetResponse getById(UUID budgetId) {
-        return costCenterBudgetMapper.toResponse(findEntity(budgetId));
+        return costCenterBudgetMapper.toResponse(findEntity(budgetId),
+                budgetEncumbranceRepository.sumAmountByBudget_BudgetIdAndStatus(budgetId, BudgetEncumbranceStatus.ACTIVE));
     }
 
+    /**
+     * Each budget with its reserved amount (ACTIVE encumbrances: submitted reports not yet paid) and
+     * the resulting effective available - the same figure the submission-time budget check uses, so
+     * the list never shows money as free that a submission would be refused.
+     */
     @Override
     @Transactional(readOnly = true)
     public List<CostCenterBudgetResponse> getAll() {
-        return costCenterBudgetRepository.findAll().stream().map(costCenterBudgetMapper::toResponse).toList();
+        java.util.Map<UUID, BigDecimal> reserved = new java.util.HashMap<>();
+        for (Object[] row : budgetEncumbranceRepository.sumAmountGroupedByBudget(BudgetEncumbranceStatus.ACTIVE)) {
+            reserved.put((UUID) row[0], (BigDecimal) row[1]);
+        }
+        return costCenterBudgetRepository.findAll().stream()
+                .map(b -> costCenterBudgetMapper.toResponse(b, reserved.getOrDefault(b.getBudgetId(), BigDecimal.ZERO)))
+                .toList();
     }
 
     @Override

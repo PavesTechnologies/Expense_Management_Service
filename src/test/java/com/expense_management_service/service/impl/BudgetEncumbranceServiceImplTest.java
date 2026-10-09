@@ -810,4 +810,14 @@ class BudgetEncumbranceServiceImplTest {
 
         assertThat(result).isEqualByComparingTo("10000");
     }
+
+    @Test
+    void insufficientBudgetMessage_explainsReservedAmount() {
+        String message = BudgetEncumbranceServiceImpl.insufficientBudgetMessage("Eng", "this submission needs",
+                new java.math.BigDecimal("12000"), new java.math.BigDecimal("57001.60"), new java.math.BigDecimal("10789.60"));
+
+        assertThat(message).isEqualTo("Insufficient budget for Cost Center Eng: this submission needs 12,000.00, but only "
+                + "10,789.60 is available (57,001.60 left after payments, minus 46,212.00 reserved by other reports "
+                + "awaiting approval or payment).");
+    }
 }

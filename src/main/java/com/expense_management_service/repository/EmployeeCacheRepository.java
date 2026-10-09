@@ -3,6 +3,7 @@ package com.expense_management_service.repository;
 import com.expense_management_service.entity.EmployeeCache;
 import org.springframework.data.jpa.repository.JpaRepository;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -16,4 +17,8 @@ public interface EmployeeCacheRepository extends JpaRepository<EmployeeCache, UU
     List<EmployeeCache> findByManagerEmployeeId(String managerEmployeeId);
 
     List<EmployeeCache> findByEmploymentStatus(String employmentStatus);
+
+    List<EmployeeCache> findByEmploymentStatusIgnoreCase(String employmentStatus);
+
+    List<EmployeeCache> findByEmployeeIdIn(Collection<String> employeeIds);
 }

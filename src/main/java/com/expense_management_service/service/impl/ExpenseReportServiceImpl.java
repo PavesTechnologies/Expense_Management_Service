@@ -134,6 +134,18 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public PageResponse<ExpenseReportResponse> getSubmittedForEmployees(java.util.Collection<String> employeeIds,
+                                                                        Pageable pageable, String status, String search) {
+        if (employeeIds.isEmpty()) {
+            return PageResponse.of(org.springframework.data.domain.Page.<ExpenseReportResponse>empty(pageable));
+        }
+        var page = expenseReportRepository.searchByEmployeeIds(
+                employeeIds, ReportStatus.DRAFT, parseStatus(status), sanitizeSearch(search), pageable);
+        return PageResponse.of(page.map(this::toResponse));
+    }
+
+    @Override
     public void delete(UUID reportId) {
         ExpenseReport entity = findEntity(reportId);
         assertOwnerOrAdmin(entity);

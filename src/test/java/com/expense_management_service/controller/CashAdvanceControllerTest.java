@@ -21,6 +21,11 @@ import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+
 import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
@@ -79,26 +84,29 @@ class CashAdvanceControllerTest {
     }
 
     @Test
-    void getMyApprovals_returns200_forManager() throws Exception {
-        UUID costCenterId = UUID.randomUUID();
+    void getMyApprovals_returns200_withPaginationForManager() throws Exception {
         CashAdvanceResponse response = new CashAdvanceResponse(
-                advanceId, "EMP001", "MGR001", costCenterId, "Travel", new BigDecimal("500.00"), currencyId, "USD",
+                advanceId, "EMP001", "MGR001", new BigDecimal("500.00"), currencyId, "USD",
                 new BigDecimal("500.00"), "Travel", "SUBMITTED", LocalDate.now().plusDays(7),
-                LocalDate.now().plusDays(7),
                 new BigDecimal("500.00"), null, null
         );
 
+        Pageable pageable = PageRequest.of(0, 10);
+        Page<CashAdvanceResponse> page = new PageImpl<>(List.of(response), pageable, 1);
+
         when(currentUserService.getEmployeeId()).thenReturn("MGR001");
-        when(cashAdvanceService.getMyApprovals("MGR001", null)).thenReturn(List.of(response));
+        when(cashAdvanceService.getMyApprovals("MGR001", null, pageable)).thenReturn(page);
 
         mockMvc.perform(get("/xms/employee/cash-advances/my-approvals")
+                        .param("page", "0")
+                        .param("size", "10")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_MANAGER))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
-                .andExpect(jsonPath("$.data[0].advanceId").value(advanceId.toString()))
-                .andExpect(jsonPath("$.data[0].status").value("SUBMITTED"))
-                .andExpect(jsonPath("$.data[0].costCenterId").value(costCenterId.toString()))
-                .andExpect(jsonPath("$.data[0].costCenterName").value("Travel"));
+                .andExpect(jsonPath("$.data.content[0].advanceId").value(advanceId.toString()))
+                .andExpect(jsonPath("$.data.content[0].status").value("SUBMITTED"))
+                .andExpect(jsonPath("$.data.totalElements").value(1))
+                .andExpect(jsonPath("$.data.totalPages").value(1));
     }
 
     @Test
@@ -161,5 +169,86 @@ class CashAdvanceControllerTest {
         mockMvc.perform(post("/xms/employee/cash-advances/{advanceId}/disburse", advanceId)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void getMyAdvances_returns200_withPagination() throws Exception {
+        CashAdvanceResponse response1 = new CashAdvanceResponse(
+                advanceId, "EMP001", "MGR001", new BigDecimal("500.00"), currencyId, "USD",
+                new BigDecimal("500.00"), "Travel", "DRAFT", LocalDate.now().plusDays(7),
+                new BigDecimal("500.00"), null, null
+        );
+        CashAdvanceResponse response2 = new CashAdvanceResponse(
+                UUID.randomUUID(), "EMP001", "MGR001", new BigDecimal("300.00"), currencyId, "USD",
+                new BigDecimal("300.00"), "Conference", "SUBMITTED", LocalDate.now().plusDays(14),
+                new BigDecimal("300.00"), null, null
+        );
+
+        Pageable pageable = PageRequest.of(0, 10);
+        Page<CashAdvanceResponse> page = new PageImpl<>(List.of(response1, response2), pageable, 2);
+
+        when(currentUserService.getEmployeeId()).thenReturn("EMP001");
+        when(cashAdvanceService.getMyAdvances("EMP001", null, pageable)).thenReturn(page);
+
+        mockMvc.perform(get("/xms/employee/cash-advances/my-advances")
+                        .param("page", "0")
+                        .param("size", "10")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.content.length()").value(2))
+                .andExpect(jsonPath("$.data.content[0].status").value("DRAFT"))
+                .andExpect(jsonPath("$.data.content[1].status").value("SUBMITTED"))
+                .andExpect(jsonPath("$.data.totalElements").value(2))
+                .andExpect(jsonPath("$.data.totalPages").value(1));
+    }
+
+    @Test
+    void getMyAdvances_returns200_withStatusFilter() throws Exception {
+        CashAdvanceResponse response = new CashAdvanceResponse(
+                advanceId, "EMP001", "MGR001", new BigDecimal("500.00"), currencyId, "USD",
+                new BigDecimal("500.00"), "Travel", "SUBMITTED", LocalDate.now().plusDays(7),
+                new BigDecimal("500.00"), null, null
+        );
+
+        Pageable pageable = PageRequest.of(0, 10);
+        Page<CashAdvanceResponse> page = new PageImpl<>(List.of(response), pageable, 1);
+
+        when(cashAdvanceService.getMyAdvances("EMP001", "SUBMITTED", pageable)).thenReturn(page);
+
+        mockMvc.perform(get("/xms/employee/cash-advances/my-advances")
+                        .param("status", "SUBMITTED")
+                        .param("page", "0")
+                        .param("size", "10")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.content[0].status").value("SUBMITTED"))
+                .andExpect(jsonPath("$.data.totalElements").value(1));
+    }
+
+    @Test
+    void getAll_returns200_withPaginationAndFilters() throws Exception {
+        CashAdvanceResponse response = new CashAdvanceResponse(
+                advanceId, "EMP001", "MGR001", new BigDecimal("500.00"), currencyId, "USD",
+                new BigDecimal("500.00"), "Travel", "APPROVED", LocalDate.now().plusDays(7),
+                new BigDecimal("500.00"), null, null
+        );
+
+        Pageable pageable = PageRequest.of(0, 10);
+        Page<CashAdvanceResponse> page = new PageImpl<>(List.of(response), pageable, 1);
+
+        when(cashAdvanceService.getFiltered("EMP001", "APPROVED", pageable)).thenReturn(page);
+
+        mockMvc.perform(get("/xms/employee/cash-advances")
+                        .param("employeeId", "EMP001")
+                        .param("status", "APPROVED")
+                        .param("page", "0")
+                        .param("size", "10")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_ADMIN))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data.content[0].status").value("APPROVED"))
+                .andExpect(jsonPath("$.data.totalElements").value(1));
     }
 }

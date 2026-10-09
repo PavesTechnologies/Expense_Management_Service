@@ -9,6 +9,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -97,4 +98,26 @@ public interface ExpenseReportRepository extends JpaRepository<ExpenseReport, UU
 
     long countByPaymentRoutingStatusAndPaymentCompletedAtGreaterThanEqual(
             PaymentRoutingStatus paymentRoutingStatus, java.time.LocalDateTime since);
+
+    /**
+     * A manager's team view: reports belonging to any of {@code employeeIds} (never empty - callers
+     * short-circuit an empty team), excluding {@code excludedStatus} (Drafts stay private to their owner).
+     */
+    @Query("""
+            SELECT r FROM ExpenseReport r
+            WHERE r.employeeId IN :employeeIds
+              AND r.reportStatus <> :excludedStatus
+              AND (:status IS NULL OR r.reportStatus = :status)
+              AND (:query IS NULL OR :query = ''
+                   OR lower(r.title) LIKE lower(concat('%', :query, '%'))
+                   OR lower(r.reportNumber) LIKE lower(concat('%', :query, '%')))
+            """)
+    Page<ExpenseReport> searchByEmployeeIds(
+            @Param("employeeIds") Collection<String> employeeIds,
+            @Param("excludedStatus") ReportStatus excludedStatus,
+            @Param("status") ReportStatus status,
+            @Param("query") String query,
+            Pageable pageable);
+
+    List<ExpenseReport> findByEmployeeIdInAndReportStatusNot(Collection<String> employeeIds, ReportStatus reportStatus);
 }

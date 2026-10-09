@@ -8,6 +8,7 @@ import com.expense_management_service.dto.response.ApprovalDelegationResponse;
 import com.expense_management_service.entity.ApprovalDelegation;
 import com.expense_management_service.enums.DelegationStatus;
 import com.expense_management_service.mapper.ApprovalDelegationMapper;
+import com.expense_management_service.repository.EmployeeCacheRepository;
 import com.expense_management_service.repository.ApprovalDelegationRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
@@ -37,6 +38,7 @@ public class ApprovalDelegationServiceImpl implements ApprovalDelegationService 
     private final ApprovalDelegationRepository approvalDelegationRepository;
     private final ApprovalDelegationMapper approvalDelegationMapper;
     private final CurrentUserService currentUserService;
+    private final EmployeeCacheRepository employeeCacheRepository;
 
     /**
      * Gates the "delegate must hold equal or greater approval authority than the delegator" rule.
@@ -50,6 +52,7 @@ public class ApprovalDelegationServiceImpl implements ApprovalDelegationService 
     @Override
     public ApprovalDelegationResponse create(ApprovalDelegationRequest request) {
         assertSelfServiceOrAdmin(request.delegatorId());
+        assertValidDelegation(request);
         ApprovalDelegation entity = approvalDelegationMapper.toEntity(request);
         assertAuthorityIfEnabled(entity);
         warnOnOverlap(entity);
@@ -59,6 +62,7 @@ public class ApprovalDelegationServiceImpl implements ApprovalDelegationService 
     @Override
     public ApprovalDelegationResponse update(UUID delegationId, ApprovalDelegationRequest request) {
         assertSelfServiceOrAdmin(request.delegatorId());
+        assertValidDelegation(request);
         ApprovalDelegation entity = findEntity(delegationId);
         assertSelfServiceOrAdmin(entity.getDelegatorId());
         approvalDelegationMapper.updateEntity(entity, request);
@@ -82,6 +86,30 @@ public class ApprovalDelegationServiceImpl implements ApprovalDelegationService 
         ApprovalDelegation entity = findEntity(delegationId);
         assertSelfServiceOrAdmin(entity.getDelegatorId());
         approvalDelegationRepository.delete(entity);
+    }
+
+    /**
+     * Rules every delegation must satisfy, whoever saves it: no self-delegation, a date range that
+     * doesn't end before it starts, and - for an ACTIVE delegation - a delegate who is a current
+     * employee, since approvals routed to anyone else could never be actioned. A CANCELLED
+     * delegation skips the employee check so one whose delegate has since left can still be cancelled.
+     */
+    private void assertValidDelegation(ApprovalDelegationRequest request) {
+        if (request.delegatorId().trim().equalsIgnoreCase(request.delegateId().trim())) {
+            throw new IllegalArgumentException("An approver cannot delegate to themselves");
+        }
+        if (request.startDate() != null && request.endDate() != null && request.endDate().isBefore(request.startDate())) {
+            throw new IllegalArgumentException("endDate cannot be before startDate");
+        }
+        if (DelegationStatus.CANCELLED.name().equals(request.status())) {
+            return;
+        }
+        boolean delegateActive = employeeCacheRepository.findByEmployeeId(request.delegateId().trim())
+                .map(e -> EmployeeDirectoryServiceImpl.EMPLOYMENT_STATUS_ACTIVE.equalsIgnoreCase(e.getEmploymentStatus()))
+                .orElse(false);
+        if (!delegateActive) {
+            throw new IllegalArgumentException("Delegate " + request.delegateId() + " is not an active employee");
+        }
     }
 
     /** Non-ADMIN callers may only act on their own delegation (self-service); ADMIN may act on anyone's. */

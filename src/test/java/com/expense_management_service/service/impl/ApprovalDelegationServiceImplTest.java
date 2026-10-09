@@ -2,8 +2,10 @@ package com.expense_management_service.service.impl;
 
 import com.expense_management_service.dto.request.ApprovalDelegationRequest;
 import com.expense_management_service.entity.ApprovalDelegation;
+import com.expense_management_service.entity.EmployeeCache;
 import com.expense_management_service.mapper.ApprovalDelegationMapper;
 import com.expense_management_service.repository.ApprovalDelegationRepository;
+import com.expense_management_service.repository.EmployeeCacheRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,12 +38,25 @@ class ApprovalDelegationServiceImplTest {
 
     @Mock private ApprovalDelegationRepository approvalDelegationRepository;
     @Mock private CurrentUserService currentUserService;
+    @Mock private EmployeeCacheRepository employeeCacheRepository;
 
     private ApprovalDelegationServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        service = new ApprovalDelegationServiceImpl(approvalDelegationRepository, new ApprovalDelegationMapper(), currentUserService);
+        service = new ApprovalDelegationServiceImpl(approvalDelegationRepository, new ApprovalDelegationMapper(), currentUserService,
+                employeeCacheRepository);
+        employeeWithStatus("5100099", "Active");
+    }
+
+    private void employeeWithStatus(String employeeId, String status) {
+        when(employeeCacheRepository.findByEmployeeId(employeeId)).thenReturn(
+                Optional.of(EmployeeCache.builder().employeeId(employeeId).employmentStatus(status).build()));
+    }
+
+    private void stubSave() {
+        when(approvalDelegationRepository.findByDelegatorIdAndStatusNot(any(), any())).thenReturn(List.of());
+        when(approvalDelegationRepository.save(any(ApprovalDelegation.class))).thenAnswer(inv -> inv.getArgument(0));
     }
 
     private void loginAs(String employeeId, String... roles) {
@@ -144,5 +159,62 @@ class ApprovalDelegationServiceImplTest {
         when(approvalDelegationRepository.findById(id)).thenReturn(Optional.of(existing));
 
         service.delete(id);
+    }
+
+    @Test
+    void create_rejectsSelfDelegation() {
+        loginAs("5100001", "GENERAL");
+        employeeWithStatus("5100001", "Active");
+
+        assertThatThrownBy(() -> service.create(new ApprovalDelegationRequest(
+                "5100001", "5100001", LocalDate.now(), LocalDate.now().plusDays(3), "ACTIVE")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("themselves");
+    }
+
+    @Test
+    void create_rejectsEndDateBeforeStartDate() {
+        loginAs("5100001", "GENERAL");
+
+        assertThatThrownBy(() -> service.create(new ApprovalDelegationRequest(
+                "5100001", "5100099", LocalDate.now(), LocalDate.now().minusDays(1), "ACTIVE")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("endDate");
+    }
+
+    @Test
+    void create_rejectsDelegateWhoIsNotAnActiveEmployee() {
+        loginAs("5100001", "GENERAL");
+        employeeWithStatus("5100055", "Resigned");
+
+        assertThatThrownBy(() -> service.create(new ApprovalDelegationRequest(
+                "5100001", "5100055", LocalDate.now(), LocalDate.now().plusDays(3), "ACTIVE")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not an active employee");
+    }
+
+    @Test
+    void create_rejectsDelegateMissingFromEmployeeCache() {
+        loginAs("5100001", "GENERAL");
+        when(employeeCacheRepository.findByEmployeeId("5100077")).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.create(new ApprovalDelegationRequest(
+                "5100001", "5100077", LocalDate.now(), LocalDate.now().plusDays(3), "ACTIVE")))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void update_allowsCancellingEvenWhenDelegateHasLeft() {
+        loginAs("5100001", "GENERAL");
+        employeeWithStatus("5100055", "Resigned");
+        UUID id = UUID.randomUUID();
+        ApprovalDelegation existing = ApprovalDelegation.builder().delegationId(id).delegatorId("5100001").delegateId("5100055").build();
+        when(approvalDelegationRepository.findById(id)).thenReturn(Optional.of(existing));
+        stubSave();
+
+        var response = service.update(id, new ApprovalDelegationRequest(
+                "5100001", "5100055", LocalDate.now(), LocalDate.now().plusDays(3), "CANCELLED"));
+
+        assertThat(response.status()).isEqualTo("CANCELLED");
     }
 }

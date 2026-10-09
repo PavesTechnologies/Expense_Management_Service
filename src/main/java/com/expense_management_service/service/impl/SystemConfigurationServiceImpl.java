@@ -2,6 +2,7 @@ package com.expense_management_service.service.impl;
 
 import java.util.List;
 
+import com.expense_management_service.common.exception.DuplicateResourceException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.SystemConfigurationRequest;
 import com.expense_management_service.dto.response.SystemConfigurationResponse;
@@ -26,6 +27,7 @@ public class SystemConfigurationServiceImpl implements SystemConfigurationServic
 
     @Override
     public SystemConfigurationResponse create(SystemConfigurationRequest request) {
+        assertKeyNotDuplicate(request.configKey(), null);
         SystemConfiguration entity = systemConfigurationMapper.toEntity(request);
         return systemConfigurationMapper.toResponse(systemConfigurationRepository.save(entity));
     }
@@ -33,6 +35,7 @@ public class SystemConfigurationServiceImpl implements SystemConfigurationServic
     @Override
     public SystemConfigurationResponse update(UUID configId, SystemConfigurationRequest request) {
         SystemConfiguration entity = findEntity(configId);
+        assertKeyNotDuplicate(request.configKey(), configId);
         systemConfigurationMapper.updateEntity(entity, request);
         return systemConfigurationMapper.toResponse(systemConfigurationRepository.save(entity));
     }
@@ -52,6 +55,15 @@ public class SystemConfigurationServiceImpl implements SystemConfigurationServic
     @Override
     public void delete(UUID configId) {
         systemConfigurationRepository.delete(findEntity(configId));
+    }
+
+    /** config_key is unique in the table; checked here so a duplicate is a clear 409, not a constraint error. */
+    private void assertKeyNotDuplicate(String configKey, UUID currentConfigId) {
+        systemConfigurationRepository.findByConfigKey(configKey)
+                .filter(existing -> !existing.getConfigId().equals(currentConfigId))
+                .ifPresent(existing -> {
+                    throw new DuplicateResourceException("A setting with key '" + configKey + "' already exists");
+                });
     }
 
     private SystemConfiguration findEntity(UUID configId) {

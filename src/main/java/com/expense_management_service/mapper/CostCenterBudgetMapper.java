@@ -33,6 +33,13 @@ public class CostCenterBudgetMapper {
     }
 
     public CostCenterBudgetResponse toResponse(CostCenterBudget entity) {
+        return toResponse(entity, null);
+    }
+
+    /** {@code reserved} = this budget's ACTIVE encumbrances; null leaves reserved/effective available unset. */
+    public CostCenterBudgetResponse toResponse(CostCenterBudget entity, java.math.BigDecimal reserved) {
+        java.math.BigDecimal effective = reserved != null && entity.getAvailableBudget() != null
+                ? entity.getAvailableBudget().subtract(reserved) : null;
         return new CostCenterBudgetResponse(
                 entity.getBudgetId(),
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterId() : null,
@@ -45,7 +52,9 @@ public class CostCenterBudgetMapper {
                 entity.getRolloverCap(),
                 entity.getWarningThreshold(),
                 entity.getCreatedAt(),
-                entity.getUpdatedAt()
+                entity.getUpdatedAt(),
+                reserved,
+                effective
         );
     }
 }

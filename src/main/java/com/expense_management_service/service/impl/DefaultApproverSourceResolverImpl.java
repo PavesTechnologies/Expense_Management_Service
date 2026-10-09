@@ -81,6 +81,8 @@ public class DefaultApproverSourceResolverImpl implements ApproverSourceResolver
         try {
             UUID departmentUuid = UUID.fromString(departmentUuidString);
             return departmentApproverRepository.findByDepartmentUuid(departmentUuid)
+                    // An INACTIVE mapping is kept for reference but never routes approvals (null = legacy, active).
+                    .filter(mapping -> mapping.getStatus() == null || "ACTIVE".equalsIgnoreCase(mapping.getStatus()))
                     .map(com.expense_management_service.entity.DepartmentApprover::getApproverEmployeeId)
                     .filter(DefaultApproverSourceResolverImpl::isNonBlank);
         } catch (IllegalArgumentException ex) {

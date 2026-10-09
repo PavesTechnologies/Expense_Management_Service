@@ -109,6 +109,13 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(ex.getMessage()));
     }
 
+    @ExceptionHandler(com.expense_management_service.common.exception.IntegrationUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleIntegrationUnavailable(
+            com.expense_management_service.common.exception.IntegrationUnavailableException ex) {
+        log.warn("{}", ex.getMessage(), ex.getCause());
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(ex.getMessage()));
+    }
+
     @ExceptionHandler(RestClientResponseException.class)
     public ResponseEntity<ApiResponse<Void>> handleUmsHttpError(RestClientResponseException ex) {
         // TEMPORARY DIAGNOSTIC LOGGING — remove once the UMS 401 is root-caused.

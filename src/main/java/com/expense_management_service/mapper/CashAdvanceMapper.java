@@ -24,20 +24,14 @@ public class CashAdvanceMapper {
         LocalDate dueDate = request.settlementDueDate() != null ? request.settlementDueDate() : request.neededByDate();
 
         return CashAdvance.builder()
-                .employeeId(request.employeeId())
                 .amount(request.amount())
                 .baseAmount(request.baseAmount())
                 .purpose(purpose)
-                .status(request.status())
                 .settlementDueDate(dueDate)
-                .outstandingBalance(request.outstandingBalance())
                 .build();
     }
 
     public void updateEntity(CashAdvance entity, CashAdvanceRequest request) {
-        if (request.employeeId() != null && !request.employeeId().isBlank()) {
-            entity.setEmployeeId(request.employeeId());
-        }
         entity.setAmount(request.amount());
         entity.setBaseAmount(request.baseAmount());
 
@@ -54,16 +48,9 @@ public class CashAdvanceMapper {
             entity.setPurpose(purpose);
         }
 
-        if (request.status() != null && !request.status().isBlank()) {
-            entity.setStatus(request.status());
-        }
-
         LocalDate dueDate = request.settlementDueDate() != null ? request.settlementDueDate() : request.neededByDate();
         if (dueDate != null) {
             entity.setSettlementDueDate(dueDate);
-        }
-        if (request.outstandingBalance() != null) {
-            entity.setOutstandingBalance(request.outstandingBalance());
         }
     }
 

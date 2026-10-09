@@ -9,6 +9,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
+
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.CashAdvanceRepaymentRequest;
@@ -306,32 +310,30 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<CashAdvanceResponse> getMyAdvances(
+    public Page<CashAdvanceResponse> getMyAdvances(
             String employeeId,
-            String status) {
+            String status,
+            Pageable pageable) {
 
         String empId =
                 (employeeId != null && !employeeId.isBlank())
                         ? employeeId
                         : currentUserService.getEmployeeId();
 
+        Page<CashAdvance> page;
         if (status != null && !status.isBlank()) {
-
-            return cashAdvanceRepository
+            page = cashAdvanceRepository
                     .findByEmployeeIdAndStatus(
                             empId,
-                            status.toUpperCase()
-                    )
-                    .stream()
-                    .map(cashAdvanceMapper::toResponse)
-                    .toList();
+                            status.toUpperCase(),
+                            pageable
+                    );
+        } else {
+            page = cashAdvanceRepository
+                    .findByEmployeeId(empId, pageable);
         }
 
-        return cashAdvanceRepository
-                .findByEmployeeId(empId)
-                .stream()
-                .map(cashAdvanceMapper::toResponse)
-                .toList();
+        return page.map(cashAdvanceMapper::toResponse);
     }
 
 
@@ -341,9 +343,10 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<CashAdvanceResponse> getMyApprovals(
+    public Page<CashAdvanceResponse> getMyApprovals(
             String managerId,
-            String status) {
+            String status,
+            Pageable pageable) {
 
         String mgrId =
                 (managerId != null && !managerId.isBlank())
@@ -438,10 +441,15 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             }
         }
 
-        return allAdvances
+        int start = (int) pageable.getOffset();
+        int end = Math.min((start + pageable.getPageSize()), allAdvances.size());
+        List<CashAdvanceResponse> pageContent = allAdvances
+                .subList(start, end)
                 .stream()
                 .map(cashAdvanceMapper::toResponse)
                 .toList();
+
+        return new PageImpl<>(pageContent, pageable, allAdvances.size());
     }
 
 
@@ -545,25 +553,27 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<CashAdvanceResponse> getFiltered(
+    public Page<CashAdvanceResponse> getFiltered(
             String employeeId,
-            String status) {
+            String status,
+            Pageable pageable) {
 
         if (employeeId != null && !employeeId.isBlank()) {
 
-            return getMyAdvances(employeeId, status);
+            return getMyAdvances(employeeId, status, pageable);
         }
 
         if (status != null && !status.isBlank()) {
 
             return cashAdvanceRepository
-                    .findByStatus(status.toUpperCase())
-                    .stream()
-                    .map(cashAdvanceMapper::toResponse)
-                    .toList();
+                    .findByStatus(status.toUpperCase(), pageable)
+                    .map(cashAdvanceMapper::toResponse);
         }
 
-        return getAll();
+        List<CashAdvanceResponse> allResponses = getAll();
+        int start = (int) pageable.getOffset();
+        int end = Math.min((start + pageable.getPageSize()), allResponses.size());
+        return new PageImpl<>(allResponses.subList(start, end), pageable, allResponses.size());
     }
 
 

@@ -13,6 +13,8 @@ import com.expense_management_service.service.CashAdvanceService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
@@ -49,15 +51,19 @@ public class CashAdvanceController {
     @Operation(summary = "Get cash advances created by the authenticated employee")
     @GetMapping("/my-advances")
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
-    public ApiResponse<List<CashAdvanceResponse>> getMyAdvances(@RequestParam(required = false) String status) {
-        return ApiResponse.success(cashAdvanceService.getMyAdvances(currentUserService.getEmployeeId(), status));
+    public ApiResponse<Page<CashAdvanceResponse>> getMyAdvances(
+            @RequestParam(required = false) String status,
+            Pageable pageable) {
+        return ApiResponse.success(cashAdvanceService.getMyAdvances(currentUserService.getEmployeeId(), status, pageable));
     }
 
     @Operation(summary = "Get cash advance requests awaiting the authenticated manager's approval")
     @GetMapping("/my-approvals")
     @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','FINANCE_EXECUTIVE','GENERAL')")
-    public ApiResponse<List<CashAdvanceResponse>> getMyApprovals(@RequestParam(required = false) String status) {
-        return ApiResponse.success(cashAdvanceService.getMyApprovals(currentUserService.getEmployeeId(), status));
+    public ApiResponse<Page<CashAdvanceResponse>> getMyApprovals(
+            @RequestParam(required = false) String status,
+            Pageable pageable) {
+        return ApiResponse.success(cashAdvanceService.getMyApprovals(currentUserService.getEmployeeId(), status, pageable));
     }
 
     @Operation(summary = "Get cash advance details by advance ID")
@@ -70,10 +76,11 @@ public class CashAdvanceController {
     @Operation(summary = "Get cash advances with optional employeeId and status filters")
     @GetMapping
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
-    public ApiResponse<List<CashAdvanceResponse>> getAll(
+    public ApiResponse<Page<CashAdvanceResponse>> getAll(
             @RequestParam(required = false) String employeeId,
-            @RequestParam(required = false) String status) {
-        return ApiResponse.success(cashAdvanceService.getFiltered(employeeId, status));
+            @RequestParam(required = false) String status,
+            Pageable pageable) {
+        return ApiResponse.success(cashAdvanceService.getFiltered(employeeId, status, pageable));
     }
 
     @Operation(summary = "Submit a draft cash advance request for manager approval")

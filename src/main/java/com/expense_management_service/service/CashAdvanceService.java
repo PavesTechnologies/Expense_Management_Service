@@ -7,6 +7,8 @@ import com.expense_management_service.dto.request.CashAdvanceRequest;
 import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.dto.response.CashAdvanceSettlementResponse;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 
 import java.util.UUID;
 
@@ -20,11 +22,11 @@ public interface CashAdvanceService {
 
     List<CashAdvanceResponse> getAll();
 
-    List<CashAdvanceResponse> getMyAdvances(String employeeId, String status);
+    Page<CashAdvanceResponse> getMyAdvances(String employeeId, String status, Pageable pageable);
 
-    List<CashAdvanceResponse> getMyApprovals(String managerId, String status);
+    Page<CashAdvanceResponse> getMyApprovals(String managerId, String status, Pageable pageable);
 
-    List<CashAdvanceResponse> getFiltered(String employeeId, String status);
+    Page<CashAdvanceResponse> getFiltered(String employeeId, String status, Pageable pageable);
 
     CashAdvanceResponse submit(UUID advanceId);
 

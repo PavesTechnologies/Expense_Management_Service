@@ -44,13 +44,13 @@ public class GlobalSearchServiceImpl implements GlobalSearchService {
         List<SearchIndex> allResults;
 
         // HARD SERVER-SIDE SCOPE ENFORCEMENT (never client-side)
-        if (roles.contains("ADMIN") || roles.contains("FINANCE")) {
+        if (roles != null && (roles.contains("ADMIN") || roles.contains("FINANCE"))) {
             // Finance/Admin: can see ALL reports
             log.debug("[GLOBAL-SEARCH] Finance/Admin scope - returning all reports");
             allResults = searchIndexRepository.findAll().stream()
                     .filter(si -> matchesQuery(si, cleanQuery))
                     .collect(Collectors.toList());
-        } else if (roles.contains("MANAGER")) {
+        } else if (roles != null && roles.contains("MANAGER")) {
             // Manager: own + team reports (simplified - just own for MVP)
             log.debug("[GLOBAL-SEARCH] Manager scope - returning own + team reports");
             allResults = searchIndexRepository.findByEmployeeId(employeeId).stream()

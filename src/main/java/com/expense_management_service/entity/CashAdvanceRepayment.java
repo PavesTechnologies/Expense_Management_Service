@@ -24,6 +24,10 @@ public class CashAdvanceRepayment {
     @EqualsAndHashCode.Include
     private UUID repaymentId;
 
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "advance_id", nullable = false)
     @ToString.Exclude

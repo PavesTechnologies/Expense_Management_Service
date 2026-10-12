@@ -9,6 +9,10 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
+
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.CashAdvanceRepaymentRequest;
@@ -70,6 +74,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     private final CurrentUserService currentUserService;
     private final AuditLogRepository auditLogRepository;
     private final ApprovalEventPublisher approvalEventPublisher;
+    private final CashAdvanceBudgetAllocator cashAdvanceBudgetAllocator;
     private final CashAdvanceRepaymentRepository cashAdvanceRepaymentRepository;
     private final CashAdvanceRepaymentMapper cashAdvanceRepaymentMapper;
     private final CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
@@ -171,72 +176,15 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                         ? entity.getStatus().toUpperCase()
                         : "";
 
-        String reqStatusUpper =
-                request.status() != null
-                        ? request.status().toUpperCase().trim()
-                        : "";
-
-        if (List.of(
-                "CLOSED",
-                "SETTLED",
-                "SETTLEMENT_PENDING",
-                "PARTIALLY_SETTLED"
-        ).contains(reqStatusUpper)) {
-
-            if (!isFinanceCaller() && !isAdminCaller()) {
-
-                throw new BusinessRuleViolationException(
-                        "Only Finance Executives can process cash advance settlements"
-                );
-            }
+        // Status and outstandingBalance cannot be updated via request - they're managed server-side
+        // Validate that entity is in DRAFT or SUBMITTED status before allowing updates
+        if (!List.of("DRAFT", "SUBMITTED").contains(currentStatusUpper)) {
+            throw new BusinessRuleViolationException(
+                    "Cannot update cash advance in status: " + entity.getStatus()
+            );
         }
 
-        if (List.of(
-                "CLOSED",
-                "SETTLED"
-        ).contains(reqStatusUpper)) {
-
-            BigDecimal targetBalance =
-                    request.outstandingBalance() != null
-                            ? request.outstandingBalance()
-                            : entity.getOutstandingBalance();
-
-            if (targetBalance != null
-                    && targetBalance.compareTo(BigDecimal.ZERO) > 0) {
-
-                throw new BusinessRuleViolationException(
-                        "Cannot close cash advance when outstanding balance is greater than zero ("
-                                + targetBalance
-                                + ")"
-                );
-            }
-        }
-
-        if (!List.of(
-                "CLOSED",
-                "SETTLEMENT_PENDING",
-                "SETTLED",
-                "PARTIALLY_SETTLED"
-        ).contains(reqStatusUpper)) {
-
-            if ("APPROVED".equalsIgnoreCase(currentStatusUpper)
-                    || "DISBURSED".equalsIgnoreCase(currentStatusUpper)
-                    || "IN_PROGRESS".equalsIgnoreCase(currentStatusUpper)
-                    || "SETTLED".equalsIgnoreCase(currentStatusUpper)
-                    || "CLOSED".equalsIgnoreCase(currentStatusUpper)
-                    || "SUBMITTED".equalsIgnoreCase(currentStatusUpper)
-                    || "PENDING_APPROVAL".equalsIgnoreCase(currentStatusUpper)
-                    || "PENDING_COST_CENTER_APPROVAL".equalsIgnoreCase(currentStatusUpper)
-                    || "PENDING_FINANCE_APPROVAL".equalsIgnoreCase(currentStatusUpper)) {
-
-                throw new BusinessRuleViolationException(
-                        "Cannot update cash advance in status: "
-                                + entity.getStatus()
-                );
-            }
-
-            validateAndExtractFutureDate(request);
-        }
+        validateAndExtractFutureDate(request);
 
         cashAdvanceMapper.updateEntity(entity, request);
 
@@ -306,32 +254,30 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<CashAdvanceResponse> getMyAdvances(
+    public Page<CashAdvanceResponse> getMyAdvances(
             String employeeId,
-            String status) {
+            String status,
+            Pageable pageable) {
 
         String empId =
                 (employeeId != null && !employeeId.isBlank())
                         ? employeeId
                         : currentUserService.getEmployeeId();
 
+        Page<CashAdvance> page;
         if (status != null && !status.isBlank()) {
-
-            return cashAdvanceRepository
+            page = cashAdvanceRepository
                     .findByEmployeeIdAndStatus(
                             empId,
-                            status.toUpperCase()
-                    )
-                    .stream()
-                    .map(cashAdvanceMapper::toResponse)
-                    .toList();
+                            status.toUpperCase(),
+                            pageable
+                    );
+        } else {
+            page = cashAdvanceRepository
+                    .findByEmployeeId(empId, pageable);
         }
 
-        return cashAdvanceRepository
-                .findByEmployeeId(empId)
-                .stream()
-                .map(cashAdvanceMapper::toResponse)
-                .toList();
+        return page.map(cashAdvanceMapper::toResponse);
     }
 
 
@@ -341,9 +287,10 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<CashAdvanceResponse> getMyApprovals(
+    public Page<CashAdvanceResponse> getMyApprovals(
             String managerId,
-            String status) {
+            String status,
+            Pageable pageable) {
 
         String mgrId =
                 (managerId != null && !managerId.isBlank())
@@ -438,10 +385,15 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             }
         }
 
-        return allAdvances
+        int start = (int) pageable.getOffset();
+        int end = Math.min((start + pageable.getPageSize()), allAdvances.size());
+        List<CashAdvanceResponse> pageContent = allAdvances
+                .subList(start, end)
                 .stream()
                 .map(cashAdvanceMapper::toResponse)
                 .toList();
+
+        return new PageImpl<>(pageContent, pageable, allAdvances.size());
     }
 
 
@@ -545,25 +497,27 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<CashAdvanceResponse> getFiltered(
+    public Page<CashAdvanceResponse> getFiltered(
             String employeeId,
-            String status) {
+            String status,
+            Pageable pageable) {
 
         if (employeeId != null && !employeeId.isBlank()) {
 
-            return getMyAdvances(employeeId, status);
+            return getMyAdvances(employeeId, status, pageable);
         }
 
         if (status != null && !status.isBlank()) {
 
             return cashAdvanceRepository
-                    .findByStatus(status.toUpperCase())
-                    .stream()
-                    .map(cashAdvanceMapper::toResponse)
-                    .toList();
+                    .findByStatus(status.toUpperCase(), pageable)
+                    .map(cashAdvanceMapper::toResponse);
         }
 
-        return getAll();
+        List<CashAdvanceResponse> allResponses = getAll();
+        int start = (int) pageable.getOffset();
+        int end = Math.min((start + pageable.getPageSize()), allResponses.size());
+        return new PageImpl<>(allResponses.subList(start, end), pageable, allResponses.size());
     }
 
 
@@ -1041,22 +995,16 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
+        int decimals = advance.getCurrency() != null ? advance.getCurrency().getDecimalPlaces() : 2;
         BigDecimal newBalance =
-                currentBalance.subtract(request.amount());
+                CashAdvanceBalanceRules.requireNonNegative(currentBalance.subtract(request.amount()), decimals);
 
         advance.setOutstandingBalance(newBalance);
 
         String previousStatus =
                 advance.getStatus();
 
-        if (newBalance.compareTo(BigDecimal.ZERO) == 0) {
-
-            advance.setStatus("CLOSED");
-
-        } else {
-
-            advance.setStatus("SETTLEMENT_PENDING");
-        }
+        advance.setStatus(CashAdvanceBalanceRules.statusAfterBalance(newBalance, decimals));
 
         cashAdvanceRepository.save(advance);
 
@@ -1477,14 +1425,23 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
-        if (isAdminCaller()) {
-            return;
-        }
-
         String statusUpper =
                 entity.getStatus() != null
                         ? entity.getStatus().toUpperCase()
                         : "";
+
+        // Manager stage is reserved for the assigned manager (or delegate), even for Admin;
+        // Admin keeps its override on the later stages.
+        boolean managerStage = List.of(
+                "SUBMITTED",
+                "PENDING",
+                "PENDING_APPROVAL",
+                "PENDING_MANAGER_APPROVAL"
+        ).contains(statusUpper);
+
+        if (isAdminCaller() && !managerStage) {
+            return;
+        }
 
         if (List.of(
                 "PENDING_FINANCE_APPROVAL",
@@ -1638,10 +1595,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             }
         }
 
-        if (isFinanceCaller()) {
-            return;
-        }
-
+        // Manager stage: only the assigned manager (or their active delegate) may act.
+        // Finance approves later, once the manager stage is complete.
         throw new BusinessRuleViolationException(
                 "Only the authorized manager (or active delegate) can approve or reject this cash advance"
         );
@@ -1814,96 +1769,19 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
-        // Legacy / partially-populated records can still reach the final approval path without a
-        // selected Cost Center or a populated amount. In those cases, the approval status should
-        // still advance, and only budget consumption should be enforced when the business data is
-        // actually present and valid.
+        // Legacy records can reach final approval without a Cost Center. The status still advances;
+        // there is nothing to allocate against.
         if (advance.getCostCenter() == null
                 || advance.getCostCenter().getCostCenterId() == null) {
-            log.warn("Cash advance {} reached final approval without a selected Cost Center - skipping budget consumption.",
+
+            log.warn("Cash advance {} reached final approval without a selected Cost Center - skipping budget allocation.",
                     advance.getAdvanceId());
             return;
         }
 
-        if (advance.getAmount() == null
-                || advance.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessRuleViolationException(
-                    "Cash advance amount must be greater than zero."
-            );
-        }
-
-        UUID costCenterId = advance.getCostCenter().getCostCenterId();
-        String fiscalYear = resolveCurrentFiscalYear();
-
-        CostCenter costCenter = costCenterRepository.findById(costCenterId)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "Cost Center not found with id: " + costCenterId
-                ));
-
-        CostCenterBudget budget =
-                costCenterBudgetRepository
-                        .findByCostCenter_CostCenterIdAndFiscalYear(costCenterId, fiscalYear)
-                        .orElse(null);
-
-        if (budget == null) {
-            if (Boolean.TRUE.equals(costCenter.getAllowUnbudgeted())) {
-                log.warn(
-                        "No CostCenterBudget row found; allowing unbudgeted final approval. " +
-                        "CostCenter={}, FiscalYear={}, Advance={}",
-                        costCenterId, fiscalYear, advance.getAdvanceId()
-                );
-                return;
-            }
-
-            throw new BusinessRuleViolationException(
-                    "No Cost Center budget is configured for "
-                            + costCenter.getCostCenterCode()
-                            + " for fiscal year "
-                            + fiscalYear
-                            + "."
-            );
-        }
-
-        BigDecimal available =
-                budget.getAvailableBudget() != null
-                        ? budget.getAvailableBudget()
-                        : BigDecimal.ZERO;
-
-        BigDecimal amount = advance.getAmount();
-
-        if (amount.compareTo(available) > 0) {
-            throw new BusinessRuleViolationException(
-                    "Cash advance amount of "
-                            + amount
-                            + " exceeds the remaining Cost Center budget of "
-                            + available
-                            + ". Budget amount: "
-                            + budget.getBudgetAmount()
-                            + ", Available budget: "
-                            + available
-                            + ", Fiscal year: "
-                            + fiscalYear
-                            + ", Cost Center: "
-                            + costCenter.getCostCenterCode()
-                            + "."
-            );
-        }
-
-        BigDecimal newAvailable = available.subtract(amount);
-
-        budget.setAvailableBudget(newAvailable);
-        costCenterBudgetRepository.save(budget);
-
-        log.info(
-                "Cost Center budget consumed for Cash Advance. " +
-                "Advance={}, CostCenter={}, FiscalYear={}, Amount={}, PreviousAvailable={}, NewAvailable={}",
-                advance.getAdvanceId(),
-                costCenterId,
-                fiscalYear,
-                amount,
-                available,
-                newAvailable
-        );
+        // Principal + fee: locked budget row, validation, atomic update and the fee record
+        // all happen in CashAdvanceBudgetAllocator, inside this approval transaction.
+        cashAdvanceBudgetAllocator.allocateOnFinalApproval(advance, resolveCurrentFiscalYear());
     }
 
     /**

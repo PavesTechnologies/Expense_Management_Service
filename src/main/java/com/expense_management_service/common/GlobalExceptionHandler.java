@@ -95,6 +95,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(BusinessRuleViolationException.class)
+    @SuppressWarnings("deprecation")
     public ResponseEntity<ApiResponse<Void>> handleBusinessRuleViolation(BusinessRuleViolationException ex) {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(ApiResponse.error(ex.getMessage()));
     }
@@ -136,6 +137,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
+    @SuppressWarnings("deprecation")
     public ResponseEntity<ApiResponse<Void>> handleMaxUploadSizeExceeded(MaxUploadSizeExceededException ex) {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
                 .body(ApiResponse.error("Uploaded file exceeds the maximum allowed size"));

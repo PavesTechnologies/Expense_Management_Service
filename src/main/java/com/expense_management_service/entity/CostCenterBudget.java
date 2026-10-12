@@ -41,6 +41,17 @@ public class CostCenterBudget {
     private BigDecimal availableBudget;
 
     /**
+     * Total of cash advances approved against this budget (fiscal year). Already deducted from
+     * {@link #availableBudget}; kept separately so the advance allocation is visible on its own.
+     */
+    @Column(name = "cash_advance_allocated", precision = 19, scale = 4)
+    private BigDecimal cashAdvanceAllocated;
+
+    /** Total cash advance fees approved against this budget. Also already deducted from {@link #availableBudget}. */
+    @Column(name = "cash_advance_fee_allocated", precision = 19, scale = 4)
+    private BigDecimal cashAdvanceFeeAllocated;
+
+    /**
      * One-time, admin-entered figure recorded when this fiscal year's row is created - never
      * recalculated afterward. Folded into {@code availableBudget}'s initial value at creation
      * ({@code availableBudget = budgetAmount + rolloverFromPrevious}); {@code consumeBudget()}

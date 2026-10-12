@@ -52,6 +52,12 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     private final CurrentUserService currentUserService;
     private final ExpenseReportMapper expenseReportMapper;
     private final PolicyViolationRepository policyViolationRepository;
+    private final com.expense_management_service.repository.CashAdvanceRepository cashAdvanceRepository;
+
+    /** Advance statuses in which the employee may attach expenses to settle it. */
+    private static final java.util.Set<String> LINKABLE_ADVANCE_STATUSES = java.util.Set.of(
+            "DISBURSED", "IN_PROGRESS", "EXPENSE_SUBMITTED", "EXPENSE_VERIFIED",
+            "SETTLEMENT_PENDING", "PARTIALLY_ADJUSTED", "PARTIALLY_SETTLED");
 
     /** Minimum character length for the business purpose free-text field — configurable per FR: "minimum 10 characters (configurable)". */
     @Value("${expense-report.business-purpose.min-length:10}")
@@ -69,6 +75,11 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         CostCenter costCenter = findActiveCostCenter(request.costCenterId());
         Currency currency = findActiveCurrency(request.currencyId());
 
+        com.expense_management_service.entity.CashAdvance linkedAdvance =
+                request.cashAdvanceId() != null
+                        ? findLinkableAdvance(request.cashAdvanceId(), caller.employeeId())
+                        : null;
+
         ExpenseReport entity = expenseReportMapper.toEntity(request);
         entity.setEmployeeId(caller.employeeId());
         entity.setFiscalYear(fiscalYear);
@@ -78,10 +89,33 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         entity.setCurrency(currency);
         entity.setTotalAmount(java.math.BigDecimal.ZERO);
         entity.setReimbursableAmount(java.math.BigDecimal.ZERO);
+        entity.setCashAdvance(linkedAdvance);
 
         ExpenseReport saved = expenseReportRepository.save(entity);
-        log.info("Created Draft expense report {} for employee {}", saved.getReportNumber(), saved.getEmployeeId());
+        log.info("Created Draft expense report {} for employee {}{}", saved.getReportNumber(), saved.getEmployeeId(),
+                linkedAdvance != null ? " linked to cash advance " + linkedAdvance.getAdvanceId() : "");
         return toResponse(saved);
+    }
+
+    /**
+     * The advance a report may settle: it must exist, belong to the caller, and be in a status where
+     * expenses are being settled. Anything else is rejected rather than linked silently.
+     */
+    private com.expense_management_service.entity.CashAdvance findLinkableAdvance(UUID advanceId, String employeeId) {
+        com.expense_management_service.entity.CashAdvance advance = cashAdvanceRepository.findById(advanceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Cash advance not found with id: " + advanceId));
+
+        if (advance.getEmployeeId() == null || !advance.getEmployeeId().trim().equalsIgnoreCase(employeeId)) {
+            throw new BusinessRuleViolationException("This cash advance belongs to another employee.");
+        }
+
+        String status = advance.getStatus() != null ? advance.getStatus().toUpperCase() : "";
+        if (!LINKABLE_ADVANCE_STATUSES.contains(status)) {
+            throw new BusinessRuleViolationException(
+                    "Expenses can be linked only to a disbursed advance awaiting settlement. Current status: "
+                            + advance.getStatus());
+        }
+        return advance;
     }
 
     @Override

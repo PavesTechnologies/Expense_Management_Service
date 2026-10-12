@@ -125,6 +125,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private final ApprovalLineItemReviewRepository approvalLineItemReviewRepository;
     private final ApprovalSplitReviewRepository approvalSplitReviewRepository;
     private final PolicyViolationRepository policyViolationRepository;
+    private final CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
@@ -1448,7 +1449,11 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             BigDecimal planned = adjustment.getAdjustedAmount() != null ? adjustment.getAdjustedAmount() : BigDecimal.ZERO;
             BigDecimal applied = planned.min(remaining).max(BigDecimal.ZERO);
             if (applied.compareTo(planned) != 0) {
+                String before = "Adjusted: " + planned;
                 adjustment.setAdjustedAmount(applied);
+                cashAdvanceBalanceLedger.recordChange("CashAdvanceAdjustment", adjustment.getAdjustmentId(),
+                        "ADJUSTMENT_CAPPED", before, "Adjusted: " + applied, "SYSTEM",
+                        "Capped to the remaining verified total on approval of report " + report.getReportNumber());
                 cashAdvanceAdjustmentRepository.save(adjustment);
             }
             remaining = remaining.subtract(applied);
@@ -1472,12 +1477,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                     : java.math.BigDecimal.ZERO;
 
             BigDecimal newBalance = advance.getAmount().subtract(totalAdjusted).subtract(totalRepaid);
-            advance.setOutstandingBalance(newBalance);
-            if (newBalance.compareTo(java.math.BigDecimal.ZERO) == 0) {
-                advance.setStatus("CLOSED");
-            } else {
-                advance.setStatus("SETTLEMENT_PENDING");
-            }
+            cashAdvanceBalanceLedger.applyBalance(advance, newBalance, "CASH_ADVANCE_BALANCE_RECALCULATED", "SYSTEM",
+                    "Recalculated on approval of report " + report.getReportNumber());
             cashAdvanceRepository.save(advance);
             approvalEventPublisher.publish("CASH_ADVANCE_ADJUSTED", advance.getAdvanceId(), "reportId=" + report.getReportId() + " amount=" + verifiedAmount);
         }

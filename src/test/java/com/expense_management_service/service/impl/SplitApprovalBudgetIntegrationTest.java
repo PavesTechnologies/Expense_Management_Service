@@ -130,7 +130,7 @@ class SplitApprovalBudgetIntegrationTest {
 
         service = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository,
-                policyViolationRepository, approvalFlowResolutionService, approverSourceResolver,
+                policyViolationRepository, new CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class)), approvalFlowResolutionService, approverSourceResolver,
                 chainCorrectnessService, budgetEncumbranceService, delegationService, policyEvaluationGateway,
                 approvalEventPublisher, slaPolicyService, new PolicyViolationMapper(),
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository)),

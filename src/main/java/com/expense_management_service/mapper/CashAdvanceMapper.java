@@ -24,20 +24,17 @@ public class CashAdvanceMapper {
         LocalDate dueDate = request.settlementDueDate() != null ? request.settlementDueDate() : request.neededByDate();
 
         return CashAdvance.builder()
-                .employeeId(request.employeeId())
                 .amount(request.amount())
                 .baseAmount(request.baseAmount())
                 .purpose(purpose)
-                .status(request.status())
+                .title(request.title())
+                .notes(request.notes())
+                .neededByDate(request.neededByDate())
                 .settlementDueDate(dueDate)
-                .outstandingBalance(request.outstandingBalance())
                 .build();
     }
 
     public void updateEntity(CashAdvance entity, CashAdvanceRequest request) {
-        if (request.employeeId() != null && !request.employeeId().isBlank()) {
-            entity.setEmployeeId(request.employeeId());
-        }
         entity.setAmount(request.amount());
         entity.setBaseAmount(request.baseAmount());
 
@@ -54,20 +51,28 @@ public class CashAdvanceMapper {
             entity.setPurpose(purpose);
         }
 
-        if (request.status() != null && !request.status().isBlank()) {
-            entity.setStatus(request.status());
+        if (request.title() != null) {
+            entity.setTitle(request.title());
+        }
+        if (request.notes() != null) {
+            entity.setNotes(request.notes());
+        }
+        if (request.neededByDate() != null) {
+            entity.setNeededByDate(request.neededByDate());
         }
 
         LocalDate dueDate = request.settlementDueDate() != null ? request.settlementDueDate() : request.neededByDate();
         if (dueDate != null) {
             entity.setSettlementDueDate(dueDate);
         }
-        if (request.outstandingBalance() != null) {
-            entity.setOutstandingBalance(request.outstandingBalance());
-        }
     }
 
     public CashAdvanceResponse toResponse(CashAdvance entity) {
+        // Rows created before neededByDate was stored have it null; fall back to the due date for them.
+        LocalDate neededBy = entity.getNeededByDate() != null
+                ? entity.getNeededByDate()
+                : entity.getSettlementDueDate();
+
         return new CashAdvanceResponse(
                 entity.getAdvanceId(),
                 entity.getEmployeeId(),
@@ -81,11 +86,12 @@ public class CashAdvanceMapper {
                 entity.getPurpose(),
                 entity.getStatus(),
                 entity.getSettlementDueDate(),
-                entity.getSettlementDueDate(),
+                neededBy,
                 entity.getOutstandingBalance(),
                 entity.getCreatedAt(),
-                entity.getUpdatedAt()
+                entity.getUpdatedAt(),
+                entity.getTitle(),
+                entity.getNotes()
         );
     }
 }
-

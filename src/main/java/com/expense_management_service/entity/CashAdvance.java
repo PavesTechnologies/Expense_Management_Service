@@ -30,6 +30,10 @@ public class CashAdvance {
     @EqualsAndHashCode.Include
     private UUID advanceId;
 
+    @Version
+    @Column(name = "version", nullable = false)
+    private Long version;
+
     @Column(name = "employee_id", length = 255, nullable = false)
     private String employeeId;
 
@@ -62,6 +66,15 @@ public class CashAdvance {
     @Column(name = "purpose")
     private String purpose;
 
+    @Column(name = "title", length = 255)
+    private String title;
+
+    @Column(name = "notes", length = 2000)
+    private String notes;
+
+    @Column(name = "needed_by_date")
+    private LocalDate neededByDate;
+
     @Column(name = "status", length = 255)
     private String status;
 
@@ -70,6 +83,18 @@ public class CashAdvance {
 
     @Column(name = "outstanding_balance", precision = 19, scale = 4)
     private BigDecimal outstandingBalance;
+
+    @Column(name = "approved_amount", precision = 19, scale = 4)
+    private BigDecimal approvedAmount;
+
+    @Column(name = "settlement_status", length = 255)
+    private String settlementStatus;
+
+    @Column(name = "settled_at")
+    private LocalDateTime settledAt;
+
+    @Column(name = "settled_by", length = 255)
+    private String settledBy;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)

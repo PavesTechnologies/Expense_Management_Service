@@ -21,7 +21,9 @@ public record CashAdvanceResponse(
         LocalDate neededByDate,
         BigDecimal outstandingBalance,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        String title,
+        String notes
 ) {
     public CashAdvanceResponse(
             UUID advanceId,
@@ -40,7 +42,7 @@ public record CashAdvanceResponse(
             LocalDateTime updatedAt
     ) {
         this(advanceId, employeeId, managerId, null, null, amount, currencyId, currencyCode, baseAmount,
-                purpose, status, settlementDueDate, neededByDate, outstandingBalance, createdAt, updatedAt);
+                purpose, status, settlementDueDate, neededByDate, outstandingBalance, createdAt, updatedAt, null, null);
     }
 
     public CashAdvanceResponse(
@@ -59,7 +61,7 @@ public record CashAdvanceResponse(
             LocalDateTime updatedAt
     ) {
         this(advanceId, employeeId, managerId, null, null, amount, currencyId, currencyCode, baseAmount,
-            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt);
+            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt, null, null);
     }
 
     public CashAdvanceResponse(
@@ -77,7 +79,7 @@ public record CashAdvanceResponse(
             LocalDateTime updatedAt
     ) {
         this(advanceId, employeeId, null, null, null, amount, currencyId, currencyCode, baseAmount,
-            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt);
+            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt, null, null);
     }
 
     public CashAdvanceResponse(
@@ -93,7 +95,6 @@ public record CashAdvanceResponse(
             BigDecimal outstandingBalance
     ) {
         this(advanceId, employeeId, null, null, null, amount, currencyId, currencyCode, baseAmount,
-                purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, null, null);
+                purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, null, null, null, null);
     }
 }
-

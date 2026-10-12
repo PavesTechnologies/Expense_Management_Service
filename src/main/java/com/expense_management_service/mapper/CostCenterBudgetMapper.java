@@ -32,6 +32,24 @@ public class CostCenterBudgetMapper {
         entity.setWarningThreshold(request.warningThreshold());
     }
 
+    /**
+     * Money actually spent on expenses: the pool less what is still available, less the advances and
+     * fees already deducted from that same available figure. Floored at zero.
+     */
+    static java.math.BigDecimal actualUtilized(CostCenterBudget entity,
+                                               java.math.BigDecimal cashAdvance,
+                                               java.math.BigDecimal fee) {
+        java.math.BigDecimal pool = nz(entity.getBudgetAmount()).add(nz(entity.getRolloverFromPrevious()));
+        java.math.BigDecimal utilized = pool.subtract(nz(entity.getAvailableBudget()))
+                .subtract(cashAdvance)
+                .subtract(fee);
+        return utilized.signum() < 0 ? java.math.BigDecimal.ZERO : utilized;
+    }
+
+    private static java.math.BigDecimal nz(java.math.BigDecimal value) {
+        return value != null ? value : java.math.BigDecimal.ZERO;
+    }
+
     public CostCenterBudgetResponse toResponse(CostCenterBudget entity) {
         return toResponse(entity, null);
     }
@@ -40,6 +58,11 @@ public class CostCenterBudgetMapper {
     public CostCenterBudgetResponse toResponse(CostCenterBudget entity, java.math.BigDecimal reserved) {
         java.math.BigDecimal effective = reserved != null && entity.getAvailableBudget() != null
                 ? entity.getAvailableBudget().subtract(reserved) : null;
+        java.math.BigDecimal cashAdvance = entity.getCashAdvanceAllocated() != null
+                ? entity.getCashAdvanceAllocated() : java.math.BigDecimal.ZERO;
+        java.math.BigDecimal fee = entity.getCashAdvanceFeeAllocated() != null
+                ? entity.getCashAdvanceFeeAllocated() : java.math.BigDecimal.ZERO;
+
         return new CostCenterBudgetResponse(
                 entity.getBudgetId(),
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterId() : null,
@@ -54,7 +77,10 @@ public class CostCenterBudgetMapper {
                 entity.getCreatedAt(),
                 entity.getUpdatedAt(),
                 reserved,
-                effective
+                effective,
+                cashAdvance,
+                fee,
+                actualUtilized(entity, cashAdvance, fee)
         );
     }
 }

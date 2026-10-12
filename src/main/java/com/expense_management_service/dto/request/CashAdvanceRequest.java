@@ -9,7 +9,6 @@ import java.time.LocalDate;
 import java.util.UUID;
 
 public record CashAdvanceRequest(
-        @Size(max = 255) String employeeId,
         @NotNull @Positive BigDecimal amount,
         @NotNull UUID currencyId,
         UUID costCenterId,
@@ -17,36 +16,28 @@ public record CashAdvanceRequest(
         String purpose,
         String title,
         String notes,
-        @Size(max = 255) String status,
         LocalDate settlementDueDate,
-        LocalDate neededByDate,
-        BigDecimal outstandingBalance
+        LocalDate neededByDate
 ) {
     public CashAdvanceRequest(
-            String employeeId,
             BigDecimal amount,
             UUID currencyId,
             BigDecimal baseAmount,
             String purpose,
-            String status,
-            LocalDate settlementDueDate,
-            BigDecimal outstandingBalance
+            LocalDate settlementDueDate
     ) {
-        this(employeeId, amount, currencyId, null, baseAmount, purpose, null, null, status, settlementDueDate, settlementDueDate, outstandingBalance);
+        this(amount, currencyId, null, baseAmount, purpose, null, null, settlementDueDate, settlementDueDate);
     }
 
     public CashAdvanceRequest(
-            String employeeId,
             BigDecimal amount,
             UUID currencyId,
             BigDecimal baseAmount,
             String purpose,
-            String status,
             LocalDate settlementDueDate,
-            LocalDate neededByDate,
-            BigDecimal outstandingBalance
+            LocalDate neededByDate
     ) {
-        this(employeeId, amount, currencyId, null, baseAmount, purpose, null, null, status, settlementDueDate, neededByDate, outstandingBalance);
+        this(amount, currencyId, null, baseAmount, purpose, null, null, settlementDueDate, neededByDate);
     }
 }
 

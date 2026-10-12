@@ -78,6 +78,23 @@ public class ExpenseReport {
     private BigDecimal reimbursableAmount;
 
     /**
+     * True for a company expense the employee does not claim back (e.g. a cash advance fee). Such a
+     * report carries no reimbursable amount and must never enter the reimbursement or AP payment queues.
+     */
+    @Column(name = "company_paid", nullable = false)
+    @Builder.Default
+    private boolean companyPaid = false;
+
+    /**
+     * The cash advance this report is settling, set when the employee creates the report from the
+     * advance. Null for ordinary reports. Offsets are only applied to reports with this link.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "cash_advance_id")
+    @ToString.Exclude
+    private CashAdvance cashAdvance;
+
+    /**
      * Optimistic-locking column. The {@code version} column already exists in the database
      * (NOT NULL, no default) but was unmapped, so every INSERT omitted it and MySQL rejected
      * the row with "Field 'version' doesn't have a default value" — surfaced to callers as a

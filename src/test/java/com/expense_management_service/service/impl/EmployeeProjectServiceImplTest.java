@@ -133,4 +133,40 @@ class EmployeeProjectServiceImplTest {
         assertThat(result.get(0).projectName()).isEqualTo("New Name");
     }
 
+    @Test
+    void getAssignedProjects_storesPmsKeyIdAndName_fromTheProjectRecord() {
+        UUID clientId = UUID.randomUUID();
+        when(currentUserService.getUmsUserId()).thenReturn(9006L);
+        when(pmsClient.getMyActiveProjects(9006L)).thenReturn(List.of(new PmsProjectSummaryResponse(22L, null, "Aspirations For All", null, null)));
+        when(pmsClient.getProject(22L)).thenReturn(Optional.of(new PmsProjectDetailResponse(
+                22L, "AP-297", "Aspirations For All", null, "ACTIVE", clientId, null, null, null, null)));
+        when(projectCacheRepository.findByPmsProjectId(22L)).thenReturn(Optional.empty());
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        AssignedProjectResponse result = service.getAssignedProjects().get(0);
+
+        assertThat(result.projectCode()).isEqualTo("AP-297");
+        assertThat(result.pmsProjectId()).isEqualTo(22L);
+        assertThat(result.projectName()).isEqualTo("Aspirations For All");
+        assertThat(result.status()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void getAssignedProjects_keepsTheStoredPmsKey_whenTheProjectRecordIsUnavailable() {
+        ProjectCache existing = ProjectCache.builder().projectId(UUID.randomUUID()).pmsProjectId(22L)
+                .projectCode("AP-297").projectName("Aspirations For All").status("ACTIVE").build();
+        when(currentUserService.getUmsUserId()).thenReturn(9007L);
+        when(pmsClient.getMyActiveProjects(9007L)).thenReturn(List.of(new PmsProjectSummaryResponse(22L, null, "Aspirations For All", null, null)));
+        when(pmsClient.getProject(22L)).thenThrow(HttpServerErrorException.create(
+                org.springframework.http.HttpStatus.BAD_GATEWAY, "Bad Gateway", null, null, null));
+        when(projectCacheRepository.findByPmsProjectId(22L)).thenReturn(Optional.of(existing));
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        AssignedProjectResponse result = service.getAssignedProjects().get(0);
+
+        // Never flipped back to a PMS-<id> placeholder once the real key is known.
+        assertThat(result.projectCode()).isEqualTo("AP-297");
+        assertThat(result.pmsProjectId()).isEqualTo(22L);
+    }
+
 }

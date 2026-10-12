@@ -66,11 +66,22 @@ public class InvoiceHandoffQueueController {
         return ApiResponse.success(invoiceHandoffService.getSummary());
     }
 
+    /**
+     * Also callable by the AR service account to pull what the invoice team has handed off,
+     * filtered by {@code pmsProjectId} (or {@code projectCode}) and/or handed-off date.
+     */
     @GetMapping("/handed-off")
+    @PreAuthorize("hasAnyRole('FINANCE_EXECUTIVE','AR_SERVICE')")
     public ApiResponse<PageResponse<InvoiceHandoffRecordResponse>> getHandedOff(
+            @RequestParam(required = false) UUID clientId,
+            @RequestParam(required = false) Long pmsProjectId,
+            @RequestParam(required = false) String projectCode,
+            @RequestParam(required = false) LocalDate handedOffFrom,
+            @RequestParam(required = false) LocalDate handedOffTo,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.success(invoiceHandoffService.getHandedOff(page, size));
+        return ApiResponse.success(invoiceHandoffService.getHandedOff(
+                clientId, pmsProjectId, projectCode, handedOffFrom, handedOffTo, page, Math.min(size, 100)));
     }
 
     /** AR's authoritative billing payload (v1). Also callable by the AR service account. */

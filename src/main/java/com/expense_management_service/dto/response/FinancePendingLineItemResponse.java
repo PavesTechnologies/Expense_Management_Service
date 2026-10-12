@@ -25,6 +25,8 @@ public record FinancePendingLineItemResponse(
         /** Input tax credit Finance is verifying (line currency) and the GSTIN it rests on. */
         BigDecimal recoverableTaxAmount,
         String itcStatus,
-        String supplierGstin
+        String supplierGstin,
+        /** Full GL detail behind {@code glAccountCode}, with the posting split; null when the category has no GL account. */
+        FinanceGlDetailsResponse glAccount
 ) {
 }

@@ -60,6 +60,9 @@ class ExpenseReportServiceImplTest {
     @Mock
     private PolicyViolationRepository policyViolationRepository;
 
+    @Mock
+    private com.expense_management_service.repository.CashAdvanceRepository cashAdvanceRepository;
+
     private ExpenseReportServiceImpl expenseReportService;
 
     private final UUID employeeUuid = UUID.randomUUID();
@@ -72,7 +75,8 @@ class ExpenseReportServiceImplTest {
     void setUp() {
         expenseReportService = new ExpenseReportServiceImpl(
                 expenseReportRepository, costCenterRepository, currencyRepository, umsClient,
-                currentUserService, new ExpenseReportMapper(), policyViolationRepository);
+                currentUserService, new ExpenseReportMapper(), policyViolationRepository,
+                cashAdvanceRepository);
         ReflectionTestUtils.setField(expenseReportService, "businessPurposeMinLength", 10);
 
         costCenterId = UUID.randomUUID();

@@ -66,6 +66,15 @@ public class CashAdvance {
     @Column(name = "purpose")
     private String purpose;
 
+    @Column(name = "title", length = 255)
+    private String title;
+
+    @Column(name = "notes", length = 2000)
+    private String notes;
+
+    @Column(name = "needed_by_date")
+    private LocalDate neededByDate;
+
     @Column(name = "status", length = 255)
     private String status;
 

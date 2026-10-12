@@ -74,6 +74,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     private final CurrentUserService currentUserService;
     private final AuditLogRepository auditLogRepository;
     private final ApprovalEventPublisher approvalEventPublisher;
+    private final CashAdvanceBudgetAllocator cashAdvanceBudgetAllocator;
     private final CashAdvanceRepaymentRepository cashAdvanceRepaymentRepository;
     private final CashAdvanceRepaymentMapper cashAdvanceRepaymentMapper;
     private final CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
@@ -994,22 +995,16 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
+        int decimals = advance.getCurrency() != null ? advance.getCurrency().getDecimalPlaces() : 2;
         BigDecimal newBalance =
-                currentBalance.subtract(request.amount());
+                CashAdvanceBalanceRules.requireNonNegative(currentBalance.subtract(request.amount()), decimals);
 
         advance.setOutstandingBalance(newBalance);
 
         String previousStatus =
                 advance.getStatus();
 
-        if (newBalance.compareTo(BigDecimal.ZERO) == 0) {
-
-            advance.setStatus("CLOSED");
-
-        } else {
-
-            advance.setStatus("SETTLEMENT_PENDING");
-        }
+        advance.setStatus(CashAdvanceBalanceRules.statusAfterBalance(newBalance, decimals));
 
         cashAdvanceRepository.save(advance);
 
@@ -1430,14 +1425,23 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
-        if (isAdminCaller()) {
-            return;
-        }
-
         String statusUpper =
                 entity.getStatus() != null
                         ? entity.getStatus().toUpperCase()
                         : "";
+
+        // Manager stage is reserved for the assigned manager (or delegate), even for Admin;
+        // Admin keeps its override on the later stages.
+        boolean managerStage = List.of(
+                "SUBMITTED",
+                "PENDING",
+                "PENDING_APPROVAL",
+                "PENDING_MANAGER_APPROVAL"
+        ).contains(statusUpper);
+
+        if (isAdminCaller() && !managerStage) {
+            return;
+        }
 
         if (List.of(
                 "PENDING_FINANCE_APPROVAL",
@@ -1591,10 +1595,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             }
         }
 
-        if (isFinanceCaller()) {
-            return;
-        }
-
+        // Manager stage: only the assigned manager (or their active delegate) may act.
+        // Finance approves later, once the manager stage is complete.
         throw new BusinessRuleViolationException(
                 "Only the authorized manager (or active delegate) can approve or reject this cash advance"
         );
@@ -1767,96 +1769,19 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
-        // Legacy / partially-populated records can still reach the final approval path without a
-        // selected Cost Center or a populated amount. In those cases, the approval status should
-        // still advance, and only budget consumption should be enforced when the business data is
-        // actually present and valid.
+        // Legacy records can reach final approval without a Cost Center. The status still advances;
+        // there is nothing to allocate against.
         if (advance.getCostCenter() == null
                 || advance.getCostCenter().getCostCenterId() == null) {
-            log.warn("Cash advance {} reached final approval without a selected Cost Center - skipping budget consumption.",
+
+            log.warn("Cash advance {} reached final approval without a selected Cost Center - skipping budget allocation.",
                     advance.getAdvanceId());
             return;
         }
 
-        if (advance.getAmount() == null
-                || advance.getAmount().compareTo(BigDecimal.ZERO) <= 0) {
-            throw new BusinessRuleViolationException(
-                    "Cash advance amount must be greater than zero."
-            );
-        }
-
-        UUID costCenterId = advance.getCostCenter().getCostCenterId();
-        String fiscalYear = resolveCurrentFiscalYear();
-
-        CostCenter costCenter = costCenterRepository.findById(costCenterId)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "Cost Center not found with id: " + costCenterId
-                ));
-
-        CostCenterBudget budget =
-                costCenterBudgetRepository
-                        .findByCostCenter_CostCenterIdAndFiscalYear(costCenterId, fiscalYear)
-                        .orElse(null);
-
-        if (budget == null) {
-            if (Boolean.TRUE.equals(costCenter.getAllowUnbudgeted())) {
-                log.warn(
-                        "No CostCenterBudget row found; allowing unbudgeted final approval. " +
-                        "CostCenter={}, FiscalYear={}, Advance={}",
-                        costCenterId, fiscalYear, advance.getAdvanceId()
-                );
-                return;
-            }
-
-            throw new BusinessRuleViolationException(
-                    "No Cost Center budget is configured for "
-                            + costCenter.getCostCenterCode()
-                            + " for fiscal year "
-                            + fiscalYear
-                            + "."
-            );
-        }
-
-        BigDecimal available =
-                budget.getAvailableBudget() != null
-                        ? budget.getAvailableBudget()
-                        : BigDecimal.ZERO;
-
-        BigDecimal amount = advance.getAmount();
-
-        if (amount.compareTo(available) > 0) {
-            throw new BusinessRuleViolationException(
-                    "Cash advance amount of "
-                            + amount
-                            + " exceeds the remaining Cost Center budget of "
-                            + available
-                            + ". Budget amount: "
-                            + budget.getBudgetAmount()
-                            + ", Available budget: "
-                            + available
-                            + ", Fiscal year: "
-                            + fiscalYear
-                            + ", Cost Center: "
-                            + costCenter.getCostCenterCode()
-                            + "."
-            );
-        }
-
-        BigDecimal newAvailable = available.subtract(amount);
-
-        budget.setAvailableBudget(newAvailable);
-        costCenterBudgetRepository.save(budget);
-
-        log.info(
-                "Cost Center budget consumed for Cash Advance. " +
-                "Advance={}, CostCenter={}, FiscalYear={}, Amount={}, PreviousAvailable={}, NewAvailable={}",
-                advance.getAdvanceId(),
-                costCenterId,
-                fiscalYear,
-                amount,
-                available,
-                newAvailable
-        );
+        // Principal + fee: locked budget row, validation, atomic update and the fee record
+        // all happen in CashAdvanceBudgetAllocator, inside this approval transaction.
+        cashAdvanceBudgetAllocator.allocateOnFinalApproval(advance, resolveCurrentFiscalYear());
     }
 
     /**

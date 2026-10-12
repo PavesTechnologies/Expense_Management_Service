@@ -1,5 +1,6 @@
 package com.expense_management_service.service.impl;
 
+import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.dto.response.DashboardResponse;
 import com.expense_management_service.dto.response.DashboardResponse.Budget;
 import com.expense_management_service.dto.response.DashboardResponse.Item;
@@ -19,12 +20,15 @@ import com.expense_management_service.enums.LineItemReviewStatus;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.security.CurrentUserService;
+import com.expense_management_service.service.CashAdvanceService;
 import com.expense_management_service.service.DashboardService;
 import com.expense_management_service.service.DelegationService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -73,6 +77,7 @@ public class DashboardServiceImpl implements DashboardService {
     private final CurrentUserService currentUserService;
     private final DelegationService delegationService;
     private final com.expense_management_service.service.TaxReportService taxReportService;
+    private final CashAdvanceService cashAdvanceService;
 
     @Value("${exchange.rate.base-currency}")
     private String baseCurrencyCode;
@@ -165,6 +170,13 @@ public class DashboardServiceImpl implements DashboardService {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
         long overdue = pending.stream().filter(a -> a.getDueDate() != null && a.getDueDate().isBefore(now)).count();
 
+        // Cash advances awaiting this approver - the same list the Cash Advances approvals tab shows
+        Page<CashAdvanceResponse> caPending = cashAdvanceService.getMyApprovals(me, null, PageRequest.of(0, 1000));
+        long caPendingCount = caPending.getTotalElements();
+        BigDecimal caPendingValue = caPending.getContent().stream()
+                .map(c -> c.baseAmount() != null ? c.baseAmount() : c.amount() != null ? c.amount() : BigDecimal.ZERO)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
         LocalDateTime trendStart = firstMonth(TREND_MONTHS).atDay(1).atStartOfDay();
         // ApprovalLineItemReview.actedBy is only set when a delegate acted; null means the level's
         // assigned approver acted. So a decision is the caller's if they acted as a delegate, or
@@ -189,11 +201,26 @@ public class DashboardServiceImpl implements DashboardService {
                         "select count(r) from ExpenseReport r where r.rejectedBy = :me and r.rejectedAt >= :since", Long.class)
                 .setParameter("me", me).setParameter("since", last30).getSingleResult();
 
+        // Cash advance decisions this approver made in the last 30 days, from the audit trail
+        List<String> caDecisions = em.createQuery("""
+                        select a.action from AuditLog a
+                        where a.entityName = :entity and a.performedBy = :me and a.performedAt >= :since
+                          and a.action in :actions
+                        """, String.class)
+                .setParameter("entity", "CashAdvance").setParameter("me", me).setParameter("since", last30)
+                .setParameter("actions", List.of("CASH_ADVANCE_APPROVED", "CASH_ADVANCE_REJECTED"))
+                .getResultList();
+        long caApproved30 = caDecisions.stream().filter("CASH_ADVANCE_APPROVED"::equals).count();
+        long caRejected30 = caDecisions.stream().filter("CASH_ADVANCE_REJECTED"::equals).count();
+
         List<Kpi> kpis = List.of(
-                new Kpi("pending", "Waiting for you", BigDecimal.valueOf(pendingReports.size()), "count", "Reports to review", "indigo"),
-                new Kpi("pendingValue", "Value waiting", pendingValue, "money", "Across those reports", "blue"),
+                new Kpi("pending", "Waiting for you", BigDecimal.valueOf(pendingReports.size() + caPendingCount), "count",
+                        "Expense reports and cash advances to review", "indigo"),
+                new Kpi("pendingValue", "Value waiting", pendingValue.add(caPendingValue), "money",
+                        "Across those expense reports and cash advances", "blue"),
                 new Kpi("overdue", "Overdue", BigDecimal.valueOf(overdue), "count", "Past their due date", overdue > 0 ? "rose" : "gray"),
-                new Kpi("approved30", "Approved (30 days)", BigDecimal.valueOf(approved30), "count", "Line items", "emerald"),
+                new Kpi("approved30", "Approved (30 days)", BigDecimal.valueOf(approved30 + caApproved30), "count",
+                        "Line items and cash advances", "emerald"),
                 new Kpi("sentBack30", "Sent back (30 days)", BigDecimal.valueOf(sentBack30), "count", "Needs correction", "amber"));
 
         // Trend: approved line items (count) with sent-back as the secondary series.
@@ -207,9 +234,9 @@ public class DashboardServiceImpl implements DashboardService {
                 .toList();
 
         List<Slice> decisionMix = List.of(
-                new Slice("approved", "Approved", approved30, null),
+                new Slice("approved", "Approved", approved30 + caApproved30, null),
                 new Slice("sentBack", "Sent back", sentBack30, null),
-                new Slice("rejected", "Rejected", rejected30, null));
+                new Slice("rejected", "Rejected", rejected30 + caRejected30, null));
 
         List<Slice> aging = agingBuckets(pending.stream().map(ApprovalAssignment::getAssignedAt).toList(), now);
 

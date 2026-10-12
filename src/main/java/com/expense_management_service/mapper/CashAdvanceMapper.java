@@ -27,6 +27,9 @@ public class CashAdvanceMapper {
                 .amount(request.amount())
                 .baseAmount(request.baseAmount())
                 .purpose(purpose)
+                .title(request.title())
+                .notes(request.notes())
+                .neededByDate(request.neededByDate())
                 .settlementDueDate(dueDate)
                 .build();
     }
@@ -48,6 +51,16 @@ public class CashAdvanceMapper {
             entity.setPurpose(purpose);
         }
 
+        if (request.title() != null) {
+            entity.setTitle(request.title());
+        }
+        if (request.notes() != null) {
+            entity.setNotes(request.notes());
+        }
+        if (request.neededByDate() != null) {
+            entity.setNeededByDate(request.neededByDate());
+        }
+
         LocalDate dueDate = request.settlementDueDate() != null ? request.settlementDueDate() : request.neededByDate();
         if (dueDate != null) {
             entity.setSettlementDueDate(dueDate);
@@ -55,6 +68,11 @@ public class CashAdvanceMapper {
     }
 
     public CashAdvanceResponse toResponse(CashAdvance entity) {
+        // Rows created before neededByDate was stored have it null; fall back to the due date for them.
+        LocalDate neededBy = entity.getNeededByDate() != null
+                ? entity.getNeededByDate()
+                : entity.getSettlementDueDate();
+
         return new CashAdvanceResponse(
                 entity.getAdvanceId(),
                 entity.getEmployeeId(),
@@ -68,11 +86,12 @@ public class CashAdvanceMapper {
                 entity.getPurpose(),
                 entity.getStatus(),
                 entity.getSettlementDueDate(),
-                entity.getSettlementDueDate(),
+                neededBy,
                 entity.getOutstandingBalance(),
                 entity.getCreatedAt(),
-                entity.getUpdatedAt()
+                entity.getUpdatedAt(),
+                entity.getTitle(),
+                entity.getNotes()
         );
     }
 }
-

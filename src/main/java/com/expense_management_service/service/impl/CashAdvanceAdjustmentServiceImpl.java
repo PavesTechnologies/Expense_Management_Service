@@ -99,15 +99,12 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
             throw new BusinessRuleViolationException("Adjusted amount (" + adjustedAmount + ") cannot exceed cash advance outstanding balance (" + currentBalance + ")");
         }
 
-        BigDecimal newBalance = currentBalance.subtract(adjustedAmount);
+        int decimals = advance.getCurrency() != null ? advance.getCurrency().getDecimalPlaces() : 2;
+        BigDecimal newBalance = CashAdvanceBalanceRules.requireNonNegative(currentBalance.subtract(adjustedAmount), decimals);
         advance.setOutstandingBalance(newBalance);
 
         String previousStatus = advance.getStatus();
-        if (newBalance.compareTo(BigDecimal.ZERO) == 0) {
-            advance.setStatus("CLOSED");
-        } else {
-            advance.setStatus("SETTLEMENT_PENDING");
-        }
+        advance.setStatus(CashAdvanceBalanceRules.statusAfterBalance(newBalance, decimals));
         cashAdvanceRepository.save(advance);
 
         CashAdvanceAdjustment entity = cashAdvanceAdjustmentMapper.toEntity(request);
@@ -178,6 +175,16 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
             }
             cashAdvanceRepository.save(advance);
         }
+        auditLogRepository.save(AuditLog.builder()
+                .entityName("CashAdvanceAdjustment")
+                .entityId(entity.getAdjustmentId())
+                .action("ADJUSTMENT_DELETED")
+                .oldValue(advance != null ? "Adjusted: " + entity.getAdjustedAmount() + ", Advance: " + advance.getAdvanceId() : null)
+                .newValue("Adjustment removed; balance restored on the advance")
+                .performedBy(actingUser)
+                .performedAt(LocalDateTime.now())
+                .reason("Adjustment deleted by " + actingUser)
+                .build());
         cashAdvanceAdjustmentRepository.delete(entity);
         if (entity.getReport() != null) {
             refreshReimbursable(entity.getReport());

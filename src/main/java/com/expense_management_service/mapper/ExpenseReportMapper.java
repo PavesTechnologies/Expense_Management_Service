@@ -65,7 +65,8 @@ public class ExpenseReportMapper {
                 editable,
                 deletable,
                 policyWarningCount,
-                policyUnjustifiedCount
+                policyUnjustifiedCount,
+                entity.getCashAdvance() != null ? entity.getCashAdvance().getAdvanceId() : null
         );
     }
 }

@@ -1,7 +1,5 @@
 package com.expense_management_service.controller;
 
-import java.util.List;
-
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.CashAdvanceRepaymentRequest;
 import com.expense_management_service.dto.request.CashAdvanceRequest;

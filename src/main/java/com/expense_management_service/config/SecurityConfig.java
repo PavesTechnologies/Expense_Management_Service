@@ -26,9 +26,9 @@ import org.springframework.security.web.SecurityFilterChain;
 public class SecurityConfig {
 
     private static final String[] PUBLIC_ENDPOINTS = {
-            "/v3/api-docs/**",
-            "/swagger-ui/**",
-            "/swagger-ui.html",
+            "/xms/v3/api-docs/**",
+            "/xms/swagger-ui/**",
+            "/xms/swagger-ui.html",
             "/actuator/health",
             "/actuator/info",
             // WebSocket/SockJS handshake (incl. its /info probe). The browser can't send an

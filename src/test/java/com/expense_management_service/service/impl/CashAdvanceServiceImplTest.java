@@ -55,6 +55,7 @@ import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class CashAdvanceServiceImplTest {
+    @org.mockito.Mock private CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
 
     @Mock
     private CashAdvanceRepository cashAdvanceRepository;
@@ -398,7 +399,6 @@ class CashAdvanceServiceImplTest {
                 .build();
 
         Page<CashAdvance> page = new PageImpl<>(List.of(advance1, advance2), pageable, 2);
-        when(currentUserService.getEmployeeId()).thenReturn("EMP001");
         when(cashAdvanceRepository.findByEmployeeId("EMP001", pageable)).thenReturn(page);
 
         Page<CashAdvanceResponse> result = cashAdvanceService.getMyAdvances("EMP001", null, pageable);

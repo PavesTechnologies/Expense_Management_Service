@@ -18,6 +18,9 @@ public interface BudgetEncumbranceRepository extends JpaRepository<BudgetEncumbr
 
     List<BudgetEncumbrance> findByBudget_BudgetIdAndStatus(UUID budgetId, BudgetEncumbranceStatus status);
 
+    /** Reservations held by the expense reports linked to one cash advance (the "submitted" amount awaiting payment). */
+    List<BudgetEncumbrance> findByReport_CashAdvance_AdvanceIdAndStatus(UUID advanceId, BudgetEncumbranceStatus status);
+
     /** The figure Effective Available Budget subtracts, and the same figure a rollover's "true unencumbered remainder" check needs for its source budget. */
     @Query("select coalesce(sum(e.amount), 0) from BudgetEncumbrance e where e.budget.budgetId = :budgetId and e.status = :status")
     BigDecimal sumAmountByBudget_BudgetIdAndStatus(@Param("budgetId") UUID budgetId, @Param("status") BudgetEncumbranceStatus status);

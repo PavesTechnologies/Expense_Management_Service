@@ -124,6 +124,10 @@ SET b.available_budget = b.available_budget - t.total,
     b.cash_advance_allocated = COALESCE(b.cash_advance_allocated, 0) + t.total
 WHERE b.fiscal_year = @fy_label;
 
+-- 2a. Record the budget year, so later offsets and repayments move money in the same budget
+UPDATE cash_advance SET budget_fiscal_year = @fy_label
+WHERE advance_id IN (SELECT advance_id FROM ca_backfill);
+
 -- 2. Mark each charged advance so it cannot be charged again
 INSERT INTO cash_advance_fee (fee_id, advance_id, cost_center_id, fee_rate, amount, expense_report_id, created_at)
 SELECT UNHEX(REPLACE(UUID(), '-', '')), t.advance_id, t.cost_center_id, 0, 0, NULL, NOW()

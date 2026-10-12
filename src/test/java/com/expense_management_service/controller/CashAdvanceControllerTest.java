@@ -214,6 +214,7 @@ class CashAdvanceControllerTest {
         Pageable pageable = PageRequest.of(0, 10);
         Page<CashAdvanceResponse> page = new PageImpl<>(List.of(response), pageable, 1);
 
+        when(currentUserService.getEmployeeId()).thenReturn("EMP001");
         when(cashAdvanceService.getMyAdvances("EMP001", "SUBMITTED", pageable)).thenReturn(page);
 
         mockMvc.perform(get("/xms/employee/cash-advances/my-advances")

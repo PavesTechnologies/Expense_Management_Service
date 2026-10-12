@@ -117,6 +117,7 @@ public class CashAdvanceBudgetAllocator {
                     costCenter.getCostCenterCode(), fiscalYear, advance.getAdvanceId());
         } else {
             allocateAgainstBudget(budget.get(), basePrincipal, baseFee);
+            advance.setBudgetFiscalYear(fiscalYear);
         }
 
         ExpenseReport feeReport = baseFee.signum() > 0

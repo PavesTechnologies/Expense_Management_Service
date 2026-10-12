@@ -7,6 +7,7 @@ import com.expense_management_service.dto.request.CashAdvanceRequest;
 import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.dto.response.CashAdvanceSettlementResponse;
+import com.expense_management_service.dto.response.CashAdvanceUtilizationResponse;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
@@ -39,6 +40,8 @@ public interface CashAdvanceService {
     CashAdvanceRepaymentResponse repay(CashAdvanceRepaymentRequest request);
 
     CashAdvanceSettlementResponse getSettlement(UUID advanceId);
+
+    CashAdvanceUtilizationResponse getUtilization(UUID advanceId);
 
     void processOverdueAdvances();
 

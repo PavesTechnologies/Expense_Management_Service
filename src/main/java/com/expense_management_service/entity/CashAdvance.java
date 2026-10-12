@@ -87,6 +87,10 @@ public class CashAdvance {
     @Column(name = "approved_amount", precision = 19, scale = 4)
     private BigDecimal approvedAmount;
 
+    /** Fiscal year whose budget this advance was charged to at final approval. Null if never charged. */
+    @Column(name = "budget_fiscal_year", length = 10)
+    private String budgetFiscalYear;
+
     @Column(name = "settlement_status", length = 255)
     private String settlementStatus;
 

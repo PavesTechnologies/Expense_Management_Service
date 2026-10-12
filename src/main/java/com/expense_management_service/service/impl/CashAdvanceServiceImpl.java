@@ -21,6 +21,7 @@ import com.expense_management_service.dto.response.CashAdvanceAdjustmentResponse
 import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.dto.response.CashAdvanceSettlementResponse;
+import com.expense_management_service.dto.response.CashAdvanceUtilizationResponse;
 import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.entity.CashAdvance;
 import com.expense_management_service.entity.CashAdvanceAdjustment;
@@ -60,6 +61,8 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 public class CashAdvanceServiceImpl implements CashAdvanceService {
 
+    private final CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
+
     private static final String MAX_ADVANCE_AMOUNT_CONFIG_KEY =
             "cash_advance.max_amount";
 
@@ -79,6 +82,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     private final CashAdvanceRepaymentMapper cashAdvanceRepaymentMapper;
     private final CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
     private final CashAdvanceAdjustmentMapper cashAdvanceAdjustmentMapper;
+    private final CashAdvanceUtilizationCalculator cashAdvanceUtilizationCalculator;
 
 
     // ============================================================
@@ -226,9 +230,9 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     @Transactional(readOnly = true)
     public CashAdvanceResponse getById(UUID advanceId) {
 
-        return cashAdvanceMapper.toResponse(
-                findEntity(advanceId)
-        );
+        CashAdvance advance = findEntity(advanceId);
+        assertCanView(advance);
+        return cashAdvanceMapper.toResponse(advance);
     }
 
 
@@ -501,6 +505,12 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             String employeeId,
             String status,
             Pageable pageable) {
+
+        // Finance and Admin may list across employees. Everyone else sees only their own advances, and any
+        // employeeId they pass is ignored.
+        if (!isFinanceCaller() && !isAdminCaller()) {
+            return getMyAdvances(currentUserService.getEmployeeId(), status, pageable);
+        }
 
         if (employeeId != null && !employeeId.isBlank()) {
 
@@ -940,6 +950,12 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         CashAdvance advance =
                 findEntity(request.advanceId());
 
+        String reference = request.paymentReference() != null ? request.paymentReference().trim() : null;
+        if (reference != null && !reference.isEmpty()
+                && cashAdvanceRepaymentRepository.existsByCashAdvance_AdvanceIdAndPaymentReference(request.advanceId(), reference)) {
+            throw new BusinessRuleViolationException("A repayment with reference " + reference + " is already recorded for this advance.");
+        }
+
         String currentStatusUpper =
                 advance.getStatus() != null
                         ? advance.getStatus().toUpperCase()
@@ -1005,6 +1021,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                 advance.getStatus();
 
         advance.setStatus(CashAdvanceBalanceRules.statusAfterBalance(newBalance, decimals));
+        cashAdvanceBudgetMovements.releaseAllocation(advance, request.amount());
 
         cashAdvanceRepository.save(advance);
 
@@ -1077,6 +1094,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
         CashAdvance advance =
                 findEntity(advanceId);
+        assertCanView(advance);
 
         List<CashAdvanceAdjustment> adjustments =
                 cashAdvanceAdjustmentRepository
@@ -1166,6 +1184,16 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                 adjResponses,
                 repResponses
         );
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public CashAdvanceUtilizationResponse getUtilization(UUID advanceId) {
+
+        CashAdvance advance = findEntity(advanceId);
+        assertCanView(advance);
+
+        return cashAdvanceUtilizationCalculator.calculate(advance);
     }
 
 
@@ -1606,6 +1634,37 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     // ============================================================
     // FINANCE ROLE
     // ============================================================
+
+    /**
+     * A cash advance is visible to Finance and Admin, to the employee who requested it, and to the manager,
+     * delegate or cost center owner who approves it. Anyone else gets "not found", so the response doesn't reveal
+     * that the advance exists.
+     */
+    private void assertCanView(CashAdvance advance) {
+        if (isFinanceCaller() || isAdminCaller()) {
+            return;
+        }
+        String me = currentUserService.getEmployeeId();
+        if (me == null || me.isBlank()) {
+            throw notVisible(advance);
+        }
+        if (advance.getEmployeeId() != null && advance.getEmployeeId().trim().equalsIgnoreCase(me.trim())) {
+            return;
+        }
+        Set<String> actingFor = new HashSet<>(delegationService.resolveApproverIdsActingFor(me));
+        if (advance.getManagerId() != null && actingFor.contains(advance.getManagerId())) {
+            return;
+        }
+        String ccOwner = resolveCostCenterOwner(advance);
+        if (ccOwner != null && actingFor.contains(ccOwner)) {
+            return;
+        }
+        throw notVisible(advance);
+    }
+
+    private ResourceNotFoundException notVisible(CashAdvance advance) {
+        return new ResourceNotFoundException("Cash advance not found with id: " + advance.getAdvanceId());
+    }
 
     private boolean isFinanceCaller() {
 

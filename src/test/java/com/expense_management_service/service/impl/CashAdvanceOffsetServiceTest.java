@@ -177,4 +177,12 @@ class CashAdvanceOffsetServiceTest {
                 () -> service.applyOffset(reportId, null, BigDecimal.ZERO));
         verify(cashAdvanceAdjustmentService, never()).create(any());
     }
+    @Test
+    void alreadyPaidReport_cannotBeOffset() {
+        report.setPaymentRoutingStatus(com.expense_management_service.enums.PaymentRoutingStatus.PAYMENT_COMPLETED);
+        stubReport();
+
+        assertThrows(BusinessRuleViolationException.class, () -> service.applyOffset(reportId, null, null));
+        verify(cashAdvanceAdjustmentService, never()).create(any());
+    }
 }

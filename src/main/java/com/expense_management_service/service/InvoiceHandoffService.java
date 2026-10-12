@@ -38,8 +38,14 @@ public interface InvoiceHandoffService {
 
     List<InvoiceSyncResponse> getHandoffHistory(UUID lineItemId);
 
-    /** Every completed handoff, newest first. */
-    PageResponse<InvoiceHandoffRecordResponse> getHandedOff(int page, int size);
+    /**
+     * Completed handoffs, newest first - the invoice team's "Handed off" tab and AR's pull of
+     * what to invoice. All filters are optional and combined with AND; both handed-off date
+     * bounds are inclusive. A reprocessed line item appears once per handoff.
+     */
+    PageResponse<InvoiceHandoffRecordResponse> getHandedOff(
+            UUID clientId, Long pmsProjectId, String projectCode,
+            LocalDate handedOffFrom, LocalDate handedOffTo, int page, int size);
 
     InvoiceHandoffSummaryResponse getSummary();
 }

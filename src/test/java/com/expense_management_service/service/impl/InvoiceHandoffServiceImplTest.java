@@ -10,6 +10,7 @@ import com.expense_management_service.entity.ExpenseCategory;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.InvoiceSync;
+import com.expense_management_service.entity.ProjectCache;
 import com.expense_management_service.enums.InvoiceHandoffStatus;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
@@ -29,6 +30,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -218,14 +220,54 @@ class InvoiceHandoffServiceImplTest {
     void getHandedOff_mapsHandoffWithItsExpense() {
         InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
                 .invoiceReference("INV-9").syncStatus("HANDED_OFF").syncDate(java.time.LocalDateTime.now()).build();
-        when(invoiceSyncRepository.findBySyncStatusOrderBySyncDateDesc(eq("HANDED_OFF"), any()))
+        when(invoiceSyncRepository.findHandedOff(eq("HANDED_OFF"), any(), any(), any(), any(), any(), any()))
                 .thenReturn(new PageImpl<>(List.of(sync)));
 
-        var page = service.getHandedOff(0, 20);
+        var page = service.getHandedOff(null, null, null, null, null, 0, 20);
 
         assertThat(page.content()).hasSize(1);
         assertThat(page.content().get(0).invoiceReference()).isEqualTo("INV-9");
         assertThat(page.content().get(0).reportNumber()).isEqualTo("ER-001");
+    }
+
+    @Test
+    void getHandedOff_exposesTheCrossSystemKeysArMatchesOn() {
+        eligibleLineItem.setProject(ProjectCache.builder().projectId(UUID.randomUUID())
+                .pmsProjectId(37L).projectCode("AP-297").projectName("AR project").build());
+        InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
+                .invoiceReference("INV-11").syncStatus("HANDED_OFF").syncDate(LocalDateTime.now()).build();
+        when(invoiceSyncRepository.findHandedOff(eq("HANDED_OFF"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(sync)));
+
+        var record = service.getHandedOff(null, 37L, null, null, null, 0, 20).content().get(0);
+
+        assertThat(record.pmsProjectId()).isEqualTo(37L);
+        assertThat(record.projectCode()).isEqualTo("AP-297");
+        assertThat(record.resolvedClientId()).isEqualTo(eligibleLineItem.getResolvedClientId());
+    }
+
+    @Test
+    void getHandedOff_passesFilters_trimsProjectCode_andMakesTheHandedOffDateRangeInclusive() {
+        UUID clientId = UUID.randomUUID();
+        LocalDate from = LocalDate.of(2026, 10, 1);
+        LocalDate to = LocalDate.of(2026, 10, 31);
+        when(invoiceSyncRepository.findHandedOff(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Page.empty());
+
+        service.getHandedOff(clientId, 37L, "  AP-297 ", from, to, 0, 20);
+        verify(invoiceSyncRepository).findHandedOff("HANDED_OFF", clientId, 37L, "AP-297",
+                LocalDateTime.of(2026, 10, 1, 0, 0), LocalDateTime.of(2026, 11, 1, 0, 0), PageRequest.of(0, 20));
+
+        service.getHandedOff(null, null, "   ", null, null, 0, 20);
+        verify(invoiceSyncRepository).findHandedOff("HANDED_OFF", null, null, null, null, null, PageRequest.of(0, 20));
+    }
+
+    @Test
+    void getHandedOff_rejectsInvertedHandedOffRange() {
+        assertThatThrownBy(() -> service.getHandedOff(null, null, null,
+                LocalDate.of(2026, 10, 31), LocalDate.of(2026, 10, 1), 0, 20))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("handedOffFrom");
     }
 
     @Test
@@ -235,10 +277,10 @@ class InvoiceHandoffServiceImplTest {
         eligibleLineItem.setTaxCode("GST18");
         InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
                 .invoiceReference("INV-10").syncStatus("HANDED_OFF").syncDate(java.time.LocalDateTime.now()).build();
-        when(invoiceSyncRepository.findBySyncStatusOrderBySyncDateDesc(eq("HANDED_OFF"), any()))
+        when(invoiceSyncRepository.findHandedOff(eq("HANDED_OFF"), any(), any(), any(), any(), any(), any()))
                 .thenReturn(new PageImpl<>(List.of(sync)));
 
-        var record = service.getHandedOff(0, 20).content().get(0);
+        var record = service.getHandedOff(null, null, null, null, null, 0, 20).content().get(0);
 
         assertThat(record.costBasis()).isEqualByComparingTo("1000.00");
         assertThat(record.costBasis()).isEqualByComparingTo(BillingPayloadFactory.costBasis(eligibleLineItem));

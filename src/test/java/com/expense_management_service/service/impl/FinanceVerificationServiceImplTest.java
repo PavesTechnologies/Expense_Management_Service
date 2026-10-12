@@ -58,6 +58,7 @@ class FinanceVerificationServiceImplTest {
     @Mock private com.expense_management_service.repository.PolicyViolationRepository policyViolationRepository;
     @Mock private com.expense_management_service.repository.VerificationQueryRepository verificationQueryRepository;
     @Mock private com.expense_management_service.service.TaxSnapshotService taxSnapshotService;
+    @Mock private com.expense_management_service.repository.TaxCodeRepository taxCodeRepository;
 
     private FinanceVerificationServiceImpl service;
 
@@ -72,7 +73,8 @@ class FinanceVerificationServiceImplTest {
         service = new FinanceVerificationServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, financeVerificationReviewRepository, expenseLineItemRepository,
                 financeVerificationEligibilityChecker, approvalEventPublisher, approvalWorkflowService, factory,
-                verificationQueryRepository, taxSnapshotService);
+                verificationQueryRepository, taxSnapshotService, taxCodeRepository);
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "baseCurrencyCode", "INR");
 
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
     }
@@ -226,6 +228,40 @@ class FinanceVerificationServiceImplTest {
         assertThat(page.content()).hasSize(1);
         assertThat(page.content().get(0).reportId()).isEqualTo(reportId);
         assertThat(page.content().get(0).levelOrder()).isEqualTo(instance.getLevelOrder());
+    }
+
+    @Test
+    void getFinanceQueue_showsTheGlAccountDetail_andSplitsRecoverableTaxToTheInputTaxGl() {
+        var pageable = org.springframework.data.domain.PageRequest.of(0, 20);
+        when(expenseReportRepository.findByReportStatus(ReportStatus.PENDING_FINANCE_VERIFICATION, pageable))
+                .thenReturn(new org.springframework.data.domain.PageImpl<>(List.of(pendingFinanceReport()), pageable, 1));
+        when(approvalLevelInstanceRepository.findMaxSubmissionCycle(reportId)).thenReturn(1);
+        when(approvalLevelInstanceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, LevelInstanceStatus.ACTIVE))
+                .thenReturn(Optional.of(financeInstance()));
+        ExpenseLineItem line = lineItem();
+        line.getCategory().getGlAccount().setGlAccountName("Travel & Conveyance");
+        line.getCategory().getGlAccount().setAccountType("EXPENSE");
+        line.setBaseAmount(new java.math.BigDecimal("1180.00"));
+        line.setBaseRecoverableTaxAmount(new java.math.BigDecimal("180.00"));
+        line.setTaxCodeId(UUID.randomUUID());
+        GlAccount inputTaxGl = GlAccount.builder().glAccountCode("1450").glAccountName("Input GST receivable").build();
+        when(taxCodeRepository.findById(line.getTaxCodeId()))
+                .thenReturn(Optional.of(com.expense_management_service.entity.TaxCode.builder().inputTaxGlAccount(inputTaxGl).build()));
+        when(financeVerificationReviewRepository.findByLevelInstance_InstanceIdAndStatus(instanceId, FinanceVerificationStatus.PENDING))
+                .thenReturn(List.of(FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).lineItem(line)
+                        .status(FinanceVerificationStatus.PENDING).build()));
+        when(financeVerificationEligibilityChecker.check(line)).thenReturn(FinanceEligibilityResult.ok());
+
+        var gl = service.getFinanceQueue("fin", pageable).content().get(0).pendingLineItems().get(0).glAccount();
+
+        assertThat(gl.glAccountCode()).isEqualTo("6100");
+        assertThat(gl.glAccountName()).isEqualTo("Travel & Conveyance");
+        assertThat(gl.accountType()).isEqualTo("EXPENSE");
+        assertThat(gl.status()).isEqualTo("ACTIVE");
+        assertThat(gl.expenseAmount()).isEqualByComparingTo("1000.00");
+        assertThat(gl.inputTaxGlAccountCode()).isEqualTo("1450");
+        assertThat(gl.inputTaxAmount()).isEqualByComparingTo("180.00");
+        assertThat(gl.currencyCode()).isEqualTo("INR");
     }
 
     @Test

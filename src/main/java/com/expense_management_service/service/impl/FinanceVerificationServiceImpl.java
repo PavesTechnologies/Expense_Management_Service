@@ -15,6 +15,9 @@ import com.expense_management_service.entity.FinanceVerificationReview;
 import com.expense_management_service.entity.GlAccount;
 import com.expense_management_service.enums.AssignmentStatus;
 import com.expense_management_service.dto.request.FinanceSupplierGstinRequest;
+import com.expense_management_service.dto.response.FinanceGlDetailsResponse;
+import com.expense_management_service.entity.TaxCode;
+import com.expense_management_service.repository.TaxCodeRepository;
 import com.expense_management_service.enums.FinanceVerificationStatus;
 import com.expense_management_service.enums.ItcStatus;
 import com.expense_management_service.enums.LevelInstanceStatus;
@@ -45,6 +48,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -72,6 +76,7 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
     private final ExpenseReportResponseFactory expenseReportResponseFactory;
     private final VerificationQueryRepository verificationQueryRepository;
     private final com.expense_management_service.service.TaxSnapshotService taxSnapshotService;
+    private final TaxCodeRepository taxCodeRepository;
 
     @Override
     public ExpenseReportResponse verifyLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, boolean taxChecked) {
@@ -206,7 +211,8 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
                             lineItem.getTaxValidationStatus() != null ? lineItem.getTaxValidationStatus().name() : null,
                             lineItem.getRecoverableTaxAmount(),
                             ItcStatus.of(lineItem.getBaseRecoverableTaxAmount(), lineItem.getTaxValidationStatus()).name(),
-                            lineItem.getSupplierGstin());
+                            lineItem.getSupplierGstin(),
+                            glDetails(lineItem, glAccount));
                 })
                 .toList();
 
@@ -217,6 +223,25 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
                 report.getReportStatus() != null ? report.getReportStatus().name() : null,
                 report.getSubmittedAt(),
                 instance.getLevelOrder(), pendingLineItems);
+    }
+
+    /** Expense GL and, for recoverable tax, the tax code's input tax GL - split as the tax journal posts it. */
+    private FinanceGlDetailsResponse glDetails(ExpenseLineItem lineItem, GlAccount glAccount) {
+        if (glAccount == null) {
+            return null;
+        }
+        BigDecimal gross = lineItem.getBaseAmount() != null ? lineItem.getBaseAmount() : BigDecimal.ZERO;
+        BigDecimal recoverable = lineItem.getBaseRecoverableTaxAmount() != null ? lineItem.getBaseRecoverableTaxAmount() : BigDecimal.ZERO;
+        GlAccount inputTaxGl = recoverable.signum() > 0 && lineItem.getTaxCodeId() != null
+                ? taxCodeRepository.findById(lineItem.getTaxCodeId()).map(TaxCode::getInputTaxGlAccount).orElse(null)
+                : null;
+        return new FinanceGlDetailsResponse(
+                glAccount.getGlAccountId(), glAccount.getGlAccountCode(), glAccount.getGlAccountName(),
+                glAccount.getAccountType(), glAccount.getDescription(), glAccount.getStatus(),
+                gross.subtract(recoverable),
+                inputTaxGl != null ? inputTaxGl.getGlAccountCode() : null,
+                inputTaxGl != null ? inputTaxGl.getGlAccountName() : null,
+                recoverable, baseCurrencyCode);
     }
 
     @Override

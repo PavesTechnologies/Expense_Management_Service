@@ -145,9 +145,18 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<InvoiceHandoffRecordResponse> getHandedOff(int page, int size) {
+    public PageResponse<InvoiceHandoffRecordResponse> getHandedOff(
+            UUID clientId, Long pmsProjectId, String projectCode,
+            LocalDate handedOffFrom, LocalDate handedOffTo, int page, int size) {
+        if (handedOffFrom != null && handedOffTo != null && handedOffFrom.isAfter(handedOffTo)) {
+            throw new IllegalArgumentException("handedOffFrom must be on or before handedOffTo");
+        }
         return PageResponse.of(invoiceSyncRepository
-                .findBySyncStatusOrderBySyncDateDesc(STATUS_HANDED_OFF, PageRequest.of(page, size))
+                .findHandedOff(STATUS_HANDED_OFF, clientId, pmsProjectId,
+                        StringUtils.hasText(projectCode) ? projectCode.trim() : null,
+                        handedOffFrom != null ? handedOffFrom.atStartOfDay() : null,
+                        handedOffTo != null ? handedOffTo.plusDays(1).atStartOfDay() : null,
+                        PageRequest.of(page, size))
                 .map(this::toRecordResponse));
     }
 
@@ -189,8 +198,10 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 BillingPayloadFactory.costBasis(l),
                 l.getBaseRecoverableTaxAmount(),
                 l.getTaxCode(),
+                project != null ? project.getPmsProjectId() : null,
                 project != null ? project.getProjectCode() : null,
                 project != null ? project.getProjectName() : null,
+                l.getResolvedClientId(),
                 l.getResolvedClientName(),
                 sync.getInvoiceReference(),
                 sync.getSyncDate(),

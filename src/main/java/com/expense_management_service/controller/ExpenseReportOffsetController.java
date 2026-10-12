@@ -19,7 +19,7 @@ import java.util.UUID;
  * Matches the call the Finance Review panel makes: {@code cashAdvanceApi.applyAdvanceOffset}.
  */
 @RestController
-@RequestMapping("/api/v1/expense-reports")
+@RequestMapping("/xms/api/v1/expense-reports")
 @RequiredArgsConstructor
 public class ExpenseReportOffsetController {
 

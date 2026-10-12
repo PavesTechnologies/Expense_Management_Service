@@ -69,6 +69,15 @@ public class FinanceVerificationController {
                 financeVerificationService.adjustLineTax(reportId, lineItemId, currentUserService.getEmployeeId(), request));
     }
 
+    /** Supplier GSTIN behind the line's input tax credit. FINANCE_EXECUTIVE only, like the tax adjustment. */
+    @PostMapping("/{reportId}/line-items/{lineItemId}/supplier-gstin")
+    @PreAuthorize("hasRole('FINANCE_EXECUTIVE')")
+    public ApiResponse<ExpenseReportResponse> recordSupplierGstin(@PathVariable UUID reportId, @PathVariable UUID lineItemId,
+                                                                   @Valid @RequestBody com.expense_management_service.dto.request.FinanceSupplierGstinRequest request) {
+        return ApiResponse.success("Supplier GSTIN updated",
+                financeVerificationService.recordSupplierGstin(reportId, lineItemId, currentUserService.getEmployeeId(), request));
+    }
+
     @PostMapping("/{reportId}/line-items/{lineItemId}/query")
     @PreAuthorize(CAN_ACT_AS_FINANCE)
     public ApiResponse<ExpenseReportResponse> queryLineItem(@PathVariable UUID reportId, @PathVariable UUID lineItemId,

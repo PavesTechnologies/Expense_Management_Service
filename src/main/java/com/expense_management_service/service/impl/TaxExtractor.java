@@ -35,6 +35,15 @@ final class TaxExtractor {
     /** Indian GSTIN: 2-digit state code, 10-character PAN, entity digit, 'Z', check character. */
     private static final java.util.regex.Pattern GSTIN =
             java.util.regex.Pattern.compile("\\b\\d{2}[A-Z]{5}\\d{4}[A-Z][A-Z\\d]Z[A-Z\\d]\\b");
+
+    /** Whether {@code value} (spaces ignored, any case) is GSTIN-shaped; returns it normalized, else null. */
+    static String normalizeGstin(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.toUpperCase(Locale.ROOT).replaceAll("\\s", "");
+        return GSTIN.matcher(normalized).matches() ? normalized : null;
+    }
     private static final List<String> COMPONENT_CODES = List.of("CGST", "SGST", "UTGST", "IGST", "CESS");
 
     /**

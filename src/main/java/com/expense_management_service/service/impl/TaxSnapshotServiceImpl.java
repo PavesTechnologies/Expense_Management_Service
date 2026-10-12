@@ -165,10 +165,7 @@ public class TaxSnapshotServiceImpl implements TaxSnapshotService {
         line.setTaxSnapshotAt(LocalDateTime.now());
         expenseLineItemRepository.save(line);
 
-        Map<String, Object> after = describe(line);
-        after.put("itcRecoverablePercent", plain(line.getItcRecoverablePercent()));
-        before.putIfAbsent("itcRecoverablePercent", null);
-        taxAuditService.record(ENTITY, line.getLineItemId(), "TAX_FINANCE_ADJUSTED", before, after, AuditSource.FINANCE, reason.trim());
+        taxAuditService.record(ENTITY, line.getLineItemId(), "TAX_FINANCE_ADJUSTED", before, describe(line), AuditSource.FINANCE, reason.trim());
     }
 
     @Override
@@ -218,19 +215,45 @@ public class TaxSnapshotServiceImpl implements TaxSnapshotService {
     }
 
     @Override
-    public void attachOcrEvidence(ExpenseLineItem line, BigDecimal ocrTax, BigDecimal ocrConfidence) {
-        if (ocrTax == null) {
+    public void attachOcrEvidence(ExpenseLineItem line, BigDecimal ocrTax, BigDecimal ocrConfidence, String supplierGstin) {
+        String gstin = TaxExtractor.normalizeGstin(supplierGstin);
+        if (ocrTax == null && gstin == null) {
             return;
         }
         Map<String, Object> before = describe(line);
-        line.setOcrTaxAmount(ocrTax);
-        line.setOcrTaxConfidence(ocrConfidence);
-        int scale = line.getCurrency() != null && line.getCurrency().getDecimalPlaces() != null ? line.getCurrency().getDecimalPlaces() : 2;
-        applyValidation(line, taxCalculationService.roundingTolerance(Math.max(1, line.getTaxComponents().size()), scale));
+        if (gstin != null) {
+            line.setSupplierGstin(gstin);
+        }
+        if (ocrTax != null) {
+            line.setOcrTaxAmount(ocrTax);
+            line.setOcrTaxConfidence(ocrConfidence);
+            applyValidation(line, taxCalculationService.roundingTolerance(Math.max(1, line.getTaxComponents().size()), scaleOf(line)));
+        }
         expenseLineItemRepository.save(line);
         Map<String, Object> after = describe(line);
-        after.put("ocrTaxAmount", plain(ocrTax));
+        after.put("ocrTaxAmount", plain(line.getOcrTaxAmount()));
         taxAuditService.record(ENTITY, line.getLineItemId(), "OCR_TAX_ATTACHED", before, after, AuditSource.OCR, null);
+    }
+
+    @Override
+    public void recordSupplierGstin(ExpenseLineItem line, String supplierGstin, String reason) {
+        if (!StringUtils.hasText(reason)) {
+            throw new IllegalArgumentException("A reason is required to change the supplier GSTIN.");
+        }
+        String gstin = null;
+        if (StringUtils.hasText(supplierGstin)) {
+            gstin = TaxExtractor.normalizeGstin(supplierGstin);
+            if (gstin == null) {
+                throw new IllegalArgumentException("'" + supplierGstin.trim() + "' is not a valid GSTIN (15 characters, e.g. 29ABCDE1234F1Z5).");
+            }
+        }
+        if (Objects.equals(gstin, line.getSupplierGstin())) {
+            return;
+        }
+        Map<String, Object> before = describe(line);
+        line.setSupplierGstin(gstin);
+        expenseLineItemRepository.save(line);
+        taxAuditService.record(ENTITY, line.getLineItemId(), "TAX_SUPPLIER_GSTIN_SET", before, describe(line), AuditSource.FINANCE, reason.trim());
     }
 
     /** Status and reasons from the line's tax, its code's calculation and the OCR evidence on it. */
@@ -258,6 +281,9 @@ public class TaxSnapshotServiceImpl implements TaxSnapshotService {
                 .map(c -> c.getComponentCode() + ":" + plain(c.getTaxAmount()))
                 .collect(Collectors.joining(",")));
         values.put("validationStatus", line.getTaxValidationStatus() == null ? null : line.getTaxValidationStatus().name());
+        values.put("itcRecoverablePercent", plain(line.getItcRecoverablePercent()));
+        values.put("recoverableTaxAmount", plain(line.getRecoverableTaxAmount()));
+        values.put("supplierGstin", line.getSupplierGstin());
         return values;
     }
 

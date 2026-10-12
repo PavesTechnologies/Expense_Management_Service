@@ -53,6 +53,13 @@ public enum ReportStatus {
 
     private static final Set<ReportStatus> EDITABLE = EnumSet.of(DRAFT, POLICY_REJECTED, QUERY_RAISED, AWAITING_CORRECTION);
     private static final Set<ReportStatus> DELETABLE = EnumSet.of(DRAFT);
+    /** Never submitted, abandoned, or finally rejected: their tax is no input tax of the company and is left out of tax reporting / ITC. */
+    private static final Set<ReportStatus> EXCLUDED_FROM_TAX_REPORTING = EnumSet.of(DRAFT, CANCELLED, REJECTED);
+
+    /** Statuses whose lines are left out of tax reports, the dashboard tax summary and the ITC register. */
+    public static Set<ReportStatus> excludedFromTaxReporting() {
+        return EnumSet.copyOf(EXCLUDED_FROM_TAX_REPORTING);
+    }
 
     /** Statuses in which the report (and its line items/receipts) may still be edited by its owner. */
     public boolean isEditable() {

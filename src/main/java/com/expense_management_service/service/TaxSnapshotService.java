@@ -33,10 +33,17 @@ public interface TaxSnapshotService {
     void freezeForSubmission(ExpenseReport report);
 
     /**
-     * Records the tax OCR read off the line's receipt (copied so comparison survives OCR re-runs),
-     * re-validates the line and audits it. Called when a receipt is confirmed.
+     * Records the tax and supplier GSTIN OCR read off the line's receipt (copied so comparison
+     * survives OCR re-runs), re-validates the line and audits it. Called when a receipt is confirmed.
+     * A GSTIN that is not GSTIN-shaped is ignored.
      */
-    void attachOcrEvidence(ExpenseLineItem line, BigDecimal ocrTax, BigDecimal ocrConfidence);
+    void attachOcrEvidence(ExpenseLineItem line, BigDecimal ocrTax, BigDecimal ocrConfidence, String supplierGstin);
+
+    /**
+     * Finance sets or corrects the supplier GSTIN the line's input tax credit rests on (null clears
+     * it). Tax amounts are untouched. Rejects a value that is not GSTIN-shaped; audited with the reason.
+     */
+    void recordSupplierGstin(ExpenseLineItem line, String supplierGstin, String reason);
 
     /** Finance verified the line: tax status FINANCE_VERIFIED (an adjusted line stays FINANCE_ADJUSTED). */
     void markFinanceVerified(ExpenseLineItem line);

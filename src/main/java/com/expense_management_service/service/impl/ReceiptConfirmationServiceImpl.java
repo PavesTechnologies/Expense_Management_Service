@@ -120,11 +120,11 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
                 amountMismatch, enteredAmount, extractedAmount);
     }
 
-    /** Copies OCR's tax (and how sure it was) onto the line as evidence and re-validates the line's tax. */
+    /** Copies OCR's tax (and how sure it was) and the supplier GSTIN onto the line as evidence and re-validates the line's tax. */
     private void attachOcrTax(UUID lineItemId, Optional<ReceiptOcr> latestOcr) {
-        latestOcr.filter(ocr -> ocr.getTaxAmount() != null).ifPresent(ocr ->
+        latestOcr.filter(ocr -> ocr.getTaxAmount() != null || ocr.getSupplierGstin() != null).ifPresent(ocr ->
                 expenseLineItemRepository.findById(lineItemId).ifPresent(line ->
-                        taxSnapshotService.attachOcrEvidence(line, ocr.getTaxAmount(), ocr.getTaxConfidence())));
+                        taxSnapshotService.attachOcrEvidence(line, ocr.getTaxAmount(), ocr.getTaxConfidence(), ocr.getSupplierGstin())));
     }
 
     private void linkReceiptToLineItem(Receipt receipt, UUID lineItemId) {

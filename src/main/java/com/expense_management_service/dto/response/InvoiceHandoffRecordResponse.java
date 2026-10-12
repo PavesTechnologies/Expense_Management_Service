@@ -21,6 +21,10 @@ public record InvoiceHandoffRecordResponse(
         String description,
         BigDecimal baseAmount,
         String baseCurrencyCode,
+        /** Base gross - base recoverable tax: what the client was billed before AR's output tax (same as the billing payload). */
+        BigDecimal costBasis,
+        BigDecimal recoverableTaxAmount,
+        String taxCode,
         String projectCode,
         String projectName,
         String resolvedClientName,

@@ -390,4 +390,28 @@ class FinanceVerificationServiceImplTest {
                 .hasMessageContaining("already been reviewed");
         verify(taxSnapshotService, never()).financeAdjust(any(), any(), any(), any(), any());
     }
+
+    @Test
+    void recordSupplierGstin_delegatesToTheSnapshot_whileTheLineAwaitsFinance() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.PENDING).build();
+        stubHappyPathUpTo(review);
+        ExpenseLineItem line = flaggedLine(com.expense_management_service.enums.TaxValidationStatus.MATCHED);
+
+        service.recordSupplierGstin(reportId, lineItemId, approverId,
+                new com.expense_management_service.dto.request.FinanceSupplierGstinRequest("29ABCDE1234F1Z5", "From the tax invoice"));
+
+        verify(taxSnapshotService).recordSupplierGstin(line, "29ABCDE1234F1Z5", "From the tax invoice");
+    }
+
+    @Test
+    void recordSupplierGstin_isRejected_onceTheLineWasReviewed() {
+        FinanceVerificationReview review = FinanceVerificationReview.builder().reviewId(UUID.randomUUID()).status(FinanceVerificationStatus.VERIFIED).build();
+        stubHappyPathUpTo(review);
+
+        assertThatThrownBy(() -> service.recordSupplierGstin(reportId, lineItemId, approverId,
+                new com.expense_management_service.dto.request.FinanceSupplierGstinRequest("29ABCDE1234F1Z5", "x")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("already been reviewed");
+        verify(taxSnapshotService, never()).recordSupplierGstin(any(), any(), any());
+    }
 }

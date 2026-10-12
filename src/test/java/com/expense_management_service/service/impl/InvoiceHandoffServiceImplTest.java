@@ -229,6 +229,24 @@ class InvoiceHandoffServiceImplTest {
     }
 
     @Test
+    void getHandedOff_reportsTheBilledCostBasis_sameAsTheBillingPayload() {
+        eligibleLineItem.setBaseAmount(new BigDecimal("1180.00"));
+        eligibleLineItem.setBaseRecoverableTaxAmount(new BigDecimal("180.00"));
+        eligibleLineItem.setTaxCode("GST18");
+        InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
+                .invoiceReference("INV-10").syncStatus("HANDED_OFF").syncDate(java.time.LocalDateTime.now()).build();
+        when(invoiceSyncRepository.findBySyncStatusOrderBySyncDateDesc(eq("HANDED_OFF"), any()))
+                .thenReturn(new PageImpl<>(List.of(sync)));
+
+        var record = service.getHandedOff(0, 20).content().get(0);
+
+        assertThat(record.costBasis()).isEqualByComparingTo("1000.00");
+        assertThat(record.costBasis()).isEqualByComparingTo(BillingPayloadFactory.costBasis(eligibleLineItem));
+        assertThat(record.recoverableTaxAmount()).isEqualByComparingTo("180.00");
+        assertThat(record.taxCode()).isEqualTo("GST18");
+    }
+
+    @Test
     void getHandoffHistory_returnsMappedRecords() {
         InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
                 .invoiceReference("INV-1").syncStatus("HANDED_OFF").build();

@@ -48,7 +48,7 @@ class EmployeeProjectControllerTest {
     void getAssignedProjects_returns200_forGeneralEmployee() throws Exception {
         UUID projectId = UUID.randomUUID();
         when(employeeProjectService.getAssignedProjects())
-                .thenReturn(List.of(new AssignedProjectResponse(projectId, "ALPHA", "Project Alpha", "ACTIVE")));
+                .thenReturn(List.of(new AssignedProjectResponse(projectId, "ALPHA", 501L, "Project Alpha", "ACTIVE")));
 
         mockMvc.perform(get("/xms/employee/projects/assigned")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))

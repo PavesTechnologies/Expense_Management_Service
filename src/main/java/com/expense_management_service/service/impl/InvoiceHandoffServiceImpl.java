@@ -162,6 +162,19 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
 
     @Override
     @Transactional(readOnly = true)
+    public PageResponse<InvoiceHandoffRecordResponse> getHandedOffByPmsProject(Long pmsProjectId, int page, int size) {
+        PageResponse<InvoiceHandoffRecordResponse> result = getHandedOff(null, pmsProjectId, null, null, null, page, size);
+        if (result.content().isEmpty()) {
+            throw new ResourceNotFoundException(result.totalElements() == 0
+                    ? "No handed-off expenses found for PMS project " + pmsProjectId
+                    : "Page " + page + " is beyond the last page (" + (result.totalPages() - 1)
+                            + ") of handed-off expenses for PMS project " + pmsProjectId);
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public InvoiceHandoffSummaryResponse getSummary() {
         // Same eligibility rule as the queue itself, unpaged, so the numbers can never disagree with it.
         List<ExpenseLineItem> ready = expenseLineItemRepository

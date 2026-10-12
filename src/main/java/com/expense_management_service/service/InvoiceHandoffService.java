@@ -47,5 +47,12 @@ public interface InvoiceHandoffService {
             UUID clientId, Long pmsProjectId, String projectCode,
             LocalDate handedOffFrom, LocalDate handedOffTo, int page, int size);
 
+    /**
+     * Completed handoffs for one PMS project, newest first - same records as {@link #getHandedOff}.
+     * Throws {@code ResourceNotFoundException} when the requested page is empty, whether the
+     * project has no handoffs at all or the page is past the last one.
+     */
+    PageResponse<InvoiceHandoffRecordResponse> getHandedOffByPmsProject(Long pmsProjectId, int page, int size);
+
     InvoiceHandoffSummaryResponse getSummary();
 }

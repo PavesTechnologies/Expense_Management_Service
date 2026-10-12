@@ -1,8 +1,10 @@
 package com.expense_management_service.controller;
 
+import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.config.SecurityConfig;
 import com.expense_management_service.dto.request.InvoiceHandoffRequest;
 import com.expense_management_service.dto.response.InvoiceHandoffEligibleExpenseResponse;
+import com.expense_management_service.dto.response.InvoiceHandoffRecordResponse;
 import com.expense_management_service.dto.response.InvoiceSyncResponse;
 import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.security.JwtAuthConverter;
@@ -137,6 +139,66 @@ class InvoiceHandoffQueueControllerTest {
                         .content(objectMapper.writeValueAsString(new InvoiceHandoffRequest("INV-1", null, null))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.syncStatus").value("HANDED_OFF"));
+    }
+
+    @Test
+    void getHandedOffByPmsProject_returns200_forArServiceAccount() throws Exception {
+        UUID lineItemId = UUID.randomUUID();
+        InvoiceHandoffRecordResponse record = new InvoiceHandoffRecordResponse(UUID.randomUUID(), lineItemId,
+                UUID.randomUUID(), "ER-001", "emp-1", LocalDate.now(), "Travel", "desc", null, "INR", null, null,
+                null, 37L, "AR-37", "AR project", UUID.randomUUID(), "Aurora Health", "INV-1", LocalDateTime.now(), null);
+        when(invoiceHandoffService.getHandedOffByPmsProject(37L, 0, 10))
+                .thenReturn(new PageResponse<>(List.of(record), 0, 10, 1, 1, true, true));
+
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-project")
+                        .param("pmsProjectId", "37").param("page", "0").param("size", "10")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.content[0].lineItemId").value(lineItemId.toString()))
+                .andExpect(jsonPath("$.data.content[0].pmsProjectId").value(37));
+    }
+
+    @Test
+    void getHandedOffByPmsProject_returns404_whenNothingWasHandedOff() throws Exception {
+        when(invoiceHandoffService.getHandedOffByPmsProject(99L, 0, 10))
+                .thenThrow(new ResourceNotFoundException("No handed-off expenses found for PMS project 99"));
+
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-project")
+                        .param("pmsProjectId", "99").param("page", "0").param("size", "10")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE_EXECUTIVE))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.success").value(false))
+                .andExpect(jsonPath("$.message").value("No handed-off expenses found for PMS project 99"));
+    }
+
+    @Test
+    void getHandedOffByPmsProject_returns400_whenPmsProjectIdIsMissing() throws Exception {
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-project")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Required parameter 'pmsProjectId' is missing"));
+    }
+
+    @Test
+    void getHandedOffByPmsProject_returns200_forAnyAuthenticatedUser() throws Exception {
+        when(invoiceHandoffService.getHandedOffByPmsProject(37L, 0, 20))
+                .thenReturn(new PageResponse<>(List.of(), 0, 20, 0, 0, true, true));
+
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-project")
+                        .param("pmsProjectId", "37")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-project")
+                        .param("pmsProjectId", "37")
+                        .with(jwt()))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void getHandedOffByPmsProject_returns401_whenUnauthenticated() throws Exception {
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-project")
+                        .param("pmsProjectId", "37"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

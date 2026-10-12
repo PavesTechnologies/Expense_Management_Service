@@ -84,6 +84,20 @@ public class InvoiceHandoffQueueController {
                 clientId, pmsProjectId, projectCode, handedOffFrom, handedOffTo, page, Math.min(size, 100)));
     }
 
+    /**
+     * Same records as {@code /handed-off}, for one PMS project ({@code pmsProjectId} required).
+     * 404 when the requested page is empty; 400 when {@code pmsProjectId} is missing or not numeric.
+     * Open to any authenticated caller - no specific role required.
+     */
+    @GetMapping("/handed-off/by-project")
+    @PreAuthorize("isAuthenticated()")
+    public ApiResponse<PageResponse<InvoiceHandoffRecordResponse>> getHandedOffByPmsProject(
+            @RequestParam Long pmsProjectId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.success(invoiceHandoffService.getHandedOffByPmsProject(pmsProjectId, page, Math.min(size, 100)));
+    }
+
     /** AR's authoritative billing payload (v1). Also callable by the AR service account. */
     @GetMapping("/{lineItemId}/billing-payload")
     @PreAuthorize("hasAnyRole('FINANCE_EXECUTIVE','AR_SERVICE')")

@@ -36,16 +36,23 @@ public class InvoiceHandoffQueueController {
 
     private final InvoiceHandoffService invoiceHandoffService;
 
+    /**
+     * Also callable by the AR service account, which filters by {@code pmsProjectId} (or
+     * {@code projectCode}) + billing period - never by {@code projectId}, which is XMS-internal.
+     */
     @GetMapping("/eligible-expenses")
+    @PreAuthorize("hasAnyRole('FINANCE_EXECUTIVE','AR_SERVICE')")
     public ApiResponse<PageResponse<InvoiceHandoffEligibleExpenseResponse>> getEligibleExpenses(
             @RequestParam(required = false) UUID clientId,
             @RequestParam(required = false) UUID projectId,
+            @RequestParam(required = false) Long pmsProjectId,
+            @RequestParam(required = false) String projectCode,
             @RequestParam(required = false) LocalDate startDate,
             @RequestParam(required = false) LocalDate endDate,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
-        return ApiResponse.success(
-                invoiceHandoffService.getEligibleExpenses(clientId, projectId, startDate, endDate, page, size));
+        return ApiResponse.success(invoiceHandoffService.getEligibleExpenses(
+                clientId, projectId, pmsProjectId, projectCode, startDate, endDate, page, Math.min(size, 100)));
     }
 
     @PostMapping("/{lineItemId}/handoff")

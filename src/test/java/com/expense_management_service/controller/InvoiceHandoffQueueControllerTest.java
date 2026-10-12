@@ -23,11 +23,13 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
+import static com.expense_management_service.security.RoleConstants.ROLE_AR_SERVICE;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE_EXECUTIVE;
 import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -59,19 +61,53 @@ class InvoiceHandoffQueueControllerTest {
     private static InvoiceHandoffEligibleExpenseResponse sampleEligible(UUID lineItemId) {
         return new InvoiceHandoffEligibleExpenseResponse(lineItemId, UUID.randomUUID(), "ER-001", "emp-1",
                 LocalDate.now(), "Travel", "desc", null, "USD", null, "INR", null, null, null, null, null,
-                UUID.randomUUID(), "ALPHA", "Project Alpha", UUID.randomUUID(), "Aurora Health", 0);
+                UUID.randomUUID(), 42L, "ALPHA", "Project Alpha", UUID.randomUUID(), "Aurora Health", 0);
     }
 
     @Test
     void getEligibleExpenses_returns200_forFinanceExecutive() throws Exception {
         UUID lineItemId = UUID.randomUUID();
-        when(invoiceHandoffService.getEligibleExpenses(any(), any(), any(), any(), eq(0), eq(20)))
+        when(invoiceHandoffService.getEligibleExpenses(any(), any(), any(), any(), any(), any(), eq(0), eq(20)))
                 .thenReturn(new PageResponse<>(List.of(sampleEligible(lineItemId)), 0, 20, 1, 1, true, true));
 
         mockMvc.perform(get("/xms/finance/invoice-handoff-queue/eligible-expenses")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE_EXECUTIVE))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.content[0].lineItemId").value(lineItemId.toString()));
+    }
+
+    @Test
+    void getEligibleExpenses_returns200_forArServiceAccount_filteringByPmsProjectAndPeriod() throws Exception {
+        UUID lineItemId = UUID.randomUUID();
+        when(invoiceHandoffService.getEligibleExpenses(isNull(), isNull(), eq(42L), isNull(),
+                eq(LocalDate.of(2026, 8, 1)), eq(LocalDate.of(2026, 8, 31)), eq(0), eq(100)))
+                .thenReturn(new PageResponse<>(List.of(sampleEligible(lineItemId)), 0, 100, 1, 1, true, true));
+
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/eligible-expenses")
+                        .param("pmsProjectId", "42")
+                        .param("startDate", "2026-08-01")
+                        .param("endDate", "2026-08-31")
+                        .param("size", "500") // capped to 100
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.content[0].pmsProjectId").value(42));
+    }
+
+    @Test
+    void getEligibleExpenses_returns400_whenNumericIdSentAsXmsProjectId() throws Exception {
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/eligible-expenses")
+                        .param("projectId", "42")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE))))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void markHandedOff_returns403_forArServiceAccount() throws Exception {
+        mockMvc.perform(post("/xms/finance/invoice-handoff-queue/{lineItemId}/handoff", UUID.randomUUID())
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE)))
+                        .contentType("application/json")
+                        .content(objectMapper.writeValueAsString(new InvoiceHandoffRequest("INV-1", null, null))))
+                .andExpect(status().isForbidden());
     }
 
     @Test

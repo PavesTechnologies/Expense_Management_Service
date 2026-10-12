@@ -19,8 +19,14 @@ import java.util.UUID;
  */
 public interface InvoiceHandoffService {
 
+    /**
+     * All filters are optional and combined with AND; both date bounds are inclusive on the
+     * expense date. {@code projectId} is XMS's internal project UUID; external callers (AR)
+     * should use {@code pmsProjectId} - PMS's stable numeric id - or {@code projectCode}.
+     */
     PageResponse<InvoiceHandoffEligibleExpenseResponse> getEligibleExpenses(
-            UUID clientId, UUID projectId, LocalDate startDate, LocalDate endDate, int page, int size);
+            UUID clientId, UUID projectId, Long pmsProjectId, String projectCode,
+            LocalDate startDate, LocalDate endDate, int page, int size);
 
     /**
      * AR's authoritative billing payload for one client-billable line on an approved report

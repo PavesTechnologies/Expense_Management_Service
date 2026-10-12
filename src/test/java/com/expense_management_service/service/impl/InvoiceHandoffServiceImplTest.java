@@ -90,17 +90,39 @@ class InvoiceHandoffServiceImplTest {
     @Test
     void getEligibleExpenses_mapsFinanceVerifiedBillableExpense() {
         Page<ExpenseLineItem> page = new PageImpl<>(List.of(eligibleLineItem), PageRequest.of(0, 20), 1);
-        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(null, null, null, null, PageRequest.of(0, 20)))
+        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(null, null, null, null, null, null, PageRequest.of(0, 20)))
                 .thenReturn(page);
 
         PageResponse<InvoiceHandoffEligibleExpenseResponse> result =
-                service.getEligibleExpenses(null, null, null, null, 0, 20);
+                service.getEligibleExpenses(null, null, null, null, null, null, 0, 20);
 
         assertThat(result.content()).hasSize(1);
         InvoiceHandoffEligibleExpenseResponse response = result.content().get(0);
         assertThat(response.lineItemId()).isEqualTo(lineItemId);
         assertThat(response.resolvedClientName()).isEqualTo("Aurora Health");
         assertThat(response.baseCurrencyCode()).isEqualTo("INR");
+    }
+
+    @Test
+    void getEligibleExpenses_passesPmsProjectAndTrimmedProjectCode_andTreatsBlankCodeAsNoFilter() {
+        LocalDate start = LocalDate.of(2026, 8, 1);
+        LocalDate end = LocalDate.of(2026, 8, 31);
+        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Page.empty());
+
+        service.getEligibleExpenses(null, null, 42L, "  AR-990 ", start, end, 0, 20);
+        verify(expenseLineItemRepository).findEligibleForInvoiceHandoff(null, null, 42L, "AR-990", start, end, PageRequest.of(0, 20));
+
+        service.getEligibleExpenses(null, null, null, "   ", null, null, 0, 20);
+        verify(expenseLineItemRepository).findEligibleForInvoiceHandoff(null, null, null, null, null, null, PageRequest.of(0, 20));
+    }
+
+    @Test
+    void getEligibleExpenses_rejectsInvertedBillingPeriod() {
+        assertThatThrownBy(() -> service.getEligibleExpenses(null, null, 42L, null,
+                LocalDate.of(2026, 8, 31), LocalDate.of(2026, 8, 1), 0, 20))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("startDate");
     }
 
     @Test
@@ -180,7 +202,7 @@ class InvoiceHandoffServiceImplTest {
     void getSummary_countsAndTotalsReadyExpenses_andHandedOffRecords() {
         ExpenseLineItem second = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(eligibleLineItem.getReport())
                 .baseAmount(new BigDecimal("50.00")).clientBillable(true).build();
-        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(isNull(), isNull(), isNull(), isNull(), any()))
+        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of(eligibleLineItem, second)));
         when(invoiceSyncRepository.countBySyncStatus("HANDED_OFF")).thenReturn(7L);
 

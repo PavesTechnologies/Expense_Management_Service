@@ -27,7 +27,11 @@ public record InvoiceHandoffEligibleExpenseResponse(
         BigDecimal costBasis,
         BigDecimal recoverableTaxAmount,
         String taxCode,
+        /** XMS's internal project UUID. */
         UUID projectId,
+        /** PMS's stable numeric project id - the cross-system key AR matches on. */
+        Long pmsProjectId,
+        /** PMS's projectKey as last refreshed - readable, but mutable in PMS. */
         String projectCode,
         String projectName,
         UUID resolvedClientId,

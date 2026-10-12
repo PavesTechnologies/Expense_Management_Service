@@ -21,6 +21,10 @@ public record FinancePendingLineItemResponse(
         BigDecimal taxAmount,
         String taxCode,
         /** e.g. MATCHED, MISMATCH, REQUIRES_FINANCE_REVIEW - flagged lines need a "tax checked" confirmation to verify. */
-        String taxValidationStatus
+        String taxValidationStatus,
+        /** Input tax credit Finance is verifying (line currency) and the GSTIN it rests on. */
+        BigDecimal recoverableTaxAmount,
+        String itcStatus,
+        String supplierGstin
 ) {
 }

@@ -14,7 +14,9 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.FinanceVerificationReview;
 import com.expense_management_service.entity.GlAccount;
 import com.expense_management_service.enums.AssignmentStatus;
+import com.expense_management_service.dto.request.FinanceSupplierGstinRequest;
 import com.expense_management_service.enums.FinanceVerificationStatus;
+import com.expense_management_service.enums.ItcStatus;
 import com.expense_management_service.enums.LevelInstanceStatus;
 import com.expense_management_service.enums.LevelType;
 import com.expense_management_service.enums.ReportStatus;
@@ -120,6 +122,16 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
     }
 
     @Override
+    public ExpenseReportResponse recordSupplierGstin(UUID reportId, UUID lineItemId, String actingEmployeeId,
+                                                     FinanceSupplierGstinRequest request) {
+        // Same gate as verify/adjust: the report is at Finance and this line's review is still pending.
+        FinanceActionContext ctx = resolveContext(reportId, lineItemId, actingEmployeeId);
+        taxSnapshotService.recordSupplierGstin(ctx.lineItem(), request.supplierGstin(), request.reason());
+        log.info("Supplier GSTIN set on line item {} of report {} by {}: {}", lineItemId, reportId, actingEmployeeId, request.reason());
+        return expenseReportResponseFactory.toResponse(findReport(reportId));
+    }
+
+    @Override
     public ExpenseReportResponse queryLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, String reason) {
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("A reason is required to raise a Finance query");
@@ -191,7 +203,10 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
                             glAccount != null ? glAccount.getGlAccountCode() : null,
                             eligibility.eligible(), eligibility.reason(), Boolean.TRUE.equals(lineItem.getClientBillable()),
                             lineItem.getTaxAmount(), lineItem.getTaxCode(),
-                            lineItem.getTaxValidationStatus() != null ? lineItem.getTaxValidationStatus().name() : null);
+                            lineItem.getTaxValidationStatus() != null ? lineItem.getTaxValidationStatus().name() : null,
+                            lineItem.getRecoverableTaxAmount(),
+                            ItcStatus.of(lineItem.getBaseRecoverableTaxAmount(), lineItem.getTaxValidationStatus()).name(),
+                            lineItem.getSupplierGstin());
                 })
                 .toList();
 

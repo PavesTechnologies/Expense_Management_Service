@@ -46,6 +46,10 @@ public final class RoleConstants {
     public static final String AP_EXECUTIVE = "AP_EXECUTIVE";
     public static final String ROLE_AP_EXECUTIVE = SecurityConstants.ROLE_PREFIX + AP_EXECUTIVE;
 
+    /** UMS service account the AR module calls XMS with (client-billable expense retrieval). */
+    public static final String AR_SERVICE = "AR_SERVICE";
+    public static final String ROLE_AR_SERVICE = SecurityConstants.ROLE_PREFIX + AR_SERVICE;
+
     private RoleConstants() {
     }
 }

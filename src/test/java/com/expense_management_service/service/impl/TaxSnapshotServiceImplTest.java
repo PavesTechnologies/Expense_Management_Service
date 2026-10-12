@@ -165,7 +165,7 @@ class TaxSnapshotServiceImplTest {
         ExpenseLineItem line = line("1180.00", "1", null);
         service.applySnapshot(line, null, null, null, null, 2);
 
-        service.attachOcrEvidence(line, new BigDecimal("180.40"), new BigDecimal("0.95"));
+        service.attachOcrEvidence(line, new BigDecimal("180.40"), new BigDecimal("0.95"), null);
 
         assertThat(line.getOcrTaxAmount()).isEqualByComparingTo("180.40");
         assertThat(line.getTaxValidationStatus()).isEqualTo(com.expense_management_service.enums.TaxValidationStatus.MATCHED);
@@ -178,7 +178,7 @@ class TaxSnapshotServiceImplTest {
         ExpenseReport report = ExpenseReport.builder().reportId(UUID.randomUUID()).build();
         ExpenseLineItem line = line("1180.00", "1", report);
         service.applySnapshot(line, null, null, null, null, 2);
-        service.attachOcrEvidence(line, new BigDecimal("18.00"), new BigDecimal("0.95"));
+        service.attachOcrEvidence(line, new BigDecimal("18.00"), new BigDecimal("0.95"), null);
         assertThat(line.getTaxValidationStatus()).isEqualTo(com.expense_management_service.enums.TaxValidationStatus.MISMATCH);
         assertThat(line.getTaxValidationReasons()).contains("OCR_MISMATCH");
 
@@ -192,7 +192,7 @@ class TaxSnapshotServiceImplTest {
     void ocrEvidence_survivesAResave() {
         ExpenseLineItem line = line("1180.00", "1", null);
         service.applySnapshot(line, null, null, null, null, 2);
-        service.attachOcrEvidence(line, new BigDecimal("18.00"), null);
+        service.attachOcrEvidence(line, new BigDecimal("18.00"), null, null);
 
         service.applySnapshot(line, null, new BigDecimal("18.00"), "Receipt shows 18", service.describe(line), 2);
 
@@ -243,5 +243,80 @@ class TaxSnapshotServiceImplTest {
         service.applySnapshot(line, null, new BigDecimal("50.00"), "Receipt shows 50", service.describe(line), 2);
 
         assertThat(line.getTaxRevisedAt()).isNotNull();
+    }
+
+    @Test
+    void attachOcrEvidence_copiesTheSupplierGstin_normalized_evenWhenOcrReadNoTax() {
+        ExpenseLineItem line = line("1180.00", "1", null);
+        service.applySnapshot(line, null, null, null, null, 2);
+        var statusBefore = line.getTaxValidationStatus();
+
+        service.attachOcrEvidence(line, null, null, "29abcde1234f1z5 ");
+
+        assertThat(line.getSupplierGstin()).isEqualTo("29ABCDE1234F1Z5");
+        assertThat(line.getOcrTaxAmount()).isNull();
+        assertThat(line.getTaxValidationStatus()).isEqualTo(statusBefore);
+        verify(taxAuditService).record(eq("ExpenseLineItem"), eq(line.getLineItemId()), eq("OCR_TAX_ATTACHED"), any(), any(),
+                eq(AuditSource.OCR), eq(null));
+    }
+
+    @Test
+    void attachOcrEvidence_ignoresAMalformedGstin_andDoesNothingWithoutEvidence() {
+        ExpenseLineItem line = line("1180.00", "1", null);
+        service.applySnapshot(line, null, null, null, null, 2);
+
+        service.attachOcrEvidence(line, null, null, "2912341");
+
+        assertThat(line.getSupplierGstin()).isNull();
+        verify(taxAuditService, never()).record(any(), any(), any(), any(), any(), any(), any());
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void recordSupplierGstin_setsTheGstin_andAuditsItAsFinanceWithTheReason() {
+        ExpenseLineItem line = line("1180.00", "1", null);
+        service.applySnapshot(line, null, null, null, null, 2);
+
+        service.recordSupplierGstin(line, "27AAPFU0939F1ZV", "GSTIN on the hotel's tax invoice");
+
+        assertThat(line.getSupplierGstin()).isEqualTo("27AAPFU0939F1ZV");
+        org.mockito.ArgumentCaptor<java.util.Map<String, ?>> after = org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        verify(taxAuditService).record(eq("ExpenseLineItem"), eq(line.getLineItemId()), eq("TAX_SUPPLIER_GSTIN_SET"), any(), after.capture(),
+                eq(AuditSource.FINANCE), eq("GSTIN on the hotel's tax invoice"));
+        assertThat(after.getValue().get("supplierGstin")).isEqualTo("27AAPFU0939F1ZV");
+        // Tax itself is untouched.
+        assertThat(line.getTaxAmount()).isEqualByComparingTo("180.00");
+    }
+
+    @Test
+    void recordSupplierGstin_rejectsAnInvalidGstin_requiresAReason_andSkipsANoOpChange() {
+        ExpenseLineItem line = line("1180.00", "1", null);
+        service.applySnapshot(line, null, null, null, null, 2);
+
+        assertThatThrownBy(() -> service.recordSupplierGstin(line, "ABC123", "x"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("not a valid GSTIN");
+        assertThatThrownBy(() -> service.recordSupplierGstin(line, "27AAPFU0939F1ZV", " "))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("reason");
+
+        service.recordSupplierGstin(line, "", "Nothing on the bill");
+        verify(taxAuditService, never()).record(any(), any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void auditSnapshots_carryTheItcPercentAndRecoverableTax() {
+        ExpenseLineItem line = line("11800.00", "1", ExpenseReport.builder().reportId(UUID.randomUUID()).build());
+        service.applySnapshot(line, null, null, null, null, 2);
+        when(taxCodeRepository.findById(gst18.getTaxCodeId())).thenReturn(Optional.of(gst18));
+
+        service.financeAdjust(line, null, null, new BigDecimal("100"), "Fully recoverable - business hotel");
+
+        org.mockito.ArgumentCaptor<java.util.Map<String, ?>> before = org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        org.mockito.ArgumentCaptor<java.util.Map<String, ?>> after = org.mockito.ArgumentCaptor.forClass(java.util.Map.class);
+        verify(taxAuditService).record(eq("ExpenseLineItem"), eq(line.getLineItemId()), eq("TAX_FINANCE_ADJUSTED"), before.capture(),
+                after.capture(), eq(AuditSource.FINANCE), any());
+        assertThat(before.getValue().get("itcRecoverablePercent")).isEqualTo("50");
+        assertThat(before.getValue().get("recoverableTaxAmount")).isEqualTo("900");
+        assertThat(after.getValue().get("itcRecoverablePercent")).isEqualTo("100");
+        assertThat(after.getValue().get("recoverableTaxAmount")).isEqualTo("1800");
     }
 }

@@ -63,6 +63,9 @@ public class CashAdvanceOffsetService {
                     "The expense report is linked to a different cash advance than the one given.");
         }
 
+        if (report.getPaymentRoutingStatus() == com.expense_management_service.enums.PaymentRoutingStatus.PAYMENT_COMPLETED) {
+            throw new BusinessRuleViolationException("This expense report is already paid. Apply the offset before payment, or the employee's expenses would be counted twice.");
+        }
         if (report.getReportStatus() != ReportStatus.APPROVED && report.getReportStatus() != ReportStatus.CLOSED) {
             throw new BusinessRuleViolationException(
                     "Only an approved and Finance-verified expense report can be offset. Current status: "

@@ -46,6 +46,8 @@ import java.util.UUID;
 @Transactional
 public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentService {
 
+    private final CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
+
     private final CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
     private final CashAdvanceRepository cashAdvanceRepository;
     private final ExpenseReportRepository expenseReportRepository;
@@ -76,6 +78,9 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
             throw new BusinessRuleViolationException("Expense report must be fully approved and finance-verified before adjusting against a cash advance. Current report status: " + report.getReportStatus());
         }
 
+        if (report.getPaymentRoutingStatus() == com.expense_management_service.enums.PaymentRoutingStatus.PAYMENT_COMPLETED) {
+            throw new BusinessRuleViolationException("Expense report " + report.getReportNumber() + " is already paid, so it can no longer be offset.");
+        }
         if (report.getEmployeeId() != null && advance.getEmployeeId() != null
                 && !report.getEmployeeId().trim().equalsIgnoreCase(advance.getEmployeeId().trim())
                 && !isAdminCaller()) {
@@ -118,6 +123,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         }
 
         CashAdvanceAdjustment saved = cashAdvanceAdjustmentRepository.save(entity);
+        cashAdvanceBudgetMovements.moveAllocationToUtilized(advance, adjustedAmount);
         refreshReimbursable(report);
 
         auditLogRepository.save(AuditLog.builder()
@@ -168,6 +174,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
                 restoredBalance = advance.getAmount();
             }
             advance.setOutstandingBalance(restoredBalance);
+            cashAdvanceBudgetMovements.reverseOffset(advance, entity.getAdjustedAmount());
             if (restoredBalance.compareTo(advance.getAmount()) == 0) {
                 advance.setStatus("IN_PROGRESS");
             } else {

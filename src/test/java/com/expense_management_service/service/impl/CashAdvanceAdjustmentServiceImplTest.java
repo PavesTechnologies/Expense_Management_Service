@@ -38,6 +38,7 @@ import static org.mockito.Mockito.*;
 
 @ExtendWith(MockitoExtension.class)
 class CashAdvanceAdjustmentServiceImplTest {
+    @org.mockito.Mock private CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
 
     @Mock
     private CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;

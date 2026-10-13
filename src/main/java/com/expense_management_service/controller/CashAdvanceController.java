@@ -6,6 +6,7 @@ import com.expense_management_service.dto.request.CashAdvanceRequest;
 import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.dto.response.CashAdvanceSettlementResponse;
+import com.expense_management_service.dto.response.CashAdvanceUtilizationResponse;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.CashAdvanceService;
 import jakarta.validation.Valid;
@@ -126,6 +127,13 @@ public class CashAdvanceController {
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
     public ApiResponse<CashAdvanceSettlementResponse> getSettlement(@PathVariable UUID advanceId) {
         return ApiResponse.success(cashAdvanceService.getSettlement(advanceId));
+    }
+
+    @Operation(summary = "Get server-calculated utilization for a cash advance (claimed, approved, returned, reservations, balance)")
+    @GetMapping("/{advanceId}/utilization")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
+    public ApiResponse<CashAdvanceUtilizationResponse> getUtilization(@PathVariable UUID advanceId) {
+        return ApiResponse.success(cashAdvanceService.getUtilization(advanceId));
     }
 
 

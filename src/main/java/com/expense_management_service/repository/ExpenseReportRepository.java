@@ -23,6 +23,9 @@ public interface ExpenseReportRepository extends JpaRepository<ExpenseReport, UU
         /** Scopes the paginated expense history to the requesting Employee's reports. */
     Page<ExpenseReport> findByEmployeeId(String employeeId, Pageable pageable);
 
+    /** Expense reports linked to one cash advance, oldest first. */
+    List<ExpenseReport> findByCashAdvance_AdvanceIdOrderByCreatedAtAsc(UUID advanceId);
+
     @Query("""
             SELECT r FROM ExpenseReport r
             WHERE r.employeeId = :employeeId

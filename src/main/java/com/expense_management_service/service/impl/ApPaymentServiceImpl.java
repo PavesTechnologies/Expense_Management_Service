@@ -173,6 +173,17 @@ public class ApPaymentServiceImpl implements ApPaymentService {
      * are mutually exclusive, so budget is still never consumed twice.
      */
     private void consumeBudgetAtPayment(ExpenseReport report) {
+        if (report.getCashAdvance() != null) {
+            // Linked to a cash advance: offsets already moved their share of the advance into utilization.
+            // Charge only what AP pays now, and release the reservation made for the full total.
+            int linkedCycle = approvalWorkflowService.getCurrentSubmissionCycle(report.getReportId());
+            budgetEncumbranceService.releaseActiveForCycle(report.getReportId(), linkedCycle);
+            java.math.BigDecimal payable = report.getReimbursableAmount() != null ? report.getReimbursableAmount() : java.math.BigDecimal.ZERO;
+            if (payable.signum() > 0) {
+                costCenterBudgetService.consumeBudget(report.getCostCenter(), report.getFiscalYear(), payable);
+            }
+            return;
+        }
         int cycle = approvalWorkflowService.getCurrentSubmissionCycle(report.getReportId());
         boolean consumedViaEncumbrances = budgetEncumbranceService.consumeActiveForReport(report.getReportId(), cycle);
         if (!consumedViaEncumbrances) {

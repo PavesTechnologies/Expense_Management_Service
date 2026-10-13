@@ -15,4 +15,7 @@ public interface ApprovalLineItemReviewRepository extends JpaRepository<Approval
     List<ApprovalLineItemReview> findByLevelInstance_InstanceIdAndStatus(UUID instanceId, LineItemReviewStatus status);
 
     Optional<ApprovalLineItemReview> findByLineItem_LineItemIdAndLevelInstance_InstanceId(UUID lineItemId, UUID instanceId);
+
+    /** Every line-level review on one report, across all approval levels - used for utilization verification status. */
+    List<ApprovalLineItemReview> findByLineItem_Report_ReportId(UUID reportId);
 }

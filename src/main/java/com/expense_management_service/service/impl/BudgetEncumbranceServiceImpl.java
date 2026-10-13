@@ -51,6 +51,14 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
 
     @Override
     public BudgetEncumbranceOutcome validateAndEncumber(ExpenseReport report, int submissionCycle) {
+        // A report linked to a cash advance is not reserved against the Cost Center again: the approved
+        // advance already holds its money in the budget (CashAdvanceBudgetAllocator), so reserving the
+        // report's total here would charge the same money twice. Its spend is tracked against the advance
+        // through the utilization summary instead.
+        if (report.getCashAdvance() != null) {
+            return new BudgetEncumbranceOutcome(List.of(), List.of());
+        }
+
         List<Target> targets = resolveTargets(report);
         if (targets.isEmpty()) {
             return new BudgetEncumbranceOutcome(List.of(), List.of());

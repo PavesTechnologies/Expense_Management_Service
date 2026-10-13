@@ -2,6 +2,7 @@ package com.expense_management_service.service.impl;
 
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.DuplicateResourceException;
+import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.InvoiceHandoffRequest;
 import com.expense_management_service.dto.response.InvoiceHandoffEligibleExpenseResponse;
 import com.expense_management_service.dto.response.PageResponse;
@@ -260,6 +261,38 @@ class InvoiceHandoffServiceImplTest {
 
         service.getHandedOff(null, null, "   ", null, null, 0, 20);
         verify(invoiceSyncRepository).findHandedOff("HANDED_OFF", null, null, null, null, null, PageRequest.of(0, 20));
+    }
+
+    @Test
+    void getHandedOffByPmsProject_returnsTheProjectsHandoffs() {
+        InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
+                .invoiceReference("INV-12").syncStatus("HANDED_OFF").syncDate(LocalDateTime.now()).build();
+        when(invoiceSyncRepository.findHandedOff("HANDED_OFF", null, 37L, null, null, null, PageRequest.of(0, 10)))
+                .thenReturn(new PageImpl<>(List.of(sync), PageRequest.of(0, 10), 1));
+
+        var page = service.getHandedOffByPmsProject(37L, 0, 10);
+
+        assertThat(page.content()).extracting(r -> r.invoiceReference()).containsExactly("INV-12");
+    }
+
+    @Test
+    void getHandedOffByPmsProject_throwsNotFound_whenTheProjectHasNoHandoffs() {
+        when(invoiceSyncRepository.findHandedOff(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 10), 0));
+
+        assertThatThrownBy(() -> service.getHandedOffByPmsProject(99L, 0, 10))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessage("No handed-off expenses found for PMS project 99");
+    }
+
+    @Test
+    void getHandedOffByPmsProject_throwsNotFound_whenThePageIsPastTheLastOne() {
+        when(invoiceSyncRepository.findHandedOff(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(5, 10), 12));
+
+        assertThatThrownBy(() -> service.getHandedOffByPmsProject(37L, 5, 10))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessageContaining("beyond the last page (1)");
     }
 
     @Test

@@ -19,9 +19,16 @@ public record LineTaxResponse(
         String taxOverrideReason,
         BigDecimal itcRecoverablePercent,
         BigDecimal recoverableTaxAmount,
+        /** taxAmount - recoverableTaxAmount: the part of the tax that stays an expense. */
+        BigDecimal nonRecoverableTaxAmount,
         BigDecimal baseTaxAmount,
         BigDecimal baseNetAmount,
         BigDecimal baseRecoverableTaxAmount,
+        BigDecimal baseNonRecoverableTaxAmount,
+        /** NOT_RECOVERABLE, UNVERIFIED or VERIFIED (Finance verified / adjusted) - see ItcStatus. */
+        String itcStatus,
+        /** Supplier GSTIN on the invoice the input tax credit rests on (from OCR or Finance). */
+        String supplierGstin,
         BigDecimal ocrTaxAmount,
         String validationStatus,
         List<String> validationReasons,

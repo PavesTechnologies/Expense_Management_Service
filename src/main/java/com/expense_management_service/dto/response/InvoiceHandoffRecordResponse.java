@@ -21,8 +21,16 @@ public record InvoiceHandoffRecordResponse(
         String description,
         BigDecimal baseAmount,
         String baseCurrencyCode,
+        /** Base gross - base recoverable tax: what the client was billed before AR's output tax (same as the billing payload). */
+        BigDecimal costBasis,
+        BigDecimal recoverableTaxAmount,
+        String taxCode,
+        /** PMS's stable numeric project id - the cross-system key AR matches on. */
+        Long pmsProjectId,
+        /** PMS's projectKey as last refreshed - readable, but mutable in PMS. */
         String projectCode,
         String projectName,
+        UUID resolvedClientId,
         String resolvedClientName,
         String invoiceReference,
         LocalDateTime handedOffAt,

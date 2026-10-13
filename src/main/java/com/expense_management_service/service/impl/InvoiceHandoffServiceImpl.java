@@ -55,9 +55,14 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
     @Override
     @Transactional(readOnly = true)
     public PageResponse<InvoiceHandoffEligibleExpenseResponse> getEligibleExpenses(
-            UUID clientId, UUID projectId, LocalDate startDate, LocalDate endDate, int page, int size) {
+            UUID clientId, UUID projectId, Long pmsProjectId, String projectCode,
+            LocalDate startDate, LocalDate endDate, int page, int size) {
+        if (startDate != null && endDate != null && startDate.isAfter(endDate)) {
+            throw new IllegalArgumentException("startDate must be on or before endDate");
+        }
         Page<ExpenseLineItem> result = expenseLineItemRepository.findEligibleForInvoiceHandoff(
-                clientId, projectId, startDate, endDate, PageRequest.of(page, size));
+                clientId, projectId, pmsProjectId, StringUtils.hasText(projectCode) ? projectCode.trim() : null,
+                startDate, endDate, PageRequest.of(page, size));
         return PageResponse.of(result.map(this::toEligibleExpenseResponse));
     }
 
@@ -140,10 +145,32 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<InvoiceHandoffRecordResponse> getHandedOff(int page, int size) {
+    public PageResponse<InvoiceHandoffRecordResponse> getHandedOff(
+            UUID clientId, Long pmsProjectId, String projectCode,
+            LocalDate handedOffFrom, LocalDate handedOffTo, int page, int size) {
+        if (handedOffFrom != null && handedOffTo != null && handedOffFrom.isAfter(handedOffTo)) {
+            throw new IllegalArgumentException("handedOffFrom must be on or before handedOffTo");
+        }
         return PageResponse.of(invoiceSyncRepository
-                .findBySyncStatusOrderBySyncDateDesc(STATUS_HANDED_OFF, PageRequest.of(page, size))
+                .findHandedOff(STATUS_HANDED_OFF, clientId, pmsProjectId,
+                        StringUtils.hasText(projectCode) ? projectCode.trim() : null,
+                        handedOffFrom != null ? handedOffFrom.atStartOfDay() : null,
+                        handedOffTo != null ? handedOffTo.plusDays(1).atStartOfDay() : null,
+                        PageRequest.of(page, size))
                 .map(this::toRecordResponse));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<InvoiceHandoffRecordResponse> getHandedOffByPmsProject(Long pmsProjectId, int page, int size) {
+        PageResponse<InvoiceHandoffRecordResponse> result = getHandedOff(null, pmsProjectId, null, null, null, page, size);
+        if (result.content().isEmpty()) {
+            throw new ResourceNotFoundException(result.totalElements() == 0
+                    ? "No handed-off expenses found for PMS project " + pmsProjectId
+                    : "Page " + page + " is beyond the last page (" + (result.totalPages() - 1)
+                            + ") of handed-off expenses for PMS project " + pmsProjectId);
+        }
+        return result;
     }
 
     @Override
@@ -151,7 +178,7 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
     public InvoiceHandoffSummaryResponse getSummary() {
         // Same eligibility rule as the queue itself, unpaged, so the numbers can never disagree with it.
         List<ExpenseLineItem> ready = expenseLineItemRepository
-                .findEligibleForInvoiceHandoff(null, null, null, null, Pageable.unpaged())
+                .findEligibleForInvoiceHandoff(null, null, null, null, null, null, Pageable.unpaged())
                 .getContent();
         BigDecimal readyAmount = ready.stream()
                 .map(ExpenseLineItem::getBaseAmount)
@@ -181,8 +208,13 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 l.getDescription(),
                 l.getBaseAmount(),
                 baseCurrencyCode,
+                BillingPayloadFactory.costBasis(l),
+                l.getBaseRecoverableTaxAmount(),
+                l.getTaxCode(),
+                project != null ? project.getPmsProjectId() : null,
                 project != null ? project.getProjectCode() : null,
                 project != null ? project.getProjectName() : null,
+                l.getResolvedClientId(),
                 l.getResolvedClientName(),
                 sync.getInvoiceReference(),
                 sync.getSyncDate(),
@@ -211,6 +243,7 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 l.getBaseRecoverableTaxAmount(),
                 l.getTaxCode(),
                 project != null ? project.getProjectId() : null,
+                project != null ? project.getPmsProjectId() : null,
                 project != null ? project.getProjectCode() : null,
                 project != null ? project.getProjectName() : null,
                 l.getResolvedClientId(),

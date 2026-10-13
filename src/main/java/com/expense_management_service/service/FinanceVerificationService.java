@@ -37,6 +37,10 @@ public interface FinanceVerificationService {
     ExpenseReportResponse adjustLineTax(UUID reportId, UUID lineItemId, String actingEmployeeId,
                                         com.expense_management_service.dto.request.FinanceTaxAdjustmentRequest request);
 
+    /** FINANCE_EXECUTIVE sets / corrects the supplier GSTIN behind a line's input tax credit while the line awaits Finance verification. */
+    ExpenseReportResponse recordSupplierGstin(UUID reportId, UUID lineItemId, String actingEmployeeId,
+                                              com.expense_management_service.dto.request.FinanceSupplierGstinRequest request);
+
     /**
      * Raises a query on one line item without rejecting the whole report (§Query vs Reject) - the
      * report moves to AWAITING_CORRECTION, every other already-VERIFIED line item at this instance

@@ -2,6 +2,7 @@ package com.expense_management_service.service.impl;
 
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.DuplicateResourceException;
+import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.InvoiceHandoffRequest;
 import com.expense_management_service.dto.response.InvoiceHandoffEligibleExpenseResponse;
 import com.expense_management_service.dto.response.PageResponse;
@@ -10,6 +11,7 @@ import com.expense_management_service.entity.ExpenseCategory;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.InvoiceSync;
+import com.expense_management_service.entity.ProjectCache;
 import com.expense_management_service.enums.InvoiceHandoffStatus;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
@@ -29,6 +31,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -90,17 +93,39 @@ class InvoiceHandoffServiceImplTest {
     @Test
     void getEligibleExpenses_mapsFinanceVerifiedBillableExpense() {
         Page<ExpenseLineItem> page = new PageImpl<>(List.of(eligibleLineItem), PageRequest.of(0, 20), 1);
-        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(null, null, null, null, PageRequest.of(0, 20)))
+        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(null, null, null, null, null, null, PageRequest.of(0, 20)))
                 .thenReturn(page);
 
         PageResponse<InvoiceHandoffEligibleExpenseResponse> result =
-                service.getEligibleExpenses(null, null, null, null, 0, 20);
+                service.getEligibleExpenses(null, null, null, null, null, null, 0, 20);
 
         assertThat(result.content()).hasSize(1);
         InvoiceHandoffEligibleExpenseResponse response = result.content().get(0);
         assertThat(response.lineItemId()).isEqualTo(lineItemId);
         assertThat(response.resolvedClientName()).isEqualTo("Aurora Health");
         assertThat(response.baseCurrencyCode()).isEqualTo("INR");
+    }
+
+    @Test
+    void getEligibleExpenses_passesPmsProjectAndTrimmedProjectCode_andTreatsBlankCodeAsNoFilter() {
+        LocalDate start = LocalDate.of(2026, 8, 1);
+        LocalDate end = LocalDate.of(2026, 8, 31);
+        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Page.empty());
+
+        service.getEligibleExpenses(null, null, 42L, "  AR-990 ", start, end, 0, 20);
+        verify(expenseLineItemRepository).findEligibleForInvoiceHandoff(null, null, 42L, "AR-990", start, end, PageRequest.of(0, 20));
+
+        service.getEligibleExpenses(null, null, null, "   ", null, null, 0, 20);
+        verify(expenseLineItemRepository).findEligibleForInvoiceHandoff(null, null, null, null, null, null, PageRequest.of(0, 20));
+    }
+
+    @Test
+    void getEligibleExpenses_rejectsInvertedBillingPeriod() {
+        assertThatThrownBy(() -> service.getEligibleExpenses(null, null, 42L, null,
+                LocalDate.of(2026, 8, 31), LocalDate.of(2026, 8, 1), 0, 20))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("startDate");
     }
 
     @Test
@@ -180,7 +205,7 @@ class InvoiceHandoffServiceImplTest {
     void getSummary_countsAndTotalsReadyExpenses_andHandedOffRecords() {
         ExpenseLineItem second = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).report(eligibleLineItem.getReport())
                 .baseAmount(new BigDecimal("50.00")).clientBillable(true).build();
-        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(isNull(), isNull(), isNull(), isNull(), any()))
+        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), any()))
                 .thenReturn(new PageImpl<>(List.of(eligibleLineItem, second)));
         when(invoiceSyncRepository.countBySyncStatus("HANDED_OFF")).thenReturn(7L);
 
@@ -196,14 +221,104 @@ class InvoiceHandoffServiceImplTest {
     void getHandedOff_mapsHandoffWithItsExpense() {
         InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
                 .invoiceReference("INV-9").syncStatus("HANDED_OFF").syncDate(java.time.LocalDateTime.now()).build();
-        when(invoiceSyncRepository.findBySyncStatusOrderBySyncDateDesc(eq("HANDED_OFF"), any()))
+        when(invoiceSyncRepository.findHandedOff(eq("HANDED_OFF"), any(), any(), any(), any(), any(), any()))
                 .thenReturn(new PageImpl<>(List.of(sync)));
 
-        var page = service.getHandedOff(0, 20);
+        var page = service.getHandedOff(null, null, null, null, null, 0, 20);
 
         assertThat(page.content()).hasSize(1);
         assertThat(page.content().get(0).invoiceReference()).isEqualTo("INV-9");
         assertThat(page.content().get(0).reportNumber()).isEqualTo("ER-001");
+    }
+
+    @Test
+    void getHandedOff_exposesTheCrossSystemKeysArMatchesOn() {
+        eligibleLineItem.setProject(ProjectCache.builder().projectId(UUID.randomUUID())
+                .pmsProjectId(37L).projectCode("AP-297").projectName("AR project").build());
+        InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
+                .invoiceReference("INV-11").syncStatus("HANDED_OFF").syncDate(LocalDateTime.now()).build();
+        when(invoiceSyncRepository.findHandedOff(eq("HANDED_OFF"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(sync)));
+
+        var record = service.getHandedOff(null, 37L, null, null, null, 0, 20).content().get(0);
+
+        assertThat(record.pmsProjectId()).isEqualTo(37L);
+        assertThat(record.projectCode()).isEqualTo("AP-297");
+        assertThat(record.resolvedClientId()).isEqualTo(eligibleLineItem.getResolvedClientId());
+    }
+
+    @Test
+    void getHandedOff_passesFilters_trimsProjectCode_andMakesTheHandedOffDateRangeInclusive() {
+        UUID clientId = UUID.randomUUID();
+        LocalDate from = LocalDate.of(2026, 10, 1);
+        LocalDate to = LocalDate.of(2026, 10, 31);
+        when(invoiceSyncRepository.findHandedOff(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(Page.empty());
+
+        service.getHandedOff(clientId, 37L, "  AP-297 ", from, to, 0, 20);
+        verify(invoiceSyncRepository).findHandedOff("HANDED_OFF", clientId, 37L, "AP-297",
+                LocalDateTime.of(2026, 10, 1, 0, 0), LocalDateTime.of(2026, 11, 1, 0, 0), PageRequest.of(0, 20));
+
+        service.getHandedOff(null, null, "   ", null, null, 0, 20);
+        verify(invoiceSyncRepository).findHandedOff("HANDED_OFF", null, null, null, null, null, PageRequest.of(0, 20));
+    }
+
+    @Test
+    void getHandedOffByPmsProject_returnsTheProjectsHandoffs() {
+        InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
+                .invoiceReference("INV-12").syncStatus("HANDED_OFF").syncDate(LocalDateTime.now()).build();
+        when(invoiceSyncRepository.findHandedOff("HANDED_OFF", null, 37L, null, null, null, PageRequest.of(0, 10)))
+                .thenReturn(new PageImpl<>(List.of(sync), PageRequest.of(0, 10), 1));
+
+        var page = service.getHandedOffByPmsProject(37L, 0, 10);
+
+        assertThat(page.content()).extracting(r -> r.invoiceReference()).containsExactly("INV-12");
+    }
+
+    @Test
+    void getHandedOffByPmsProject_throwsNotFound_whenTheProjectHasNoHandoffs() {
+        when(invoiceSyncRepository.findHandedOff(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 10), 0));
+
+        assertThatThrownBy(() -> service.getHandedOffByPmsProject(99L, 0, 10))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessage("No handed-off expenses found for PMS project 99");
+    }
+
+    @Test
+    void getHandedOffByPmsProject_throwsNotFound_whenThePageIsPastTheLastOne() {
+        when(invoiceSyncRepository.findHandedOff(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(5, 10), 12));
+
+        assertThatThrownBy(() -> service.getHandedOffByPmsProject(37L, 5, 10))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessageContaining("beyond the last page (1)");
+    }
+
+    @Test
+    void getHandedOff_rejectsInvertedHandedOffRange() {
+        assertThatThrownBy(() -> service.getHandedOff(null, null, null,
+                LocalDate.of(2026, 10, 31), LocalDate.of(2026, 10, 1), 0, 20))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("handedOffFrom");
+    }
+
+    @Test
+    void getHandedOff_reportsTheBilledCostBasis_sameAsTheBillingPayload() {
+        eligibleLineItem.setBaseAmount(new BigDecimal("1180.00"));
+        eligibleLineItem.setBaseRecoverableTaxAmount(new BigDecimal("180.00"));
+        eligibleLineItem.setTaxCode("GST18");
+        InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
+                .invoiceReference("INV-10").syncStatus("HANDED_OFF").syncDate(java.time.LocalDateTime.now()).build();
+        when(invoiceSyncRepository.findHandedOff(eq("HANDED_OFF"), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(sync)));
+
+        var record = service.getHandedOff(null, null, null, null, null, 0, 20).content().get(0);
+
+        assertThat(record.costBasis()).isEqualByComparingTo("1000.00");
+        assertThat(record.costBasis()).isEqualByComparingTo(BillingPayloadFactory.costBasis(eligibleLineItem));
+        assertThat(record.recoverableTaxAmount()).isEqualByComparingTo("180.00");
+        assertThat(record.taxCode()).isEqualTo("GST18");
     }
 
     @Test

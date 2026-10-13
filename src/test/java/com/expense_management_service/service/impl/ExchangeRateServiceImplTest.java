@@ -338,9 +338,8 @@ class ExchangeRateServiceImplTest {
     }
 
     @Test
-    void refreshRates_skipsPair_whenRateAlreadyRecordedForToday() {
+    void refreshRates_skipsPairWithoutCallingProvider_whenRateAlreadyRecordedForToday() {
         when(currencyRepository.findAll()).thenReturn(List.of(inr, usd));
-        when(exchangeRateProvider.fetchRate(anyString(), anyString())).thenReturn(Optional.of(BigDecimal.valueOf(83.5)));
         when(exchangeRateRepository.existsByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDate(
                 any(), any(), eq(LocalDate.now()))).thenReturn(true);
 
@@ -348,7 +347,24 @@ class ExchangeRateServiceImplTest {
 
         assertThat(response.ratesCreated()).isZero();
         assertThat(response.ratesSkipped()).isEqualTo(2);
+        assertThat(response.note()).containsIgnoringCase("already recorded");
         verify(exchangeRateRepository, never()).save(any());
+        verify(exchangeRateProvider, never()).fetchRate(any(), any());
+    }
+
+    @Test
+    void getAll_returnsNewestEffectiveDateFirst_thenByCurrencyPair() {
+        ExchangeRate oldUsdInr = ExchangeRate.builder().exchangeRateId(UUID.randomUUID()).fromCurrency(usd).toCurrency(inr)
+                .rate(BigDecimal.TEN).effectiveDate(LocalDate.of(2026, 1, 1)).build();
+        ExchangeRate newUsdInr = ExchangeRate.builder().exchangeRateId(UUID.randomUUID()).fromCurrency(usd).toCurrency(inr)
+                .rate(BigDecimal.TEN).effectiveDate(LocalDate.of(2026, 1, 2)).build();
+        ExchangeRate newInrUsd = ExchangeRate.builder().exchangeRateId(UUID.randomUUID()).fromCurrency(inr).toCurrency(usd)
+                .rate(BigDecimal.ONE).effectiveDate(LocalDate.of(2026, 1, 2)).build();
+
+        when(exchangeRateRepository.findAll()).thenReturn(List.of(oldUsdInr, newUsdInr, newInrUsd));
+
+        assertThat(exchangeRateService.getAll()).extracting(ExchangeRateResponse::exchangeRateId)
+                .containsExactly(newInrUsd.getExchangeRateId(), newUsdInr.getExchangeRateId(), oldUsdInr.getExchangeRateId());
     }
 
     @Test

@@ -133,6 +133,10 @@ public class ExpenseLineItem {
     @Column(name = "ocr_tax_confidence", precision = 5, scale = 4)
     private BigDecimal ocrTaxConfidence;
 
+    /** Supplier GSTIN on the invoice the input tax credit rests on: from the receipt's OCR, or set by Finance. */
+    @Column(name = "supplier_gstin", length = 15)
+    private String supplierGstin;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "tax_validation_status", length = 32)
     private TaxValidationStatus taxValidationStatus;

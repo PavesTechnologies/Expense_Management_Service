@@ -71,6 +71,8 @@ public interface ExpenseLineItemRepository extends JpaRepository<ExpenseLineItem
               )
               AND (:clientId IS NULL OR l.resolvedClientId = :clientId)
               AND (:projectId IS NULL OR l.project.projectId = :projectId)
+              AND (:pmsProjectId IS NULL OR l.project.pmsProjectId = :pmsProjectId)
+              AND (:projectCode IS NULL OR l.project.projectCode = :projectCode)
               AND (:startDate IS NULL OR l.expenseDate >= :startDate)
               AND (:endDate IS NULL OR l.expenseDate <= :endDate)
             ORDER BY l.expenseDate DESC
@@ -78,6 +80,8 @@ public interface ExpenseLineItemRepository extends JpaRepository<ExpenseLineItem
     Page<ExpenseLineItem> findEligibleForInvoiceHandoff(
             @Param("clientId") UUID clientId,
             @Param("projectId") UUID projectId,
+            @Param("pmsProjectId") Long pmsProjectId,
+            @Param("projectCode") String projectCode,
             @Param("startDate") LocalDate startDate,
             @Param("endDate") LocalDate endDate,
             Pageable pageable);

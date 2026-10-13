@@ -21,7 +21,7 @@ import java.util.stream.Collectors;
  * Advanced Multi-Criteria Filter API
  * Spec: EP12-S2 - Advanced filters for precise expense data narrowing
  *
- * Endpoint: GET /api/v1/expense-reports?status=&dateFrom=&dateTo=&category=&costCenter=&amountMin=&amountMax=&billable=
+ * Endpoint: GET /xms/api/v1/expense-reports?status=&dateFrom=&dateTo=&category=&costCenter=&amountMin=&amountMax=&billable=
  *
  * Features:
  * - Multi-criteria filtering (status, date range, amount range, category, cost center, employee)
@@ -32,7 +32,7 @@ import java.util.stream.Collectors;
  * - Reactive results on client
  */
 @RestController
-@RequestMapping("/api/v1/expense-reports")
+@RequestMapping("/xms/api/v1/expense-reports")
 @RequiredArgsConstructor
 @Slf4j
 public class AdvancedFilterController {

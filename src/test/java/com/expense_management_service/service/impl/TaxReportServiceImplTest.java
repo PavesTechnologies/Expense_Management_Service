@@ -101,6 +101,71 @@ class TaxReportServiceImplTest {
         assertThat(r.totals().taxAmount()).isEqualByComparingTo("2700");
     }
 
+    @SuppressWarnings("unchecked")
+    private void lines(List<com.expense_management_service.entity.ExpenseLineItem> result) {
+        TypedQuery<com.expense_management_service.entity.ExpenseLineItem> lineQuery = org.mockito.Mockito.mock(TypedQuery.class);
+        when(lineQuery.setParameter(anyString(), any())).thenReturn(lineQuery);
+        when(em.createQuery(contains("join fetch l.report"), eq(com.expense_management_service.entity.ExpenseLineItem.class))).thenReturn(lineQuery);
+        when(lineQuery.getResultList()).thenReturn(result);
+    }
+
+    private static com.expense_management_service.entity.ExpenseLineItem taxedLine(String tax, String recoverable, String itcPercent,
+            com.expense_management_service.enums.TaxValidationStatus status, String gstin) {
+        var report = com.expense_management_service.entity.ExpenseReport.builder().reportId(java.util.UUID.randomUUID())
+                .reportNumber("ER-1").employeeId("emp-1").reportStatus(com.expense_management_service.enums.ReportStatus.APPROVED).build();
+        return com.expense_management_service.entity.ExpenseLineItem.builder().lineItemId(java.util.UUID.randomUUID()).report(report)
+                .expenseDate(LocalDate.of(2026, 9, 5)).merchantName("Hotel").taxCode("GST18")
+                .baseTaxAmount(d(tax)).baseRecoverableTaxAmount(d(recoverable)).itcRecoverablePercent(d(itcPercent))
+                .taxValidationStatus(status).supplierGstin(gstin).build();
+    }
+
+    @Test
+    void itcRegister_splitsRecoverableIntoVerifiedAndUnverified_andCountsCreditWithoutGstin() {
+        lines(List.of(
+                taxedLine("1800", "1800", "100", com.expense_management_service.enums.TaxValidationStatus.FINANCE_VERIFIED, "29ABCDE1234F1Z5"),
+                taxedLine("900", "450", "50", com.expense_management_service.enums.TaxValidationStatus.REQUIRES_FINANCE_REVIEW, null),
+                taxedLine("120", "0", "0", com.expense_management_service.enums.TaxValidationStatus.MATCHED, null)));
+
+        var r = service.itcRegister(LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 30), null, null, null);
+
+        assertThat(r.lines()).extracting(com.expense_management_service.dto.response.ItcRegisterResponse.Line::itcStatus)
+                .containsExactly("VERIFIED", "UNVERIFIED", "NOT_RECOVERABLE");
+        assertThat(r.lines().get(1).nonRecoverableTaxAmount()).isEqualByComparingTo("450");
+        assertThat(r.totals().lineCount()).isEqualTo(3);
+        assertThat(r.totals().taxAmount()).isEqualByComparingTo("2820");
+        assertThat(r.totals().verifiedRecoverableTaxAmount()).isEqualByComparingTo("1800");
+        assertThat(r.totals().unverifiedRecoverableTaxAmount()).isEqualByComparingTo("450");
+        assertThat(r.totals().recoverableTaxAmount()).isEqualByComparingTo("2250");
+        assertThat(r.totals().nonRecoverableTaxAmount()).isEqualByComparingTo("570");
+        assertThat(r.totals().recoverableWithoutGstinCount()).isEqualTo(1);
+        assertThat(r.currency()).isEqualTo("INR");
+    }
+
+    @Test
+    void itcRegister_filtersByItcStatus_andTotalsOnlyTheShownLines() {
+        lines(List.of(
+                taxedLine("1800", "1800", "100", com.expense_management_service.enums.TaxValidationStatus.FINANCE_ADJUSTED, null),
+                taxedLine("900", "450", "50", com.expense_management_service.enums.TaxValidationStatus.MATCHED, null)));
+
+        var r = service.itcRegister(null, null, com.expense_management_service.enums.ItcStatus.UNVERIFIED, null, null);
+
+        assertThat(r.lines()).hasSize(1);
+        assertThat(r.totals().taxAmount()).isEqualByComparingTo("900");
+        assertThat(r.totals().verifiedRecoverableTaxAmount()).isEqualByComparingTo("0");
+        assertThat(r.to()).isEqualTo(LocalDate.now());
+        assertThat(r.from()).isEqualTo(LocalDate.now().withDayOfMonth(1));
+    }
+
+    @Test
+    void reports_leaveOutRejectedReports() {
+        rows("group by year(l.expenseDate)", List.of());
+
+        service.report(LocalDate.of(2026, 9, 1), LocalDate.of(2026, 9, 30), "month", null, null);
+
+        org.mockito.Mockito.verify(query).setParameter(eq("notSubmitted"),
+                org.mockito.ArgumentMatchers.<java.util.Set<?>>argThat(s -> s.contains(com.expense_management_service.enums.ReportStatus.REJECTED)));
+    }
+
     @Test
     void rejectsAnUnknownGrouping_andAnInvertedWindow() {
         assertThatThrownBy(() -> service.report(null, null, "employee", null, null)).hasMessageContaining("groupBy");

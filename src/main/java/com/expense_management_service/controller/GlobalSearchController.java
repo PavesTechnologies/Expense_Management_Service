@@ -23,10 +23,10 @@ import java.util.stream.Collectors;
  * - Manager: own + team reports
  * - Finance/Auditor/Admin: all reports
  *
- * Endpoint: GET /api/v1/search?q=<query>&scope=<scope>&page=0&size=20
+ * Endpoint: GET /xms/api/v1/search?q=<query>&scope=<scope>&page=0&size=20
  */
 @RestController
-@RequestMapping("/api/v1/search")
+@RequestMapping("/xms/api/v1/search")
 @RequiredArgsConstructor
 @Slf4j
 public class GlobalSearchController {

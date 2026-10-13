@@ -1,8 +1,11 @@
 package com.expense_management_service.service.impl;
 
 import com.expense_management_service.dto.response.DashboardResponse;
+import com.expense_management_service.dto.response.ItcRegisterResponse;
 import com.expense_management_service.dto.response.TaxReportResponse;
 import com.expense_management_service.dto.response.TaxReportResponse.Row;
+import com.expense_management_service.entity.ExpenseLineItem;
+import com.expense_management_service.enums.ItcStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.enums.TaxSource;
 import com.expense_management_service.enums.TaxValidationStatus;
@@ -31,14 +34,14 @@ import java.util.UUID;
 
 /**
  * Tax reporting on the line snapshots (BR-TAX-017: base currency). Grouping happens in the
- * database; only submitted lines count (drafts and cancelled reports are not spend). Lines
+ * database; only submitted lines count (drafts, cancelled and rejected reports are not spend). Lines
  * entered before tax codes group as LEGACY.
  */
 @Service
 @Transactional(readOnly = true)
 public class TaxReportServiceImpl implements TaxReportService {
 
-    private static final Set<ReportStatus> NOT_SUBMITTED = EnumSet.of(ReportStatus.DRAFT, ReportStatus.CANCELLED);
+    private static final Set<ReportStatus> NOT_SUBMITTED = ReportStatus.excludedFromTaxReporting();
     private static final String LEGACY = "LEGACY";
     private static final String NO_CODE = "NONE";
     private static final BigDecimal HUNDRED = BigDecimal.valueOf(100);
@@ -98,6 +101,55 @@ public class TaxReportServiceImpl implements TaxReportService {
                 percent(current.taxAmount(), current.grossAmount()),
                 series.stream().map(r -> new DashboardResponse.TaxMonth(r.key(), r.label(), r.taxAmount(),
                         r.recoverableTaxAmount(), r.nonRecoverableTaxAmount())).toList());
+    }
+
+    @Override
+    public ItcRegisterResponse itcRegister(LocalDate from, LocalDate to, ItcStatus itcStatus, UUID categoryId, UUID taxCodeId) {
+        LocalDate end = to != null ? to : LocalDate.now();
+        LocalDate start = from != null ? from : end.withDayOfMonth(1);
+        if (start.isAfter(end)) {
+            throw new IllegalArgumentException("from cannot be after to");
+        }
+        List<ExpenseLineItem> taxed = bind(em.createQuery("select l from ExpenseLineItem l join fetch l.report left join fetch l.category"
+                + where(categoryId, taxCodeId) + " and coalesce(l.baseTaxAmount, 0) > 0"
+                + " order by l.expenseDate, l.report.reportNumber", ExpenseLineItem.class), start, end, categoryId, taxCodeId).getResultList();
+
+        List<ItcRegisterResponse.Line> lines = taxed.stream()
+                .map(TaxReportServiceImpl::itcLine)
+                .filter(l -> itcStatus == null || itcStatus.name().equals(l.itcStatus()))
+                .toList();
+        return new ItcRegisterResponse(start, end, baseCurrencyCode, lines, itcTotals(lines));
+    }
+
+    private static ItcRegisterResponse.Line itcLine(ExpenseLineItem l) {
+        BigDecimal tax = dec(l.getBaseTaxAmount());
+        BigDecimal recoverable = dec(l.getBaseRecoverableTaxAmount());
+        return new ItcRegisterResponse.Line(l.getLineItemId(), l.getReport().getReportId(), l.getReport().getReportNumber(),
+                l.getReport().getEmployeeId(), l.getReport().getReportStatus() != null ? l.getReport().getReportStatus().name() : null,
+                l.getExpenseDate(), l.getMerchantName(), l.getCategory() != null ? l.getCategory().getCategoryName() : null,
+                l.getTaxCode(), l.getSupplierGstin(), tax, l.getItcRecoverablePercent(), recoverable, tax.subtract(recoverable),
+                l.getTaxValidationStatus() != null ? l.getTaxValidationStatus().name() : null,
+                ItcStatus.of(recoverable, l.getTaxValidationStatus()).name());
+    }
+
+    private static ItcRegisterResponse.Totals itcTotals(List<ItcRegisterResponse.Line> lines) {
+        BigDecimal tax = BigDecimal.ZERO;
+        BigDecimal verified = BigDecimal.ZERO;
+        BigDecimal unverified = BigDecimal.ZERO;
+        long withoutGstin = 0;
+        for (ItcRegisterResponse.Line l : lines) {
+            tax = tax.add(l.taxAmount());
+            if (ItcStatus.VERIFIED.name().equals(l.itcStatus())) {
+                verified = verified.add(l.recoverableTaxAmount());
+            } else if (ItcStatus.UNVERIFIED.name().equals(l.itcStatus())) {
+                unverified = unverified.add(l.recoverableTaxAmount());
+            }
+            if (!ItcStatus.NOT_RECOVERABLE.name().equals(l.itcStatus()) && l.supplierGstin() == null) {
+                withoutGstin++;
+            }
+        }
+        BigDecimal recoverable = verified.add(unverified);
+        return new ItcRegisterResponse.Totals(lines.size(), tax, recoverable, verified, unverified, tax.subtract(recoverable), withoutGstin);
     }
 
     // ------------------------------------------------------------------ groupings

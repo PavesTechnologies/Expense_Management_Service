@@ -19,8 +19,14 @@ import java.util.UUID;
  */
 public interface InvoiceHandoffService {
 
+    /**
+     * All filters are optional and combined with AND; both date bounds are inclusive on the
+     * expense date. {@code projectId} is XMS's internal project UUID; external callers (AR)
+     * should use {@code pmsProjectId} - PMS's stable numeric id - or {@code projectCode}.
+     */
     PageResponse<InvoiceHandoffEligibleExpenseResponse> getEligibleExpenses(
-            UUID clientId, UUID projectId, LocalDate startDate, LocalDate endDate, int page, int size);
+            UUID clientId, UUID projectId, Long pmsProjectId, String projectCode,
+            LocalDate startDate, LocalDate endDate, int page, int size);
 
     /**
      * AR's authoritative billing payload for one client-billable line on an approved report
@@ -32,8 +38,21 @@ public interface InvoiceHandoffService {
 
     List<InvoiceSyncResponse> getHandoffHistory(UUID lineItemId);
 
-    /** Every completed handoff, newest first. */
-    PageResponse<InvoiceHandoffRecordResponse> getHandedOff(int page, int size);
+    /**
+     * Completed handoffs, newest first - the invoice team's "Handed off" tab and AR's pull of
+     * what to invoice. All filters are optional and combined with AND; both handed-off date
+     * bounds are inclusive. A reprocessed line item appears once per handoff.
+     */
+    PageResponse<InvoiceHandoffRecordResponse> getHandedOff(
+            UUID clientId, Long pmsProjectId, String projectCode,
+            LocalDate handedOffFrom, LocalDate handedOffTo, int page, int size);
+
+    /**
+     * Completed handoffs for one PMS project, newest first - same records as {@link #getHandedOff}.
+     * Throws {@code ResourceNotFoundException} when the requested page is empty, whether the
+     * project has no handoffs at all or the page is past the last one.
+     */
+    PageResponse<InvoiceHandoffRecordResponse> getHandedOffByPmsProject(Long pmsProjectId, int page, int size);
 
     InvoiceHandoffSummaryResponse getSummary();
 }

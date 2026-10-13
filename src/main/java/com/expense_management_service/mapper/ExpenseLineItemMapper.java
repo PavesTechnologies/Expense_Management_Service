@@ -6,8 +6,10 @@ import com.expense_management_service.dto.response.LineTaxComponentResponse;
 import com.expense_management_service.dto.response.LineTaxResponse;
 import com.expense_management_service.dto.response.PolicyWarningResponse;
 import com.expense_management_service.entity.ExpenseLineItem;
+import com.expense_management_service.enums.ItcStatus;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.util.List;
 
 @Component
@@ -87,9 +89,13 @@ public class ExpenseLineItemMapper {
                 entity.getTaxOverrideReason(),
                 entity.getItcRecoverablePercent(),
                 entity.getRecoverableTaxAmount(),
+                nonRecoverable(entity.getTaxAmount(), entity.getRecoverableTaxAmount()),
                 entity.getBaseTaxAmount(),
                 entity.getBaseNetAmount(),
                 entity.getBaseRecoverableTaxAmount(),
+                nonRecoverable(entity.getBaseTaxAmount(), entity.getBaseRecoverableTaxAmount()),
+                ItcStatus.of(entity.getBaseRecoverableTaxAmount(), entity.getTaxValidationStatus()).name(),
+                entity.getSupplierGstin(),
                 entity.getOcrTaxAmount(),
                 entity.getTaxValidationStatus() != null ? entity.getTaxValidationStatus().name() : null,
                 entity.getTaxValidationReasons() == null || entity.getTaxValidationReasons().isBlank()
@@ -100,5 +106,13 @@ public class ExpenseLineItemMapper {
                                 c.getTaxAmount(), c.getBaseTaxAmount(), c.getSource().name()))
                         .toList()
         );
+    }
+
+    /** tax - recoverable; null when the line has no tax snapshot. */
+    private static BigDecimal nonRecoverable(BigDecimal tax, BigDecimal recoverable) {
+        if (tax == null) {
+            return null;
+        }
+        return recoverable == null ? tax : tax.subtract(recoverable);
     }
 }

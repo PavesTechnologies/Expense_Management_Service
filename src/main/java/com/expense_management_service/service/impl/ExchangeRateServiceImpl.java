@@ -1,5 +1,6 @@
 package com.expense_management_service.service.impl;
 
+import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.stream.Stream;
@@ -37,6 +38,12 @@ public class ExchangeRateServiceImpl implements ExchangeRateService {
 
     private static final String STATUS_ACTIVE = "ACTIVE";
     private static final String REFRESH_SOURCE = "SCHEDULED_REFRESH";
+
+    /** List order: newest effective date first, then by currency pair so each day's rates sit together. */
+    private static final Comparator<ExchangeRate> LIST_ORDER = Comparator
+            .comparing(ExchangeRate::getEffectiveDate, Comparator.nullsLast(Comparator.reverseOrder()))
+            .thenComparing(rate -> currencyCode(rate.getFromCurrency()), Comparator.nullsLast(Comparator.naturalOrder()))
+            .thenComparing(rate -> currencyCode(rate.getToCurrency()), Comparator.nullsLast(Comparator.naturalOrder()));
 
     private final ExchangeRateRepository exchangeRateRepository;
     private final CurrencyRepository currencyRepository;
@@ -100,7 +107,10 @@ public class ExchangeRateServiceImpl implements ExchangeRateService {
     @Override
     @Transactional(readOnly = true)
     public List<ExchangeRateResponse> getAll() {
-        return exchangeRateRepository.findAll().stream().map(exchangeRateMapper::toResponse).toList();
+        return exchangeRateRepository.findAll().stream()
+                .sorted(LIST_ORDER)
+                .map(exchangeRateMapper::toResponse)
+                .toList();
     }
 
     @Override
@@ -112,6 +122,7 @@ public class ExchangeRateServiceImpl implements ExchangeRateService {
                         || (rate.getFromCurrency() != null && fromCurrencyId.equals(rate.getFromCurrency().getCurrencyId())))
                 .filter(rate -> toCurrencyId == null
                         || (rate.getToCurrency() != null && toCurrencyId.equals(rate.getToCurrency().getCurrencyId())))
+                .sorted(LIST_ORDER)
                 .map(exchangeRateMapper::toResponse)
                 .toList();
     }
@@ -174,23 +185,27 @@ public class ExchangeRateServiceImpl implements ExchangeRateService {
         LocalDate today = LocalDate.now();
         int processed = 0;
         int created = 0;
-        int skipped = 0;
+        int alreadyRecorded = 0;
+        int unavailable = 0;
 
         for (CurrencyPair pair : pairs) {
             processed++;
             Currency fromCurrency = pair.from();
             Currency toCurrency = pair.to();
 
-            Optional<BigDecimal> fetched = exchangeRateProvider.fetchRate(fromCurrency.getCurrencyCode(), toCurrency.getCurrencyCode());
-            if (fetched.isEmpty()) {
-                skipped++;
-                continue;
-            }
+            // Checked before calling the provider so repeat runs on the same day (hourly cron, startup
+            // catch-up, manual refresh) cost no API calls once today's rates are in.
             if (exchangeRateRepository.existsByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDate(
                     fromCurrency.getCurrencyId(), toCurrency.getCurrencyId(), today)) {
                 log.debug("Rate for {} -> {} already recorded for {}, skipping", fromCurrency.getCurrencyCode(),
                         toCurrency.getCurrencyCode(), today);
-                skipped++;
+                alreadyRecorded++;
+                continue;
+            }
+
+            Optional<BigDecimal> fetched = exchangeRateProvider.fetchRate(fromCurrency.getCurrencyCode(), toCurrency.getCurrencyCode());
+            if (fetched.isEmpty()) {
+                unavailable++;
                 continue;
             }
 
@@ -207,16 +222,27 @@ public class ExchangeRateServiceImpl implements ExchangeRateService {
             created++;
         }
 
-        String note = created == 0 && processed > 0
-                ? "No live exchange-rate provider is configured; the refresh scanned " + processed
-                        + " active currency pair(s) but fetched no rates. See ExchangeRateProvider."
-                : "Refresh completed: " + created + " new rate(s) recorded out of " + processed + " pair(s) scanned.";
+        String note;
+        if (processed > 0 && alreadyRecorded == processed) {
+            note = "Rates for all " + processed + " pair(s) are already recorded for " + today + "; nothing to fetch.";
+        } else if (created == 0 && unavailable > 0) {
+            note = "No live exchange-rate provider is configured or it is unavailable; the refresh scanned " + processed
+                    + " active currency pair(s) but fetched no rates. See ExchangeRateProvider.";
+        } else {
+            note = "Refresh completed: " + created + " new rate(s) recorded out of " + processed + " pair(s) scanned.";
+        }
 
-        log.info("Exchange rate refresh finished: processed={}, created={}, skipped={}", processed, created, skipped);
+        int skipped = alreadyRecorded + unavailable;
+        log.info("Exchange rate refresh finished: processed={}, created={}, alreadyRecorded={}, unavailable={}",
+                processed, created, alreadyRecorded, unavailable);
         return new ExchangeRateRefreshResponse(processed, created, skipped, LocalDateTime.now(), note);
     }
 
     private record CurrencyPair(Currency from, Currency to) {
+    }
+
+    private static String currencyCode(Currency currency) {
+        return currency == null ? null : currency.getCurrencyCode();
     }
 
     @Override

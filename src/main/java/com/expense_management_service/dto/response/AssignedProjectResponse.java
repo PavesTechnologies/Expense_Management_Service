@@ -9,7 +9,10 @@ import java.util.UUID;
  */
 public record AssignedProjectResponse(
         UUID projectId,
+        /** PMS's projectKey (e.g. AP-297). */
         String projectCode,
+        /** PMS's own numeric project id. */
+        Long pmsProjectId,
         String projectName,
         String status
 ) {

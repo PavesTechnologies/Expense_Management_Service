@@ -31,6 +31,35 @@ class TaxExtractorTest {
     }
 
     @Test
+    void extract_includesCessInTheGstTotal_soA28PercentPlusCessBillIsNotUnderRead() {
+        ExpenseFieldIndex index = indexOf(
+                labeledField("CGST 14%", "140.00", 90.0f),
+                labeledField("SGST 14%", "140.00", 90.0f),
+                labeledField("Compensation CESS", "120.00", 90.0f));
+
+        assertThat(extractor.extract(index).value()).isEqualByComparingTo("400.00");
+    }
+
+    @Test
+    void extract_sumsUtgstWithCgst_forAUnionTerritoryBill() {
+        ExpenseFieldIndex index = indexOf(
+                labeledField("CGST9%", "9.00", 90.0f),
+                labeledField("UTGST9%", "9.00", 90.0f));
+
+        assertThat(extractor.extract(index).value()).isEqualByComparingTo("18.00");
+    }
+
+    @Test
+    void extract_doesNotTreatAProcessingChargeAsCess() {
+        ExpenseFieldIndex index = indexOf(
+                labeledField("CGST", "9.00", 90.0f),
+                labeledField("SGST", "9.00", 90.0f),
+                labeledField("PROCESSING CHARGES", "50.00", 90.0f));
+
+        assertThat(extractor.extract(index).value()).isEqualByComparingTo("18.00");
+    }
+
+    @Test
     void extract_usesGenericGstLabel_whenNoGstComponentsPresent() {
         ExpenseFieldIndex index = indexOf(labeledField("GST", "18.00", 90.0f));
 

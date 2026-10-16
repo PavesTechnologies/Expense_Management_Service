@@ -1,7 +1,9 @@
 package com.expense_management_service.controller;
 
 import com.expense_management_service.config.SecurityConfig;
+import com.expense_management_service.dto.request.CompletePaymentRequest;
 import com.expense_management_service.dto.response.ApPaymentDetailsResponse;
+import org.springframework.http.MediaType;
 import com.expense_management_service.dto.response.ApPaymentQueueItemResponse;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
@@ -45,6 +47,12 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @Import({SecurityConfig.class, JwtAuthConverter.class})
 @TestPropertySource(properties = "spring.security.oauth2.resourceserver.jwt.issuer-uri=https://test-issuer.invalid")
 class ApPaymentControllerTest {
+
+    /** A complete payment confirmation as AP submits it. */
+    private static final String PAYMENT_JSON = """
+            {"paymentReference":"UTR123456789","paymentMethod":"BANK_TRANSFER",
+             "paymentDate":"2026-10-15","amountPaid":12500.00,"remarks":"NEFT"}
+            """;
 
     @Autowired
     private MockMvc mockMvc;
@@ -145,29 +153,42 @@ class ApPaymentControllerTest {
     void markPaymentCompleted_returns200_forApExecutive() throws Exception {
         UUID reportId = UUID.randomUUID();
         when(currentUserService.getEmployeeId()).thenReturn("5100200");
-        when(apPaymentService.markPaymentCompleted(eq(reportId), eq("5100200")))
+        when(apPaymentService.markPaymentCompleted(eq(reportId), any(CompletePaymentRequest.class), eq("5100200")))
                 .thenReturn(sampleReportResponse("APPROVED"));
 
-        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", reportId).with(apExecutive()))
+        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", reportId).contentType(MediaType.APPLICATION_JSON).content(PAYMENT_JSON).with(apExecutive()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.paymentRoutingStatus").value("PAYMENT_COMPLETED"));
     }
 
     @Test
+    void markPaymentCompleted_returns400_withoutAPaymentReference() throws Exception {
+        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID())
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"paymentMethod":"BANK_TRANSFER","paymentDate":"2026-10-15","amountPaid":12500.00}
+                                """)
+                        .with(apExecutive()))
+                .andExpect(status().isBadRequest());
+
+        org.mockito.Mockito.verifyNoInteractions(apPaymentService);
+    }
+
+    @Test
     void markPaymentCompleted_returns403_forGeneralRole() throws Exception {
-        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).with(general()))
+        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON).content(PAYMENT_JSON).with(general()))
                 .andExpect(status().isForbidden());
     }
 
     @Test
     void markPaymentCompleted_returns403_forReportingManagerRole() throws Exception {
-        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).with(reportingManager()))
+        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON).content(PAYMENT_JSON).with(reportingManager()))
                 .andExpect(status().isForbidden());
     }
 
     @Test
     void markPaymentCompleted_returns403_forFinanceExecutiveRole() throws Exception {
-        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).with(financeExecutive()))
+        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON).content(PAYMENT_JSON).with(financeExecutive()))
                 .andExpect(status().isForbidden());
     }
 

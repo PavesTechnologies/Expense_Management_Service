@@ -3,6 +3,8 @@ package com.expense_management_service.controller;
 import java.util.UUID;
 
 import com.expense_management_service.common.ApiResponse;
+import com.expense_management_service.dto.request.CompletePaymentRequest;
+import jakarta.validation.Valid;
 import com.expense_management_service.dto.response.ApPaymentDetailsResponse;
 import com.expense_management_service.dto.response.ApPaymentQueueItemResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
@@ -51,10 +53,12 @@ public class ApPaymentController {
         return ApiResponse.success(apPaymentService.getPaymentDetails(reportId));
     }
 
+    /** AP confirms the actual payment - reference, method, date and amount are required. */
     @PostMapping("/{reportId}/complete")
-    public ApiResponse<ExpenseReportResponse> markPaymentCompleted(@PathVariable UUID reportId) {
+    public ApiResponse<ExpenseReportResponse> markPaymentCompleted(@PathVariable UUID reportId,
+                                                                   @Valid @RequestBody CompletePaymentRequest request) {
         return ApiResponse.success("Payment marked as completed",
-                apPaymentService.markPaymentCompleted(reportId, currentUserService.getEmployeeId()));
+                apPaymentService.markPaymentCompleted(reportId, request, currentUserService.getEmployeeId()));
     }
 
     /** History tabs (Payment Completed / Handoff Failed) - APPROVED_FOR_PAYMENT is not a valid value here, use {@link #getApQueue}. */

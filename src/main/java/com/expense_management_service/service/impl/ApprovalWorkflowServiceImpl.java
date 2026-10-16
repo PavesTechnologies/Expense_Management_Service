@@ -255,9 +255,16 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
 
         // BR-TAX-010: a tax-only change is not material for approvers but Finance re-verifies that line.
-        resolveStrategy(activeInstance.getLevelType()).reopenReviewsForRevisedTax(activeInstance)
+        LevelReviewStrategy strategy = resolveStrategy(activeInstance.getLevelType());
+        strategy.reopenReviewsForRevisedTax(activeInstance)
                 .forEach(taxSnapshotService::recordFinanceVerificationReset);
-        resolveStrategy(activeInstance.getLevelType()).resumeCorrectedReviews(activeInstance);
+        strategy.resumeCorrectedReviews(activeInstance);
+        // Every line changed or added during the correction is reviewed again at this level - not
+        // just the ones the reviewer flagged.
+        strategy.reopenReviewsForRevisedLines(activeInstance).forEach(line -> approvalEventPublisher.publish(
+                "LINE_ITEM_REOPENED", report.getReportId(), "lineItem=" + line.getLineItemId() + " reason=revised"));
+        strategy.addReviewsForNewLines(activeInstance, report.getExpenseLineItems()).forEach(line -> approvalEventPublisher.publish(
+                "LINE_ITEM_REOPENED", report.getReportId(), "lineItem=" + line.getLineItemId() + " reason=added"));
         resumeCorrectedSplitReviews(activeInstance);
 
         report.setReportStatus(activeInstance.getLevelType() == LevelType.FINANCE_VERIFICATION
@@ -397,8 +404,11 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         review.setActedBy(actingEmployeeId.equals(authorizing.getApproverId()) ? null : actingEmployeeId);
         review.setActionedAt(LocalDateTime.now());
         approvalLineItemReviewRepository.save(review);
+        // comment= last: the audit listener keeps it as the reason, so an approver's correction
+        // request survives in the report history after this review row is reused on resume.
         approvalEventPublisher.publish("LINE_ITEM_REVIEWED", reportId,
-                "lineItem=" + lineItemId + " decision=" + request.decision() + " by=" + actingEmployeeId);
+                "lineItem=" + lineItemId + " decision=" + request.decision() + " by=" + actingEmployeeId
+                        + (request.comment() != null && !request.comment().isBlank() ? " comment=" + request.comment() : ""));
 
         if (request.decision() == LineItemReviewStatus.NEEDS_CORRECTION) {
             report.setReportStatus(ReportStatus.AWAITING_CORRECTION);
@@ -769,7 +779,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 if (financeVerificationReviewRepository != null) {
                     correctionRequests = financeVerificationReviewRepository
                             .findByLevelInstance_InstanceIdAndStatus(active.getInstanceId(), FinanceVerificationStatus.QUERIED).stream()
-                            .map(r -> new CorrectionRequestResponse(r.getLineItem().getLineItemId(), r.getComment(), r.getActedBy(), r.getActionedAt()))
+                            .map(r -> new CorrectionRequestResponse(r.getLineItem().getLineItemId(), r.getComment(), r.getActedBy(),
+                                    r.getActionedAt(), r.getQueryCategory() != null ? r.getQueryCategory().name() : null))
                             .toList();
                 }
             } else {
@@ -1388,9 +1399,11 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private void completeReport(ExpenseReport report) {
         report.setReportStatus(ReportStatus.APPROVED);
         report.setApprovedAt(LocalDateTime.now());
+        // Cash-advance offsets first: they settle reimbursableAmount, which decides whether there is
+        // anything for AP to pay at all.
+        processCashAdvanceAdjustmentsForReport(report);
         applyPaymentRouting(report);
         expenseReportRepository.save(report);
-        processCashAdvanceAdjustmentsForReport(report);
         approvalEventPublisher.publish("REPORT_APPROVED", report.getReportId(), "handoff=reimbursement-tracking");
         log.info("Report {} fully approved - handed off to Reimbursement Tracking", report.getReportId());
     }
@@ -1518,12 +1531,21 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         boolean anyClientBillable = report.getExpenseLineItems() != null && report.getExpenseLineItems().stream()
                 .anyMatch(lineItem -> Boolean.TRUE.equals(lineItem.getClientBillable()));
 
-        // Every approved report is an employee reimbursement and goes to AP — client-billable
+        // Every approved report that still owes the employee money goes to AP — client-billable
         // included. Invoicing the client is a separate, parallel track (invoiceHandoffStatus),
-        // never a replacement for paying the employee.
-        report.setPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
-        approvalEventPublisher.publish("REPORT_APPROVED_FOR_PAYMENT", report.getReportId(),
-                anyClientBillable ? "reason=client-billable" : "reason=internal");
+        // never a replacement for paying the employee. Nothing owed (fully offset by a cash
+        // advance, or company-paid) = settled with no payment: kept out of AP's queue and never
+        // shown as paid.
+        boolean nothingToPay = report.isCompanyPaid()
+                || (report.getReimbursableAmount() != null && report.getReimbursableAmount().signum() <= 0);
+        if (nothingToPay) {
+            report.setNoPaymentDue(true);
+            approvalEventPublisher.publish("REPORT_SETTLED_NO_PAYMENT", report.getReportId(), "reason=nothing-owed");
+        } else {
+            report.setPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+            approvalEventPublisher.publish("REPORT_APPROVED_FOR_PAYMENT", report.getReportId(),
+                    anyClientBillable ? "reason=client-billable" : "reason=internal");
+        }
 
         if (anyClientBillable) {
             report.setInvoiceHandoffStatus(InvoiceHandoffStatus.PENDING);

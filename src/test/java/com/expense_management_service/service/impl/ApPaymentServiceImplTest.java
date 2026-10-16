@@ -1,6 +1,9 @@
 package com.expense_management_service.service.impl;
 
+import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
+import com.expense_management_service.dto.request.CompletePaymentRequest;
+import com.expense_management_service.enums.PaymentMethod;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.entity.AuditLog;
@@ -26,6 +29,7 @@ import org.mockito.quality.Strictness;
 import org.springframework.security.access.AccessDeniedException;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -66,15 +70,26 @@ class ApPaymentServiceImplTest {
     }
 
     private ExpenseReport report(ReportStatus reportStatus, PaymentRoutingStatus paymentRoutingStatus) {
-        return ExpenseReport.builder().reportId(reportId).employeeId("5100001")
-                .reportStatus(reportStatus).paymentRoutingStatus(paymentRoutingStatus).build();
+        return ExpenseReport.builder().reportId(reportId).reportNumber("EXP-1").employeeId("5100001")
+                .reportStatus(reportStatus).paymentRoutingStatus(paymentRoutingStatus)
+                .totalAmount(new BigDecimal("12500.00")).reimbursableAmount(new BigDecimal("12500.00")).build();
     }
 
     private ExpenseReport approvedForPaymentReportWithBudgetFields() {
         CostCenter costCenter = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("CC-1").build();
-        return ExpenseReport.builder().reportId(reportId).employeeId("5100001")
+        return ExpenseReport.builder().reportId(reportId).reportNumber("EXP-1").employeeId("5100001")
                 .reportStatus(ReportStatus.APPROVED).paymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT)
-                .costCenter(costCenter).fiscalYear("2026").totalAmount(new BigDecimal("12500.00")).build();
+                .costCenter(costCenter).fiscalYear("2026").totalAmount(new BigDecimal("12500.00"))
+                .reimbursableAmount(new BigDecimal("12500.00")).build();
+    }
+
+    /** AP's confirmation of the actual payment - the amount owed on the fixtures above. */
+    private static CompletePaymentRequest payment() {
+        return payment(new BigDecimal("12500.00"));
+    }
+
+    private static CompletePaymentRequest payment(BigDecimal amount) {
+        return new CompletePaymentRequest("UTR123456789", PaymentMethod.BANK_TRANSFER, LocalDate.now(), amount, "Paid via NEFT");
     }
 
     // ---------------------------------------------------------------------
@@ -87,14 +102,72 @@ class ApPaymentServiceImplTest {
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        ExpenseReportResponse response = service.markPaymentCompleted(reportId, "5100099");
+        ExpenseReportResponse response = service.markPaymentCompleted(reportId, payment(), "5100099");
 
         assertThat(response).isNotNull();
         assertThat(response.paymentRoutingStatus()).isEqualTo(PaymentRoutingStatus.PAYMENT_COMPLETED.name());
         assertThat(report.getPaymentRoutingStatus()).isEqualTo(PaymentRoutingStatus.PAYMENT_COMPLETED);
         assertThat(report.getPaymentCompletedBy()).isEqualTo("5100099");
         assertThat(report.getPaymentCompletedAt()).isNotNull();
+        assertThat(report.getPaymentReference()).isEqualTo("UTR123456789");
+        assertThat(report.getPaymentMethod()).isEqualTo(PaymentMethod.BANK_TRANSFER);
+        assertThat(report.getPaidAmount()).isEqualByComparingTo("12500.00");
+        assertThat(response.paymentConfirmation()).isNotNull();
+        assertThat(response.paymentConfirmation().paymentReference()).isEqualTo("UTR123456789");
         verify(approvalEventPublisher).publish(eq("PAYMENT_COMPLETED"), eq(reportId), any());
+    }
+
+    // ---------------------------------------------------------------------
+    // markPaymentCompleted - the confirmation must match the actual payment owed
+    // ---------------------------------------------------------------------
+
+    @Test
+    void markPaymentCompleted_rejectsAnAmountThatDoesNotMatchWhatIsOwed_andLeavesTheReportUnpaid() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        report.setReimbursableAmount(new BigDecimal("9500.00")); // Finance offset a cash advance after AP opened it
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(new BigDecimal("12500.00")), "5100099"))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("doesn't match the 9500.00");
+
+        assertThat(report.getPaymentRoutingStatus()).isEqualTo(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        verify(expenseReportRepository, never()).save(any());
+        verify(approvalEventPublisher, never()).publish(eq("PAYMENT_COMPLETED"), any(), any());
+    }
+
+    @Test
+    void markPaymentCompleted_rejectsAnApExecutiveConfirmingTheirOwnReport() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100001"))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        verify(expenseReportRepository, never()).save(any());
+    }
+
+    @Test
+    void markPaymentCompleted_rejectsAPaymentDateBeforeApproval() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        report.setApprovedAt(java.time.LocalDateTime.now());
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        CompletePaymentRequest backdated = new CompletePaymentRequest("UTR1", PaymentMethod.UPI,
+                LocalDate.now().minusDays(3), new BigDecimal("12500.00"), null);
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, backdated, "5100099"))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("before the report was approved");
+    }
+
+    @Test
+    void markPaymentCompleted_rejectsAReportWithNothingOwed() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        report.setReimbursableAmount(BigDecimal.ZERO);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("nothing to pay");
     }
 
     @Test
@@ -103,7 +176,7 @@ class ApPaymentServiceImplTest {
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        service.markPaymentCompleted(reportId, "5100099");
+        service.markPaymentCompleted(reportId, payment(), "5100099");
 
         var captor = org.mockito.ArgumentCaptor.forClass(AuditLog.class);
         verify(auditLogRepository).save(captor.capture());
@@ -112,7 +185,9 @@ class ApPaymentServiceImplTest {
         assertThat(saved.getEntityId()).isEqualTo(reportId);
         assertThat(saved.getAction()).isEqualTo("PAYMENT_COMPLETED");
         assertThat(saved.getOldValue()).isEqualTo("APPROVED_FOR_PAYMENT");
-        assertThat(saved.getNewValue()).isEqualTo("PAYMENT_COMPLETED");
+        assertThat(saved.getNewValue()).startsWith("PAYMENT_COMPLETED").contains("reference=UTR123456789")
+                .contains("method=BANK_TRANSFER").contains("amount=12500.00");
+        assertThat(saved.getReason()).isEqualTo("Paid via NEFT");
         assertThat(saved.getPerformedBy()).isEqualTo("5100099");
         assertThat(saved.getPerformedAt()).isNotNull();
     }
@@ -127,7 +202,7 @@ class ApPaymentServiceImplTest {
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        service.markPaymentCompleted(reportId, "5100099");
+        service.markPaymentCompleted(reportId, payment(), "5100099");
 
         verify(costCenterBudgetService, times(1))
                 .consumeBudget(report.getCostCenter(), "2026", new BigDecimal("12500.00"));
@@ -140,7 +215,7 @@ class ApPaymentServiceImplTest {
         doThrow(new IllegalStateException("concurrent budget update conflict"))
                 .when(costCenterBudgetService).consumeBudget(any(), any(), any());
 
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalStateException.class);
 
         // Budget consumption happens before the report is mutated/saved, so a failure there must
@@ -161,10 +236,10 @@ class ApPaymentServiceImplTest {
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        service.markPaymentCompleted(reportId, "5100099");
+        service.markPaymentCompleted(reportId, payment(), "5100099");
         // Second attempt against the same (now PAYMENT_COMPLETED) report - the existing
         // previous != APPROVED_FOR_PAYMENT guard must reject it before ever reaching consumeBudget.
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100088"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100088"))
                 .isInstanceOf(IllegalArgumentException.class);
 
         verify(costCenterBudgetService, times(1)).consumeBudget(any(), any(), any());
@@ -182,7 +257,7 @@ class ApPaymentServiceImplTest {
         when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(2);
         when(budgetEncumbranceService.consumeActiveForReport(reportId, 2)).thenReturn(true);
 
-        service.markPaymentCompleted(reportId, "5100099");
+        service.markPaymentCompleted(reportId, payment(), "5100099");
 
         verify(budgetEncumbranceService).consumeActiveForReport(reportId, 2);
         verify(costCenterBudgetService, never()).consumeBudget(any(), any(), any());
@@ -199,7 +274,7 @@ class ApPaymentServiceImplTest {
         when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
         when(budgetEncumbranceService.consumeActiveForReport(reportId, 1)).thenReturn(false);
 
-        service.markPaymentCompleted(reportId, "5100099");
+        service.markPaymentCompleted(reportId, payment(), "5100099");
 
         verify(budgetEncumbranceService).consumeActiveForReport(reportId, 1);
         verify(costCenterBudgetService, times(1))
@@ -215,7 +290,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.PAYMENT_COMPLETED);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
         verify(expenseReportRepository, never()).save(any());
         verify(auditLogRepository, never()).save(any());
@@ -226,7 +301,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.DRAFT, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -235,7 +310,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.PENDING_APPROVAL, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -244,7 +319,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.PENDING_FINANCE_VERIFICATION, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -253,7 +328,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.AWAITING_CORRECTION, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -262,7 +337,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -271,7 +346,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.INVOICE_HANDOFF_PENDING);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -279,7 +354,7 @@ class ApPaymentServiceImplTest {
     void markPaymentCompleted_throws_whenReportNotFound() {
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, "5100099"))
+        assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(ResourceNotFoundException.class);
     }
 

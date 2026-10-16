@@ -3,6 +3,7 @@ package com.expense_management_service.mapper;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.enums.PaymentRoutingStatus;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
@@ -66,7 +67,24 @@ public class ExpenseReportMapper {
                 deletable,
                 policyWarningCount,
                 policyUnjustifiedCount,
-                entity.getCashAdvance() != null ? entity.getCashAdvance().getAdvanceId() : null
+                entity.getCashAdvance() != null ? entity.getCashAdvance().getAdvanceId() : null,
+                Boolean.TRUE.equals(entity.getNoPaymentDue()),
+                toPaymentConfirmation(entity)
         );
+    }
+
+    /** Only once AP has confirmed the actual payment - never derived from approval or routing. */
+    private static ExpenseReportResponse.PaymentConfirmation toPaymentConfirmation(ExpenseReport entity) {
+        if (entity.getPaymentRoutingStatus() != PaymentRoutingStatus.PAYMENT_COMPLETED) {
+            return null;
+        }
+        return new ExpenseReportResponse.PaymentConfirmation(
+                entity.getPaymentCompletedAt(),
+                entity.getPaymentCompletedBy(),
+                entity.getPaymentReference(),
+                entity.getPaymentMethod() != null ? entity.getPaymentMethod().name() : null,
+                entity.getPaymentDate(),
+                entity.getPaidAmount(),
+                entity.getPaymentRemarks());
     }
 }

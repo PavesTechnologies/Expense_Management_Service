@@ -48,4 +48,17 @@ public interface LevelReviewStrategy {
     default List<ExpenseLineItem> reopenReviewsForRevisedTax(ApprovalLevelInstance instance) {
         return List.of();
     }
+
+    /**
+     * On resume after a correction: creates pending reviews at this (already active) instance for
+     * line items added since it was activated, returning them. Without this a line added during a
+     * correction would never be reviewed at the level the report resumes at.
+     */
+    List<ExpenseLineItem> addReviewsForNewLines(ApprovalLevelInstance instance, List<ExpenseLineItem> lineItems);
+
+    /**
+     * On resume after a correction: reopens positive reviews of lines the employee edited
+     * ({@code ExpenseLineItem.revisedAt}) after they were reviewed, returning those lines.
+     */
+    List<ExpenseLineItem> reopenReviewsForRevisedLines(ApprovalLevelInstance instance);
 }

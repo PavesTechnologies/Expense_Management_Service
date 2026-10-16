@@ -48,6 +48,10 @@ public interface FinanceVerificationService {
      */
     ExpenseReportResponse queryLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, String reason);
 
+    /** Same, recording why (e.g. TAX_MISMATCH) so the employee sees what kind of fix is needed. */
+    ExpenseReportResponse queryLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, String reason,
+                                        com.expense_management_service.enums.CorrectionCategory category);
+
     /** Role+status based "My Finance Queue" (§8) - every report currently PENDING_FINANCE_VERIFICATION, visible to any FINANCE_EXECUTIVE regardless of per-report assignment. */
     PageResponse<FinanceQueueItemResponse> getFinanceQueue(String actingEmployeeId, Pageable pageable);
 

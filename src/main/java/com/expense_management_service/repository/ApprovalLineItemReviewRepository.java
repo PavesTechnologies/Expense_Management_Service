@@ -12,6 +12,9 @@ public interface ApprovalLineItemReviewRepository extends JpaRepository<Approval
 
     List<ApprovalLineItemReview> findByLevelInstance_InstanceId(UUID instanceId);
 
+    /** Every approver review of one line item, across levels and cycles. */
+    List<ApprovalLineItemReview> findByLineItem_LineItemId(UUID lineItemId);
+
     List<ApprovalLineItemReview> findByLevelInstance_InstanceIdAndStatus(UUID instanceId, LineItemReviewStatus status);
 
     Optional<ApprovalLineItemReview> findByLineItem_LineItemIdAndLevelInstance_InstanceId(UUID lineItemId, UUID instanceId);

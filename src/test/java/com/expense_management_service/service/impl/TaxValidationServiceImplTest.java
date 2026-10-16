@@ -43,6 +43,58 @@ class TaxValidationServiceImplTest {
         return service.validate(new Input(hasCode, d(tax), d(calculated), ROUNDING, d(ocr), d(confidence)));
     }
 
+    // --- Supply type: same-state supplier = CGST + SGST, other-state supplier = IGST ------------
+
+    private void companyInState(String stateCode) {
+        when(systemConfigurationRepository.findByConfigKey("COMPANY_GST_STATE_CODE"))
+                .thenReturn(Optional.of(SystemConfiguration.builder().configKey("COMPANY_GST_STATE_CODE").configValue(stateCode).build()));
+    }
+
+    private Result validateGst(com.expense_management_service.enums.TaxType type, String supplierGstin) {
+        return service.validate(new Input(true, d("180.00"), d("180.00"), ROUNDING, d("180.00"), d("0.97"), type, supplierGstin));
+    }
+
+    @Test
+    void sameStateSupplier_chargedAsIgst_isASupplyTypeMismatch() {
+        companyInState("29");
+
+        Result r = validateGst(com.expense_management_service.enums.TaxType.IGST, "29ABCDE1234F1Z5");
+
+        assertThat(r.status()).isEqualTo(TaxValidationStatus.MISMATCH);
+        assertThat(r.reasons()).contains("SUPPLY_TYPE_MISMATCH");
+        assertThat(service.needsFinanceReview(r.status(), r.reasons())).isTrue();
+    }
+
+    @Test
+    void otherStateSupplier_chargedAsCgstSgst_isASupplyTypeMismatch() {
+        companyInState("29");
+
+        Result r = validateGst(com.expense_management_service.enums.TaxType.CGST_SGST, "27ABCDE1234F1Z5");
+
+        assertThat(r.status()).isEqualTo(TaxValidationStatus.MISMATCH);
+        assertThat(r.reasons()).contains("SUPPLY_TYPE_MISMATCH");
+    }
+
+    @Test
+    void matchingSupplyType_passes() {
+        companyInState("29");
+
+        assertThat(validateGst(com.expense_management_service.enums.TaxType.CGST_SGST, "29ABCDE1234F1Z5").status())
+                .isEqualTo(TaxValidationStatus.MATCHED);
+        assertThat(validateGst(com.expense_management_service.enums.TaxType.IGST, "27ABCDE1234F1Z5").status())
+                .isEqualTo(TaxValidationStatus.MATCHED);
+    }
+
+    @Test
+    void supplyTypeIsNotChecked_withoutTheCompanyStateOrASupplierGstin() {
+        // Company state not configured (setUp returns empty for every key).
+        assertThat(validateGst(com.expense_management_service.enums.TaxType.IGST, "29ABCDE1234F1Z5").reasons())
+                .doesNotContain("SUPPLY_TYPE_MISMATCH");
+        companyInState("29");
+        assertThat(validateGst(com.expense_management_service.enums.TaxType.IGST, null).reasons())
+                .doesNotContain("SUPPLY_TYPE_MISMATCH");
+    }
+
     @Test
     void caseA_ocrEnteredAndCalculatedAgree_isMatched() {
         Result r = validate(true, "1800.00", "1800.00", "1800.40", "0.97");

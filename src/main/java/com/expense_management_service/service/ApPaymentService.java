@@ -1,5 +1,6 @@
 package com.expense_management_service.service;
 
+import com.expense_management_service.dto.request.CompletePaymentRequest;
 import com.expense_management_service.dto.response.ApPaymentDetailsResponse;
 import com.expense_management_service.dto.response.ApPaymentQueueItemResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
@@ -30,10 +31,11 @@ public interface ApPaymentService {
      * Confirms the external payment completed. The only valid transition is {@code
      * paymentRoutingStatus == APPROVED_FOR_PAYMENT -> PAYMENT_COMPLETED}; every other current
      * status (including an already-{@code PAYMENT_COMPLETED} report) is rejected. Records who
-     * performed the action and when, and writes an {@code AuditLog} entry - XMS never pays
+     * performed the action and when, the payment AP actually made (reference, method, date,
+     * amount - which must equal the amount owed), and writes an {@code AuditLog} entry - XMS never pays
      * anything itself, this only records the confirmation.
      */
-    ExpenseReportResponse markPaymentCompleted(UUID reportId, String actingEmployeeId);
+    ExpenseReportResponse markPaymentCompleted(UUID reportId, CompletePaymentRequest request, String actingEmployeeId);
 
     /**
      * AP Payment history tabs - any {@code paymentRoutingStatus} other than {@code

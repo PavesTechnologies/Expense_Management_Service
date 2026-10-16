@@ -1,6 +1,7 @@
 package com.expense_management_service.entity;
 
 import com.expense_management_service.enums.InvoiceHandoffStatus;
+import com.expense_management_service.enums.PaymentMethod;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import jakarta.persistence.*;
@@ -9,6 +10,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -150,17 +152,44 @@ public class ExpenseReport {
     private InvoiceHandoffStatus invoiceHandoffStatus = InvoiceHandoffStatus.NOT_APPLICABLE;
 
     /**
-     * Who confirmed the external payment (AP_EXECUTIVE), and when - set only by {@code
+     * Who confirmed the actual payment (AP_EXECUTIVE), and when - set only by {@code
      * ApPaymentServiceImpl.markPaymentCompleted}, alongside {@link #paymentRoutingStatus}
-     * transitioning {@code APPROVED_FOR_PAYMENT -> PAYMENT_COMPLETED}. There is no {@code
-     * paymentReference}/{@code paymentRemarks} field - those don't exist anywhere in the current
-     * model and are not invented here; see the AP Payment implementation report.
+     * transitioning {@code APPROVED_FOR_PAYMENT -> PAYMENT_COMPLETED} and the payment details
+     * below. Approval, Finance verification and notifications never set any of these.
      */
     @Column(name = "payment_completed_by", length = 255)
     private String paymentCompletedBy;
 
     @Column(name = "payment_completed_at")
     private LocalDateTime paymentCompletedAt;
+
+    /** Bank UTR, UPI transaction id or cheque number AP entered when confirming the payment. */
+    @Column(name = "payment_reference", length = 100)
+    private String paymentReference;
+
+    /** varchar, not a MySQL ENUM, so a new method never needs DDL. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_method", columnDefinition = "varchar(32)")
+    private PaymentMethod paymentMethod;
+
+    /** The date the money actually left the company's account (may precede the confirmation). */
+    @Column(name = "payment_date")
+    private LocalDate paymentDate;
+
+    /** Organization base currency; must equal {@link #reimbursableAmount} when confirmed. */
+    @Column(name = "paid_amount", precision = 19, scale = 4)
+    private BigDecimal paidAmount;
+
+    @Column(name = "payment_remarks", length = 500)
+    private String paymentRemarks;
+
+    /**
+     * Approved with nothing to pay the employee (fully offset by a cash advance, or company-paid):
+     * never routed to AP and never shown as "paid". {@link #paymentRoutingStatus} stays NONE.
+     */
+    @Column(name = "no_payment_due")
+    @Builder.Default
+    private Boolean noPaymentDue = false;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)

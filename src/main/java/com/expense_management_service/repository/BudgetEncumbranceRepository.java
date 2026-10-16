@@ -18,6 +18,9 @@ public interface BudgetEncumbranceRepository extends JpaRepository<BudgetEncumbr
 
     List<BudgetEncumbrance> findByBudget_BudgetIdAndStatus(UUID budgetId, BudgetEncumbranceStatus status);
 
+    /** Every reservation held against one line item's splits, any status or cycle. */
+    List<BudgetEncumbrance> findBySplit_LineItem_LineItemId(UUID lineItemId);
+
     /** Reservations held by the expense reports linked to one cash advance (the "submitted" amount awaiting payment). */
     List<BudgetEncumbrance> findByReport_CashAdvance_AdvanceIdAndStatus(UUID advanceId, BudgetEncumbranceStatus status);
 

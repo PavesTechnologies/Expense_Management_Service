@@ -99,8 +99,9 @@ public class DashboardServiceImpl implements DashboardService {
         long withAp = count(reports, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
         long paid = count(reports, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.PAYMENT_COMPLETED);
 
-        BigDecimal awaitingReimbursement = sum(reports, amounts, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
-        BigDecimal reimbursed = sum(reports, amounts, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.PAYMENT_COMPLETED);
+        Map<UUID, BigDecimal> payments = paymentAmounts(reports, amounts);
+        BigDecimal awaitingReimbursement = sum(reports, payments, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        BigDecimal reimbursed = sum(reports, payments, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.PAYMENT_COMPLETED);
 
         LocalDate trendStart = firstMonth(TREND_MONTHS).atDay(1);
         List<Object[]> lines = em.createQuery("""
@@ -399,7 +400,9 @@ public class DashboardServiceImpl implements DashboardService {
         List<UUID> ids = new ArrayList<>();
         toPay.forEach(r -> ids.add(r.getReportId()));
         paid.forEach(r -> ids.add(r.getReportId()));
-        Map<UUID, BigDecimal> amounts = baseAmountsByReport(ids);
+        List<ExpenseReport> all = new ArrayList<>(toPay);
+        all.addAll(paid);
+        Map<UUID, BigDecimal> amounts = paymentAmounts(all, baseAmountsByReport(ids));
 
         BigDecimal toPayValue = sum(toPay, amounts, r -> true);
         List<ExpenseReport> paidThisMonth = paid.stream().filter(r -> !r.getPaymentCompletedAt().isBefore(monthStart)).toList();
@@ -559,6 +562,21 @@ public class DashboardServiceImpl implements DashboardService {
                         Object[].class)
                 .setParameter("ids", Set.copyOf(reportIds)).getResultList();
         return rows.stream().collect(Collectors.toMap(row -> (UUID) row[0], row -> amount(row[1])));
+    }
+
+    /**
+     * Payment-side money per report: what AP confirmed paying once paid, otherwise what the employee
+     * is owed (gross less cash-advance offsets) - never the gross claim, which overstates both.
+     */
+    private static Map<UUID, BigDecimal> paymentAmounts(Collection<ExpenseReport> reports, Map<UUID, BigDecimal> gross) {
+        Map<UUID, BigDecimal> result = new java.util.HashMap<>();
+        for (ExpenseReport r : reports) {
+            BigDecimal value = r.getPaidAmount() != null ? r.getPaidAmount()
+                    : r.getReimbursableAmount() != null ? r.getReimbursableAmount()
+                    : gross.getOrDefault(r.getReportId(), BigDecimal.ZERO);
+            result.put(r.getReportId(), value);
+        }
+        return result;
     }
 
     private long countByRouting(PaymentRoutingStatus status) {

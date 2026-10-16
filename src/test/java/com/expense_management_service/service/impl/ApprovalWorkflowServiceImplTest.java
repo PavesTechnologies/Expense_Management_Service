@@ -117,6 +117,7 @@ class ApprovalWorkflowServiceImplTest {
                 List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository)),
                 new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
                 materialChangeEvaluator, org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
+        org.springframework.test.util.ReflectionTestUtils.setField(service, "submissionDeadlineDays", 30);
 
         when(materialChangeEvaluator.computeGlAccountFingerprint(any())).thenReturn("");
         when(policyEvaluationGateway.evaluate(any())).thenReturn(new PolicyDecision(true, List.of()));
@@ -245,6 +246,7 @@ class ApprovalWorkflowServiceImplTest {
 
     private ExpenseReport draftReport() {
         return ExpenseReport.builder().reportId(reportId).employeeId(submitterId)
+                .tripEndDate(java.time.LocalDate.now().plusDays(10))
                 .reportStatus(ReportStatus.DRAFT)
                 .costCenter(com.expense_management_service.entity.CostCenter.builder().costCenterId(UUID.randomUUID()).build())
                 .expenseLineItems(List.of(lineItem()))
@@ -260,6 +262,71 @@ class ApprovalWorkflowServiceImplTest {
         level.getApprovers().add(entry);
         flow.getLevels().add(level);
         return flow;
+    }
+
+    private void stubSuccessfulSubmitFlow(ExpenseReport report) {
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(singleLevelFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(approverId));
+    }
+
+    @Test
+    void submit_allowsSubmissionOnTheDeadlineDay() {
+        ExpenseReport report = draftReport();
+        report.setTripEndDate(java.time.LocalDate.now().minusDays(30));
+        stubSuccessfulSubmitFlow(report);
+
+        assertThat(service.submit(reportId).reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
+    }
+
+    @Test
+    void submit_rejectsTheDayAfterTheDeadline_andNamesTheDeadlineDate() {
+        ExpenseReport report = draftReport();
+        java.time.LocalDate tripEnd = java.time.LocalDate.now().minusDays(31);
+        report.setTripEndDate(tripEnd);
+        stubSuccessfulSubmitFlow(report);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.submit(reportId))
+                .isInstanceOf(com.expense_management_service.common.exception.BusinessRuleViolationException.class)
+                .hasMessageContaining(tripEnd.plusDays(30).toString());
+        verify(expenseReportRepository, never()).save(any());
+    }
+
+    @Test
+    void submit_rejectsAReportWithoutATripEndDate() {
+        ExpenseReport report = draftReport();
+        report.setTripEndDate(null);
+        stubSuccessfulSubmitFlow(report);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.submit(reportId))
+                .isInstanceOf(com.expense_management_service.common.exception.BusinessRuleViolationException.class)
+                .hasMessageContaining("trip end date");
+    }
+
+    @Test
+    void submit_allowsAnOverdueReportWhenFinanceExtendedTheLinkedAdvance() {
+        ExpenseReport report = draftReport();
+        report.setTripEndDate(java.time.LocalDate.now().minusDays(60));
+        report.setCashAdvance(com.expense_management_service.entity.CashAdvance.builder()
+                .advanceId(UUID.randomUUID())
+                .expenseDeadlineExtendedUntil(java.time.LocalDate.now().plusDays(1))
+                .build());
+        stubSuccessfulSubmitFlow(report);
+
+        assertThat(service.submit(reportId).reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
+    }
+
+    @Test
+    void submit_allowsAnOverdueReportWhenFinanceReopenedTheLinkedAdvance() {
+        ExpenseReport report = draftReport();
+        report.setTripEndDate(java.time.LocalDate.now().minusDays(60));
+        report.setCashAdvance(com.expense_management_service.entity.CashAdvance.builder()
+                .advanceId(UUID.randomUUID())
+                .expenseDeadlineReopened(true)
+                .build());
+        stubSuccessfulSubmitFlow(report);
+
+        assertThat(service.submit(reportId).reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
     }
 
     @Test

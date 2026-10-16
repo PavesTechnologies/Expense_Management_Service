@@ -9,6 +9,7 @@ import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -93,6 +94,21 @@ public class ExpenseReport {
     @JoinColumn(name = "cash_advance_id")
     @ToString.Exclude
     private CashAdvance cashAdvance;
+
+    /** Start date of the trip or client meeting. */
+    @Column(name = "trip_start_date")
+    private LocalDate tripStartDate;
+
+    /** Estimated end date of the trip or client meeting. The submission deadline is this date plus the configured days. */
+    @Column(name = "trip_end_date")
+    private LocalDate tripEndDate;
+
+    /** Actual reporting period covered by the expenses. Unlike the trip dates it is never in the future. */
+    @Column(name = "reporting_period_start")
+    private LocalDate reportingPeriodStart;
+
+    @Column(name = "reporting_period_end")
+    private LocalDate reportingPeriodEnd;
 
     /**
      * Optimistic-locking column. The {@code version} column already exists in the database

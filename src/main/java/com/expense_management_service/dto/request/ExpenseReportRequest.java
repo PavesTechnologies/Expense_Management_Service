@@ -4,6 +4,7 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
+import java.time.LocalDate;
 import java.util.UUID;
 
 /**
@@ -23,11 +24,25 @@ public record ExpenseReportRequest(
         @NotBlank String businessPurpose,
         @NotNull UUID costCenterId,
         @NotNull UUID currencyId,
-        UUID cashAdvanceId
+        UUID cashAdvanceId,
+        /** Start date of the trip or client meeting. */
+        LocalDate tripStartDate,
+        /** Estimated trip or client-meeting end date. Required before the report can be submitted. */
+        LocalDate tripEndDate,
+        /** Actual reporting period start. Optional. */
+        LocalDate reportingPeriodStart,
+        /** Actual reporting period end. Optional, but may not be in the future. */
+        LocalDate reportingPeriodEnd
 ) {
 
-    /** Report without a cash advance link. */
+    /** Report without a cash advance link or trip dates. */
     public ExpenseReportRequest(String title, String businessPurpose, UUID costCenterId, UUID currencyId) {
-        this(title, businessPurpose, costCenterId, currencyId, null);
+        this(title, businessPurpose, costCenterId, currencyId, null, null, null, null, null);
+    }
+
+    /** Report with a cash advance link and no trip dates. */
+    public ExpenseReportRequest(String title, String businessPurpose, UUID costCenterId, UUID currencyId,
+                                UUID cashAdvanceId) {
+        this(title, businessPurpose, costCenterId, currencyId, cashAdvanceId, null, null, null, null);
     }
 }

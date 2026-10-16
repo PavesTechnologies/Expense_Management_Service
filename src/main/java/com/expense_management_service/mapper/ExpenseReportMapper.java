@@ -2,9 +2,13 @@ package com.expense_management_service.mapper;
 
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.entity.CashAdvance;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.service.impl.SubmissionDeadlinePolicy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
+
+import java.time.LocalDate;
 
 @Component
 public class ExpenseReportMapper {
@@ -12,6 +16,9 @@ public class ExpenseReportMapper {
     /** totalAmount is the sum of line baseAmount, so it is labelled with the base currency. */
     @Value("${exchange.rate.base-currency:}")
     private String baseCurrencyCode;
+
+    @Value("${expense.submission.deadline-days:30}")
+    private int submissionDeadlineDays = SubmissionDeadlinePolicy.DEFAULT_DEADLINE_DAYS;
 
     /**
      * Only title/businessPurpose come from the request - employeeId, fiscalYear, reportNumber,
@@ -23,6 +30,10 @@ public class ExpenseReportMapper {
         return ExpenseReport.builder()
                 .title(request.title())
                 .businessPurpose(request.businessPurpose())
+                .tripStartDate(request.tripStartDate())
+                .tripEndDate(request.tripEndDate())
+                .reportingPeriodStart(request.reportingPeriodStart())
+                .reportingPeriodEnd(request.reportingPeriodEnd())
                 .build();
     }
 
@@ -30,6 +41,10 @@ public class ExpenseReportMapper {
     public void updateEntity(ExpenseReport entity, ExpenseReportRequest request) {
         entity.setTitle(request.title());
         entity.setBusinessPurpose(request.businessPurpose());
+        entity.setTripStartDate(request.tripStartDate());
+        entity.setTripEndDate(request.tripEndDate());
+        entity.setReportingPeriodStart(request.reportingPeriodStart());
+        entity.setReportingPeriodEnd(request.reportingPeriodEnd());
     }
 
     /** Convenience overload for call sites that don't (yet) have policy warning counts on hand — defaults to zero. */
@@ -66,7 +81,29 @@ public class ExpenseReportMapper {
                 deletable,
                 policyWarningCount,
                 policyUnjustifiedCount,
-                entity.getCashAdvance() != null ? entity.getCashAdvance().getAdvanceId() : null
+                entity.getCashAdvance() != null ? entity.getCashAdvance().getAdvanceId() : null,
+                entity.getTripStartDate(),
+                entity.getTripEndDate(),
+                displayedDeadline(entity),
+                submissionDeadlineDays,
+                entity.getReportingPeriodStart(),
+                entity.getReportingPeriodEnd()
         );
+    }
+
+    /**
+     * The same deadline the submit check enforces: advance disbursement date for linked reports, trip end date
+     * otherwise, replaced by a Finance extension. Null when no deadline applies (a reopen, or an advance not yet disbursed).
+     */
+    private LocalDate displayedDeadline(ExpenseReport entity) {
+        CashAdvance advance = entity.getCashAdvance();
+        boolean linked = advance != null;
+        if (linked && advance.isExpenseDeadlineReopened()) {
+            return null;
+        }
+        LocalDate disbursedOn = linked && advance.getDisbursedAt() != null ? advance.getDisbursedAt().toLocalDate() : null;
+        LocalDate extendedUntil = linked ? advance.getExpenseDeadlineExtendedUntil() : null;
+        return SubmissionDeadlinePolicy.effectiveDeadline(entity.getTripEndDate(), linked, disbursedOn, extendedUntil,
+                submissionDeadlineDays);
     }
 }

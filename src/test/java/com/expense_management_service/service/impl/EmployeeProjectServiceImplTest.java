@@ -149,12 +149,15 @@ class EmployeeProjectServiceImplTest {
         assertThat(result.pmsProjectId()).isEqualTo(22L);
         assertThat(result.projectName()).isEqualTo("Aspirations For All");
         assertThat(result.status()).isEqualTo("ACTIVE");
+        assertThat(result.clientId()).isEqualTo(clientId);
     }
 
     @Test
     void getAssignedProjects_keepsTheStoredPmsKey_whenTheProjectRecordIsUnavailable() {
+        UUID cachedClientId = UUID.randomUUID();
         ProjectCache existing = ProjectCache.builder().projectId(UUID.randomUUID()).pmsProjectId(22L)
-                .projectCode("AP-297").projectName("Aspirations For All").status("ACTIVE").build();
+                .projectCode("AP-297").projectName("Aspirations For All").status("ACTIVE")
+                .clientId(cachedClientId).build();
         when(currentUserService.getUmsUserId()).thenReturn(9007L);
         when(pmsClient.getMyActiveProjects(9007L)).thenReturn(List.of(new PmsProjectSummaryResponse(22L, null, "Aspirations For All", null, null)));
         when(pmsClient.getProject(22L)).thenThrow(HttpServerErrorException.create(
@@ -167,6 +170,8 @@ class EmployeeProjectServiceImplTest {
         // Never flipped back to a PMS-<id> placeholder once the real key is known.
         assertThat(result.projectCode()).isEqualTo("AP-297");
         assertThat(result.pmsProjectId()).isEqualTo(22L);
+        // The last known client is kept so the project still shows under it in the picker.
+        assertThat(result.clientId()).isEqualTo(cachedClientId);
     }
 
 }

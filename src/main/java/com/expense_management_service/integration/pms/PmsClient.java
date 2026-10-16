@@ -14,8 +14,7 @@ import java.util.Optional;
  * (project selection, and re-validation of project/client association at submission time).
  * The bearer token used is the caller's own token, forwarded automatically by the
  * {@code pmsRestClient} interceptor (see {@code RestClientConfig}) — PMS accepts the same
- * {@code GENERAL} role XMS already issues to ordinary employees, so no service account is
- * needed here (contrast {@code RmsClient}, which does need one).
+ * {@code GENERAL} role XMS already issues to ordinary employees.
  */
 public interface PmsClient {
 

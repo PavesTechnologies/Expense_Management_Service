@@ -1,6 +1,5 @@
 package com.expense_management_service.config;
 
-import com.expense_management_service.integration.rms.RmsServiceTokenProvider;
 import com.expense_management_service.security.SecurityConstants;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
@@ -19,11 +18,10 @@ import java.util.Optional;
 /**
  * Configures the {@link RestClient}s used by the various integration clients.
  * <p>
- * {@code umsRestClient}, {@code employeeOnboardingRestClient}, and {@code pmsRestClient} all
- * forward the caller's own {@code Authorization} bearer token — the same one XMS itself already
- * validated — so the downstream service authorizes the original end user rather than a service
- * account; XMS never mints, caches, or stores a token for these. {@code rmsRestClient} is the
- * one deliberate exception — see its own javadoc below and {@code RmsServiceAuthProperties}.
+ * Every client here — {@code umsRestClient}, {@code employeeOnboardingRestClient},
+ * {@code pmsRestClient} and {@code rmsRestClient} — forwards the caller's own {@code
+ * Authorization} bearer token (the UMS-issued one XMS itself already validated), so the
+ * downstream service authorizes the original end user; XMS never mints, caches, or stores a token.
  */
 @Slf4j
 @Configuration
@@ -34,7 +32,6 @@ public class RestClientConfig {
     private final EmployeeOnboardingProperties employeeOnboardingProperties;
     private final PmsProperties pmsProperties;
     private final RmsProperties rmsProperties;
-    private final RmsServiceTokenProvider rmsServiceTokenProvider;
 
     @Bean
     public RestClient umsRestClient() {
@@ -115,19 +112,18 @@ public class RestClientConfig {
     }
 
     /**
-     * RestClient for RMS. Deliberately does <b>not</b> forward the caller's own bearer token —
+     * RestClient for RMS. Forwards the caller's own bearer token, same as {@link #pmsRestClient()}.
      * RMS's client-lookup endpoints only accept {@code Admin}/{@code Resource_Manager}/{@code
-     * Project_Manager} roles, which an ordinary {@code GENERAL} employee never has. Every request
-     * instead carries the EMS service-account token from {@link RmsServiceTokenProvider}. See
-     * {@code RmsServiceAuthProperties}'s javadoc for why this exception exists.
+     * Project_Manager} roles, so a caller without one of those gets RMS's 403 (see
+     * {@code ClientServiceImpl}).
      */
     @Bean
     public RestClient rmsRestClient() {
         return RestClient.builder()
                 .baseUrl(rmsProperties.baseUrl())
                 .requestInterceptor((request, body, execution) -> {
-                    request.getHeaders().set(HttpHeaders.AUTHORIZATION,
-                            SecurityConstants.BEARER_PREFIX + rmsServiceTokenProvider.getToken());
+                    Optional<String> incomingAuth = getIncomingAuthorizationHeader();
+                    incomingAuth.ifPresent(auth -> request.getHeaders().set(HttpHeaders.AUTHORIZATION, auth));
                     return execution.execute(request, body);
                 })
                 .build();

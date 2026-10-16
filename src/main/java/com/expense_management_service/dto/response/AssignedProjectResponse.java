@@ -14,6 +14,12 @@ public record AssignedProjectResponse(
         /** PMS's own numeric project id. */
         Long pmsProjectId,
         String projectName,
-        String status
+        String status,
+        /**
+         * RMS client UUID that owns this project in PMS — the same id {@code GET /xms/clients}
+         * returns, so the frontend can list only the selected client's projects. Null if PMS
+         * could not be asked for this project's details and none was cached before.
+         */
+        UUID clientId
 ) {
 }

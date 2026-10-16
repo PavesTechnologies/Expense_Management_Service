@@ -71,7 +71,7 @@ public class EmployeeProjectServiceImpl implements EmployeeProjectService {
 
         ProjectCache saved = projectCacheRepository.save(cache);
         return new AssignedProjectResponse(saved.getProjectId(), saved.getProjectCode(), saved.getPmsProjectId(),
-                saved.getProjectName(), saved.getStatus());
+                saved.getProjectName(), saved.getStatus(), saved.getClientId());
     }
 
     /** A failed detail lookup degrades to my-work's id/name rather than failing the whole picker. */

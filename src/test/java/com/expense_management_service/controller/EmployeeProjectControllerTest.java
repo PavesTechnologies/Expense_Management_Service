@@ -47,13 +47,15 @@ class EmployeeProjectControllerTest {
     @Test
     void getAssignedProjects_returns200_forGeneralEmployee() throws Exception {
         UUID projectId = UUID.randomUUID();
+        UUID clientId = UUID.randomUUID();
         when(employeeProjectService.getAssignedProjects())
-                .thenReturn(List.of(new AssignedProjectResponse(projectId, "ALPHA", 501L, "Project Alpha", "ACTIVE")));
+                .thenReturn(List.of(new AssignedProjectResponse(projectId, "ALPHA", 501L, "Project Alpha", "ACTIVE", clientId)));
 
         mockMvc.perform(get("/xms/employee/projects/assigned")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data[0].projectCode").value("ALPHA"));
+                .andExpect(jsonPath("$.data[0].projectCode").value("ALPHA"))
+                .andExpect(jsonPath("$.data[0].clientId").value(clientId.toString()));
     }
 
     @Test

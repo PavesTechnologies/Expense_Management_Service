@@ -24,6 +24,9 @@ import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.enums.PolicyRuleType;
 import com.expense_management_service.enums.PolicySeverity;
 import com.expense_management_service.integration.pms.PmsClient;
+import com.expense_management_service.service.ClientService;
+import com.expense_management_service.dto.response.ClientResponse;
+import com.expense_management_service.common.exception.IntegrationUnavailableException;
 import com.expense_management_service.mapper.PolicyViolationMapper;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
@@ -81,6 +84,8 @@ class ExpenseLineItemServiceImplTest {
     @Mock
     private PmsClient pmsClient;
     @Mock
+    private ClientService clientService;
+    @Mock
     private PolicyEvaluator policyEvaluator;
     @Mock
     private PolicyViolationRepository policyViolationRepository;
@@ -115,7 +120,7 @@ class ExpenseLineItemServiceImplTest {
         expenseLineItemService = new ExpenseLineItemServiceImpl(
                 expenseLineItemRepository, expenseReportRepository, expenseCategoryRepository, currencyRepository,
                 costCenterRepository, projectCacheRepository, exchangeRateService, currentUserService,
-                pmsClient,
+                pmsClient, clientService,
                 new ExpenseLineItemMapper(), policyEvaluator, policyViolationRepository, new PolicyViolationMapper(),
                 approvalAssignmentRepository, delegationService, expenseSplitService,
                 new TaxSnapshotServiceImpl(new TaxCalculationServiceImpl(taxCodeRepository, taxMappingService, systemConfigurationRepository),
@@ -189,7 +194,7 @@ class ExpenseLineItemServiceImplTest {
 
         expenseLineItemService.create(reportId, validRequest());
 
-        verifyNoInteractions(pmsClient);
+        verifyNoInteractions(pmsClient, clientService);
     }
 
     // --- Epic 8: client-billable project assignment + PMS client resolution (no RMS) ----------
@@ -281,14 +286,109 @@ class ExpenseLineItemServiceImplTest {
     }
 
     @Test
-    void create_throwsBusinessRuleViolation_whenNoProjectSelectedForBillableExpense() {
+    void create_throwsBusinessRuleViolation_whenNeitherClientNorProjectSelectedForBillableExpense() {
         stubOwnerAndReport();
         when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
         when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
 
         assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(null)))
                 .isInstanceOf(BusinessRuleViolationException.class)
-                .hasMessageContaining("A project must be selected");
+                .hasMessageContaining("A client must be selected");
+
+        verify(expenseLineItemRepository, never()).save(any());
+        verifyNoInteractions(pmsClient, clientService);
+    }
+
+    // --- Client selected from GET /xms/clients (project optional) ------------------------------
+
+    private ExpenseLineItemRequest billableRequest(UUID projectId, UUID clientId) {
+        return new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Uber", "Client meeting",
+                new BigDecimal("100.00"), currencyId, null, null, projectId, true, null, null, clientId);
+    }
+
+    private void stubBillableProject(UUID projectId, UUID pmsClientId) {
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(projectCache(projectId, 501L, "ALPHA")));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, pmsClientId)));
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    @Test
+    void create_savesBillableLineItem_withClientOnly_andNoProject() {
+        UUID clientId = UUID.randomUUID();
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(clientService.getActiveClients()).thenReturn(List.of(new ClientResponse(clientId, "Acme")));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, billableRequest(null, clientId));
+
+        assertThat(response.clientBillable()).isTrue();
+        assertThat(response.projectId()).isNull();
+        assertThat(response.resolvedClientId()).isEqualTo(clientId);
+        assertThat(response.resolvedClientName()).isEqualTo("Acme");
+        verifyNoInteractions(pmsClient);
+    }
+
+    @Test
+    void create_savesBillableLineItem_withClientAndMatchingProject() {
+        UUID projectId = UUID.randomUUID();
+        UUID clientId = UUID.randomUUID();
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        stubBillableProject(projectId, clientId);
+        when(clientService.getActiveClients()).thenReturn(List.of(new ClientResponse(clientId, "Acme")));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, billableRequest(projectId, clientId));
+
+        assertThat(response.projectId()).isEqualTo(projectId);
+        assertThat(response.resolvedClientId()).isEqualTo(clientId);
+        assertThat(response.resolvedClientName()).isEqualTo("Acme");
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenProjectBelongsToDifferentClient() {
+        UUID projectId = UUID.randomUUID();
+        UUID selectedClientId = UUID.randomUUID();
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        stubBillableProject(projectId, UUID.randomUUID());
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(projectId, selectedClientId)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("does not belong to the selected client");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenSelectedClientNotActiveInRms() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(clientService.getActiveClients()).thenReturn(List.of(new ClientResponse(UUID.randomUUID(), "Other")));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(null, UUID.randomUUID())))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("not found in RMS or is no longer active");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_propagatesIntegrationUnavailable_whenRmsUnreachable() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(clientService.getActiveClients()).thenThrow(new IntegrationUnavailableException("RMS down", null));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(null, UUID.randomUUID())))
+                .isInstanceOf(IntegrationUnavailableException.class);
 
         verify(expenseLineItemRepository, never()).save(any());
     }

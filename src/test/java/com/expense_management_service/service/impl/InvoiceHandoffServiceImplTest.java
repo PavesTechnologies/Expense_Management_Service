@@ -218,6 +218,47 @@ class InvoiceHandoffServiceImplTest {
     }
 
     @Test
+    void getSummary_countsDistinctReadyClients_includingLinesWithoutAProject() {
+        UUID clientA = UUID.randomUUID();
+        UUID clientB = UUID.randomUUID();
+        eligibleLineItem.setResolvedClientId(clientA);
+        ExpenseLineItem sameClientNoProject = ExpenseLineItem.builder().lineItemId(UUID.randomUUID())
+                .report(eligibleLineItem.getReport()).baseAmount(new BigDecimal("10.00")).clientBillable(true)
+                .resolvedClientId(clientA).build();
+        ExpenseLineItem otherClientNoProject = ExpenseLineItem.builder().lineItemId(UUID.randomUUID())
+                .report(eligibleLineItem.getReport()).baseAmount(new BigDecimal("20.00")).clientBillable(true)
+                .resolvedClientId(clientB).build();
+        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), any()))
+                .thenReturn(new PageImpl<>(List.of(eligibleLineItem, sameClientNoProject, otherClientNoProject)));
+
+        assertThat(service.getSummary().readyClientCount()).isEqualTo(2);
+    }
+
+    @Test
+    void getHandedOffByClient_returnsTheClientsHandoffs() {
+        UUID clientId = UUID.randomUUID();
+        InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
+                .invoiceReference("INV-21").syncStatus("HANDED_OFF").syncDate(LocalDateTime.now()).build();
+        when(invoiceSyncRepository.findHandedOff("HANDED_OFF", clientId, null, null, null, null, PageRequest.of(0, 10)))
+                .thenReturn(new PageImpl<>(List.of(sync), PageRequest.of(0, 10), 1));
+
+        var page = service.getHandedOffByClient(clientId, 0, 10);
+
+        assertThat(page.content()).extracting(r -> r.invoiceReference()).containsExactly("INV-21");
+    }
+
+    @Test
+    void getHandedOffByClient_throwsNotFound_whenTheClientHasNoHandoffs() {
+        UUID clientId = UUID.randomUUID();
+        when(invoiceSyncRepository.findHandedOff(any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(new PageImpl<>(List.of(), PageRequest.of(0, 10), 0));
+
+        assertThatThrownBy(() -> service.getHandedOffByClient(clientId, 0, 10))
+                .isInstanceOf(ResourceNotFoundException.class)
+                .hasMessage("No handed-off expenses found for client " + clientId);
+    }
+
+    @Test
     void getHandedOff_mapsHandoffWithItsExpense() {
         InvoiceSync sync = InvoiceSync.builder().syncId(UUID.randomUUID()).lineItem(eligibleLineItem)
                 .invoiceReference("INV-9").syncStatus("HANDED_OFF").syncDate(java.time.LocalDateTime.now()).build();

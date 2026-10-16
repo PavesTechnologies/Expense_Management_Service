@@ -11,6 +11,7 @@ import java.util.UUID;
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
+import com.expense_management_service.dto.response.ClientResponse;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.Currency;
@@ -42,6 +43,7 @@ import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
+import com.expense_management_service.service.ClientService;
 import com.expense_management_service.service.ExpenseLineItemService;
 import com.expense_management_service.service.ExpenseSplitService;
 import com.expense_management_service.service.TaxSnapshotService;
@@ -73,6 +75,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private final ExchangeRateService exchangeRateService;
     private final CurrentUserService currentUserService;
     private final PmsClient pmsClient;
+    private final ClientService clientService;
     private final ExpenseLineItemMapper expenseLineItemMapper;
     private final PolicyEvaluator policyEvaluator;
     private final PolicyViolationRepository policyViolationRepository;
@@ -194,7 +197,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         entity.setCostCenter(costCenterId == null ? null : findActiveCostCenter(costCenterId));
 
         if (Boolean.TRUE.equals(request.clientBillable())) {
-            resolveClientBillableProject(entity, request.projectId());
+            resolveClientBillable(entity, request.projectId(), request.clientId());
         } else {
             // Internal expense: preserve the original lenient behavior exactly — project is
             // optional, no PMS/RMS calls, no unnecessary requirements imposed.
@@ -206,20 +209,70 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     }
 
     /**
-     * Backend-enforced project assignment + client resolution for a client-billable line item —
-     * runs on every {@code create}/{@code update}, so a correction/resubmission re-validates
-     * exactly like a first submission does. Everything here is re-fetched live from PMS; the
-     * client is PMS's {@code Project.clientId} (RMS is not called — see the inline note below).
-     * <p>
+     * Client resolution for a client-billable line item — runs on every {@code create}/{@code
+     * update}, so a correction/resubmission re-validates exactly like a first submission does.
+     * At least one of {@code clientId}/{@code projectId} is required; project is optional when a
+     * client is selected.
+     * <ul>
+     *   <li>{@code projectId} given: validated live against PMS as before
+     *       ({@link #resolveClientBillableProject}).</li>
+     *   <li>{@code clientId} given: must be an ACTIVE RMS client; if a project is also given, it
+     *       must belong to that same client in PMS.</li>
+     *   <li>Only {@code projectId} given: the client is PMS's {@code Project.clientId} (the
+     *       pre-client-selection behaviour, unchanged).</li>
+     * </ul>
      * Throws {@link BusinessRuleViolationException} (422) for every failure mode rather than
-     * silently defaulting a project/client — a client-billable expense whose project has no
-     * client in PMS must never be allowed to save.
+     * silently defaulting a project/client.
      */
-    private void resolveClientBillableProject(ExpenseLineItem entity, UUID projectId) {
-        if (projectId == null) {
+    private void resolveClientBillable(ExpenseLineItem entity, UUID projectId, UUID clientId) {
+        if (projectId == null && clientId == null) {
             throw new BusinessRuleViolationException(
-                    "A project must be selected for a client-billable expense line item");
+                    "A client must be selected for a client-billable expense line item");
         }
+
+        UUID resolvedClientId = null;
+        String resolvedClientName = null;
+        if (projectId != null) {
+            ProjectCache project = resolveClientBillableProject(projectId);
+            if (clientId != null && !clientId.equals(project.getClientId())) {
+                throw new BusinessRuleViolationException(
+                        "Project " + project.getProjectCode() + " does not belong to the selected client");
+            }
+            entity.setProject(project);
+            resolvedClientId = project.getClientId();
+            resolvedClientName = project.getClientName();
+        } else {
+            entity.setProject(null);
+        }
+
+        if (clientId != null) {
+            ClientResponse client = findActiveRmsClient(clientId);
+            resolvedClientId = client.clientId();
+            resolvedClientName = client.clientName();
+        }
+
+        entity.setResolvedClientId(resolvedClientId);
+        entity.setResolvedClientName(resolvedClientName);
+    }
+
+    /**
+     * The selected client from RMS's active list — the same list {@code GET /xms/clients} serves,
+     * with the same error mapping (RMS 401/403 → 403, other RMS failures → 502).
+     */
+    private ClientResponse findActiveRmsClient(UUID clientId) {
+        return clientService.getActiveClients().stream()
+                .filter(c -> clientId.equals(c.clientId()))
+                .findFirst()
+                .orElseThrow(() -> new BusinessRuleViolationException(
+                        "The selected client was not found in RMS or is no longer active"));
+    }
+
+    /**
+     * Backend-enforced project assignment for a client-billable line item. Everything here is
+     * re-fetched live from PMS; the project's client is PMS's {@code Project.clientId}. A
+     * client-billable expense whose project has no client in PMS must never be allowed to save.
+     */
+    private ProjectCache resolveClientBillableProject(UUID projectId) {
         ProjectCache project = findProject(projectId);
 
         Long pmsProjectId = project.getPmsProjectId();
@@ -246,8 +299,8 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
                     "Project " + project.getProjectCode() + " has no client associated with it in PMS");
         }
 
-        // No RMS lookup here: RMS's client endpoints reject an ordinary GENERAL employee's token,
-        // so the client is taken as PMS reports it — clientId only, no name/status.
+        // The project's client is taken as PMS reports it — clientId only, no name/status. RMS is
+        // consulted only when the employee also selected a client (see resolveClientBillable).
 
         // Refresh the cache row with the latest PMS data — never treat what was cached before
         // this call as authoritative for a submission decision.
@@ -261,10 +314,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         project.setClientId(pmsProject.clientId());
         project.setSyncedAt(LocalDateTime.now());
         projectCacheRepository.save(project);
-
-        entity.setProject(project);
-        entity.setResolvedClientId(pmsProject.clientId());
-        entity.setResolvedClientName(project.getClientName());
+        return project;
     }
 
     /**

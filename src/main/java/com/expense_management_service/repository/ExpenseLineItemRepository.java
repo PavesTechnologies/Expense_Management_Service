@@ -55,10 +55,12 @@ public interface ExpenseLineItemRepository extends JpaRepository<ExpenseLineItem
      * ApprovalWorkflowServiceImpl}: a manager-only flow with no FINANCE_VERIFICATION level never
      * produces a {@code FinanceVerificationReview} row at all, so such a line item correctly
      * never appears here until/unless the business decides otherwise). All four filters are
-     * optional (pass {@code null} to skip).
+     * optional (pass {@code null} to skip). Project is joined with LEFT JOIN — a client-billable
+     * line item may have a client but no project, and an implicit {@code l.project.x} path would
+     * inner-join it out of the queue.
      */
     @Query("""
-            SELECT DISTINCT l FROM ExpenseLineItem l, FinanceVerificationReview r
+            SELECT DISTINCT l FROM ExpenseLineItem l LEFT JOIN l.project p, FinanceVerificationReview r
             WHERE r.lineItem = l
               AND r.status = com.expense_management_service.enums.FinanceVerificationStatus.VERIFIED
               AND r.levelInstance.submissionCycle = (
@@ -70,9 +72,9 @@ public interface ExpenseLineItemRepository extends JpaRepository<ExpenseLineItem
                   SELECT 1 FROM InvoiceSync s WHERE s.lineItem = l AND s.syncStatus = 'HANDED_OFF'
               )
               AND (:clientId IS NULL OR l.resolvedClientId = :clientId)
-              AND (:projectId IS NULL OR l.project.projectId = :projectId)
-              AND (:pmsProjectId IS NULL OR l.project.pmsProjectId = :pmsProjectId)
-              AND (:projectCode IS NULL OR l.project.projectCode = :projectCode)
+              AND (:projectId IS NULL OR p.projectId = :projectId)
+              AND (:pmsProjectId IS NULL OR p.pmsProjectId = :pmsProjectId)
+              AND (:projectCode IS NULL OR p.projectCode = :projectCode)
               AND (:startDate IS NULL OR l.expenseDate >= :startDate)
               AND (:endDate IS NULL OR l.expenseDate <= :endDate)
             ORDER BY l.expenseDate DESC

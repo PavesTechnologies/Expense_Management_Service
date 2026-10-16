@@ -25,11 +25,12 @@ public record InvoiceHandoffRecordResponse(
         BigDecimal costBasis,
         BigDecimal recoverableTaxAmount,
         String taxCode,
-        /** PMS's stable numeric project id - the cross-system key AR matches on. */
+        /** PMS's stable numeric project id - informational, null when no project was selected; AR matches on {@code resolvedClientId}. */
         Long pmsProjectId,
         /** PMS's projectKey as last refreshed - readable, but mutable in PMS. */
         String projectCode,
         String projectName,
+        /** RMS client UUID - the cross-system key AR matches on. */
         UUID resolvedClientId,
         String resolvedClientName,
         String invoiceReference,

@@ -23,6 +23,7 @@ public class ExpenseLineItemMapper {
                 .amount(request.amount())
                 .taxAmount(request.taxAmount())
                 .clientBillable(request.clientBillable())
+                .allocationReason(trimToNull(request.allocationReason()))
                 .build();
     }
 
@@ -33,6 +34,11 @@ public class ExpenseLineItemMapper {
         entity.setAmount(request.amount());
         entity.setTaxAmount(request.taxAmount());
         entity.setClientBillable(request.clientBillable());
+        entity.setAllocationReason(trimToNull(request.allocationReason()));
+    }
+
+    private static String trimToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive, String baseCurrencyCode,
@@ -71,7 +77,8 @@ public class ExpenseLineItemMapper {
                 entity.getCreatedAt(),
                 entity.getUpdatedAt(),
                 policyWarnings,
-                toTaxResponse(entity)
+                toTaxResponse(entity),
+                entity.getAllocationReason()
         );
     }
 

@@ -68,7 +68,8 @@ public class ReceiptController {
                                                       @Parameter(description = "The receipt file (PDF/PNG/JPG/JPEG, max 10MB)")
                                                       @RequestParam("file") MultipartFile file) {
         ReceiptResponse saved = receiptService.upload(reportId, file);
-        ReceiptUploadResponse response = new ReceiptUploadResponse(saved.receiptId(), saved.ocrStatus());
+        ReceiptUploadResponse response = new ReceiptUploadResponse(saved.receiptId(), saved.ocrStatus(),
+                saved.duplicateStatus(), saved.duplicateMessage());
         return ApiResponse.success("Receipt uploaded successfully. OCR processing started.", response);
     }
 
@@ -99,7 +100,8 @@ public class ReceiptController {
                                                       @Parameter(description = "The receipt file (PDF/PNG/JPG/JPEG/WEBP, max size per receipt.max-file-size-bytes)")
                                                       @RequestParam("file") MultipartFile file) {
         ReceiptResponse saved = receiptService.uploadForLineItem(lineItemId, file);
-        ReceiptUploadResponse response = new ReceiptUploadResponse(saved.receiptId(), saved.ocrStatus());
+        ReceiptUploadResponse response = new ReceiptUploadResponse(saved.receiptId(), saved.ocrStatus(),
+                saved.duplicateStatus(), saved.duplicateMessage());
         return ApiResponse.success("Receipt uploaded successfully to the line item.", response);
     }
 

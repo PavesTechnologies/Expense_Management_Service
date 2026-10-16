@@ -20,6 +20,12 @@ public interface ExpenseSplitService {
     List<ExpenseSplitResponse> getSplitsForLineItem(UUID lineItemId, String actingEmployeeId);
 
     /**
+     * Read-only view of a line item's current splits for Finance/AP review, regardless of who owns
+     * the report - role access is enforced on the endpoint. Empty for a NORMAL line item.
+     */
+    List<ExpenseSplitResponse> getSplitsForReview(UUID lineItemId);
+
+    /**
      * Validates and atomically replaces every split on the line item. An empty list reverts the
      * line item to NORMAL. Only the report's own owner may call this, and only while the report is
      * in an editable status ({@code ReportStatus.isEditable()}).

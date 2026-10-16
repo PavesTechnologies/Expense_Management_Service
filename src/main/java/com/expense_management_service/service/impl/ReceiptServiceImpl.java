@@ -28,6 +28,7 @@ import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
 import com.expense_management_service.service.DelegationService;
+import com.expense_management_service.service.ReceiptDuplicateService;
 import com.expense_management_service.service.ReceiptService;
 import com.expense_management_service.storage.StorageException;
 import com.expense_management_service.storage.StorageService;
@@ -98,6 +99,7 @@ public class ReceiptServiceImpl implements ReceiptService {
     private final ApplicationEventPublisher applicationEventPublisher;
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
     private final DelegationService delegationService;
+    private final ReceiptDuplicateService receiptDuplicateService;
 
     @Value("${receipt.max-file-size-bytes:10485760}")
     private long maxFileSizeBytes;
@@ -299,16 +301,20 @@ public class ReceiptServiceImpl implements ReceiptService {
         }
     }
 
-    /** Advisory-only exact-file-reuse check (see {@code Receipt.fileHash}'s javadoc) — never blocks anything, just informs the response. */
+    /**
+     * Two duplicate signals: {@code possibleDuplicateFileReuse} is the advisory exact-file match
+     * against any receipt anywhere (drafts included); {@code duplicateStatus} is the claimed-receipt
+     * check that submission enforces (see {@code ReceiptDuplicateService}).
+     */
     private ReceiptResponse toResponseWithDuplicateCheck(Receipt entity) {
-        if (entity.getFileHash() == null) {
-            return receiptMapper.toResponse(entity);
-        }
-        return receiptRepository.findByFileHash(entity.getFileHash()).stream()
-                .filter(other -> !other.getReceiptId().equals(entity.getReceiptId()))
-                .findFirst()
-                .map(other -> receiptMapper.toResponse(entity, true, other.getReceiptId()))
-                .orElseGet(() -> receiptMapper.toResponse(entity));
+        ReceiptDuplicateService.DuplicateSummary duplicate = receiptDuplicateService.summarize(entity);
+        UUID fileReuseOf = entity.getFileHash() == null ? null
+                : receiptRepository.findByFileHash(entity.getFileHash()).stream()
+                        .map(Receipt::getReceiptId)
+                        .filter(otherId -> !otherId.equals(entity.getReceiptId()))
+                        .findFirst()
+                        .orElse(null);
+        return receiptMapper.toResponse(entity, fileReuseOf != null, fileReuseOf, duplicate);
     }
 
     private boolean matchesAt(byte[] header, SignaturePart part) {

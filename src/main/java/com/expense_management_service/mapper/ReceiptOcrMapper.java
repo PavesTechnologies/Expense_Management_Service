@@ -3,6 +3,7 @@ package com.expense_management_service.mapper;
 import com.expense_management_service.dto.response.ReceiptOcrResponse;
 import com.expense_management_service.entity.ExpenseCategory;
 import com.expense_management_service.entity.ReceiptOcr;
+import com.expense_management_service.service.ReceiptDuplicateService;
 import org.springframework.stereotype.Component;
 
 @Component
@@ -15,6 +16,11 @@ public class ReceiptOcrMapper {
     /** Used by {@code OCRService}, which computes the duplicate/review flags and resolves the suggested category. */
     public ReceiptOcrResponse toResponse(ReceiptOcr entity, boolean possibleDuplicate, boolean reviewRecommended,
                                          ExpenseCategory suggestedCategory) {
+        return toResponse(entity, possibleDuplicate, reviewRecommended, suggestedCategory, ReceiptDuplicateService.DuplicateSummary.NONE);
+    }
+
+    public ReceiptOcrResponse toResponse(ReceiptOcr entity, boolean possibleDuplicate, boolean reviewRecommended,
+                                         ExpenseCategory suggestedCategory, ReceiptDuplicateService.DuplicateSummary duplicate) {
         return new ReceiptOcrResponse(
                 entity.getOcrId(),
                 entity.getReceipt() != null ? entity.getReceipt().getReceiptId() : null,
@@ -37,7 +43,9 @@ public class ReceiptOcrMapper {
                 entity.getOcrEngine(),
                 entity.getOcrVersion(),
                 possibleDuplicate,
-                reviewRecommended
+                reviewRecommended,
+                duplicate.status(),
+                duplicate.message()
         );
     }
 }

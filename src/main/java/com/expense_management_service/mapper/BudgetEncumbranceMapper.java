@@ -27,11 +27,13 @@ public class BudgetEncumbranceMapper {
     }
 
     /**
-     * A split-derived row carries its own Cost Center via the split. A report-level (remainder or
-     * fully-unsplit) row does not - {@code budget} can be null too when {@code unbudgeted == true},
-     * so the only reference that is ALWAYS present is the report's own header Cost Center.
+     * Rows record their cost center directly; older rows don't, and fall back to the split's cost
+     * center, the budget's, or (an unbudgeted remainder row) the report's own header Cost Center.
      */
     private CostCenter resolveCostCenter(BudgetEncumbrance entity) {
+        if (entity.getCostCenter() != null) {
+            return entity.getCostCenter();
+        }
         if (entity.getSplit() != null) {
             return entity.getSplit().getCostCenter();
         }

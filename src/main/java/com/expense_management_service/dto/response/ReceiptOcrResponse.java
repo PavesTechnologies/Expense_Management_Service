@@ -1,5 +1,6 @@
 package com.expense_management_service.dto.response;
 
+import com.expense_management_service.enums.DuplicateReceiptStatus;
 import com.expense_management_service.enums.OcrStatus;
 
 import java.math.BigDecimal;
@@ -52,6 +53,20 @@ public record ReceiptOcrResponse(
         String ocrEngine,
         String ocrVersion,
         boolean possibleDuplicate,
-        boolean reviewRecommended
+        boolean reviewRecommended,
+        /** Already-claimed check (file, invoice or details) — see {@code ReceiptDuplicateService}. */
+        DuplicateReceiptStatus duplicateStatus,
+        String duplicateMessage
 ) {
+    public ReceiptOcrResponse(UUID ocrId, UUID receiptId, String merchantName, String invoiceNumber, LocalDate receiptDate,
+                              LocalTime receiptTime, String currencyCode, BigDecimal subtotal, BigDecimal taxAmount,
+                              BigDecimal totalAmount, String paymentMethod, UUID categoryId, String categoryName,
+                              BigDecimal confidenceScore, OcrStatus processingStatus, String failureReason,
+                              LocalDateTime processedAt, Long processingDurationMs, String ocrEngine, String ocrVersion,
+                              boolean possibleDuplicate, boolean reviewRecommended) {
+        this(ocrId, receiptId, merchantName, invoiceNumber, receiptDate, receiptTime, currencyCode, subtotal, taxAmount,
+                totalAmount, paymentMethod, categoryId, categoryName, confidenceScore, processingStatus, failureReason,
+                processedAt, processingDurationMs, ocrEngine, ocrVersion, possibleDuplicate, reviewRecommended,
+                DuplicateReceiptStatus.NONE, null);
+    }
 }

@@ -3,6 +3,7 @@ package com.expense_management_service.mapper;
 import com.expense_management_service.dto.response.ReceiptResponse;
 import com.expense_management_service.entity.Receipt;
 import com.expense_management_service.enums.OcrStatus;
+import com.expense_management_service.service.ReceiptDuplicateService;
 import org.springframework.stereotype.Component;
 
 import java.util.UUID;
@@ -15,6 +16,11 @@ public class ReceiptMapper {
     }
 
     public ReceiptResponse toResponse(Receipt entity, boolean possibleDuplicateFileReuse, UUID duplicateOfReceiptId) {
+        return toResponse(entity, possibleDuplicateFileReuse, duplicateOfReceiptId, ReceiptDuplicateService.DuplicateSummary.NONE);
+    }
+
+    public ReceiptResponse toResponse(Receipt entity, boolean possibleDuplicateFileReuse, UUID duplicateOfReceiptId,
+                                      ReceiptDuplicateService.DuplicateSummary duplicate) {
         return new ReceiptResponse(
                 entity.getReceiptId(),
                 entity.getReport() != null ? entity.getReport().getReportId() : null,
@@ -26,7 +32,9 @@ public class ReceiptMapper {
                 entity.getUploadedAt(),
                 entity.getOcrStatus() != null ? OcrStatus.valueOf(entity.getOcrStatus()) : null,
                 possibleDuplicateFileReuse,
-                duplicateOfReceiptId
+                duplicateOfReceiptId,
+                duplicate.status(),
+                duplicate.message()
         );
     }
 }

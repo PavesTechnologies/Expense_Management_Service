@@ -1,6 +1,7 @@
 package com.expense_management_service.controller;
 
 import com.expense_management_service.common.ApiResponse;
+import com.expense_management_service.dto.request.CashAdvanceDisbursement;
 import com.expense_management_service.dto.request.CashAdvanceRepaymentRequest;
 import com.expense_management_service.dto.request.CashAdvanceRequest;
 import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
@@ -15,9 +16,12 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDate;
 import java.util.UUID;
 
 import io.swagger.v3.oas.annotations.Operation;
@@ -103,11 +107,26 @@ public class CashAdvanceController {
         return ApiResponse.success("Cash advance rejected", cashAdvanceService.reject(advanceId, currentUserService.getEmployeeId(), reason));
     }
 
-    @Operation(summary = "Disburse an approved cash advance (Finance/Admin)")
+    @Operation(summary = "Disburse an approved cash advance and record how it was paid (Finance/Admin). Multipart form.")
     @PostMapping("/{advanceId}/disburse")
     @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE')")
-    public ApiResponse<CashAdvanceResponse> disburse(@PathVariable UUID advanceId) {
-        return ApiResponse.success("Cash advance disbursed", cashAdvanceService.disburse(advanceId, currentUserService.getEmployeeId()));
+    public ApiResponse<CashAdvanceResponse> disburse(
+            @PathVariable UUID advanceId,
+            @RequestParam(required = false) String disbursementMode,
+            @RequestParam(required = false) String receivedByName,
+            @RequestParam(required = false) MultipartFile signedAcknowledgment,
+            @RequestParam(required = false) String transactionReference,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate transferDate,
+            @RequestParam(required = false) String transferDetails,
+            @RequestParam(required = false) String upiTransactionId,
+            @RequestParam(required = false) String payeeUpiId,
+            @RequestParam(required = false) MultipartFile paymentProof,
+            @RequestParam(required = false) String confirmationNote) {
+        CashAdvanceDisbursement disbursement = new CashAdvanceDisbursement(
+                disbursementMode, receivedByName, signedAcknowledgment, transactionReference, transferDate,
+                transferDetails, upiTransactionId, payeeUpiId, paymentProof, confirmationNote);
+        return ApiResponse.success("Cash advance disbursed",
+                cashAdvanceService.disburse(advanceId, currentUserService.getEmployeeId(), disbursement));
     }
 
     @Operation(summary = "Record employee cash advance repayment")

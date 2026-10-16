@@ -2,6 +2,7 @@ package com.expense_management_service.service;
 
 import java.util.List;
 
+import com.expense_management_service.dto.request.CashAdvanceDisbursement;
 import com.expense_management_service.dto.request.CashAdvanceRepaymentRequest;
 import com.expense_management_service.dto.request.CashAdvanceRequest;
 import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
@@ -35,7 +36,7 @@ public interface CashAdvanceService {
 
     CashAdvanceResponse reject(UUID advanceId, String approverId, String reason);
 
-    CashAdvanceResponse disburse(UUID advanceId, String financeUserId);
+    CashAdvanceResponse disburse(UUID advanceId, String financeUserId, CashAdvanceDisbursement disbursement);
 
     CashAdvanceRepaymentResponse repay(CashAdvanceRepaymentRequest request);
 

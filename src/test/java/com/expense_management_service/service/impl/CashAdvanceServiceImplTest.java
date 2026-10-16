@@ -1,6 +1,7 @@
 package com.expense_management_service.service.impl;
 
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
+import com.expense_management_service.dto.request.CashAdvanceDisbursement;
 import com.expense_management_service.dto.request.CashAdvanceRepaymentRequest;
 import com.expense_management_service.dto.request.CashAdvanceRequest;
 import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
@@ -23,7 +24,10 @@ import com.expense_management_service.repository.SystemConfigurationRepository;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.ApprovalEventPublisher;
 import com.expense_management_service.service.DelegationService;
+import com.expense_management_service.storage.StorageService;
 import org.junit.jupiter.api.BeforeEach;
+import org.mockito.ArgumentCaptor;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
@@ -80,6 +84,9 @@ class CashAdvanceServiceImplTest {
 
     @Mock
     private CashAdvanceRepaymentRepository cashAdvanceRepaymentRepository;
+
+    @Mock
+    private StorageService storageService;
 
     @Mock
     private CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
@@ -279,10 +286,115 @@ class CashAdvanceServiceImplTest {
         when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
         when(cashAdvanceRepository.save(any(CashAdvance.class))).thenAnswer(inv -> inv.getArgument(0));
 
-        CashAdvanceResponse response = cashAdvanceService.disburse(advanceId, "FIN001");
+        CashAdvanceResponse response = cashAdvanceService.disburse(advanceId, "FIN001", bankTransfer());
 
         assertEquals("IN_PROGRESS", response.status());
         assertEquals(new BigDecimal("1000.00"), response.outstandingBalance());
+    }
+
+    @Test
+    void disburse_bankTransfer_recordsTransferDetailsAndStartsExpenseWindow() {
+        CashAdvance advance = approvedAdvance();
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepository.save(any(CashAdvance.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        cashAdvanceService.disburse(advanceId, "FIN001", bankTransfer());
+
+        assertEquals("BANK_TRANSFER", advance.getDisbursementMode());
+        assertEquals("UTR123", advance.getDisbursementReference());
+        assertEquals(LocalDate.of(2026, 10, 1), advance.getDisbursementPaymentDate());
+        assertEquals("HDFC A/C 1234 (Asha)", advance.getDisbursementTransferDetails());
+        assertNull(advance.getDisbursementProofReference());
+        assertNull(advance.getDisbursementAcknowledgedBy());
+        // The 30-day expense window now starts at disbursement (it was never armed before).
+        assertNotNull(advance.getDisbursedAt());
+        assertEquals(advance.getDisbursedAt().plusDays(30), CashAdvanceExpenseWindow.deadline(advance));
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void disburse_cash_storesSignedAcknowledgmentAndRecordsReceiver() {
+        CashAdvance advance = approvedAdvance();
+        MockMultipartFile ack = new MockMultipartFile("signedAcknowledgment", "ack.pdf", "application/pdf", new byte[]{1, 2, 3});
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepository.save(any(CashAdvance.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        cashAdvanceService.disburse(advanceId, "FIN001", new CashAdvanceDisbursement(
+                "cash", "  John Doe ", ack, null, null, null, null, null, null, " counted in front of HR "));
+
+        ArgumentCaptor<String> key = ArgumentCaptor.forClass(String.class);
+        verify(storageService).upload(key.capture(), eq(ack));
+        assertTrue(key.getValue().startsWith("disbursements/" + advanceId + "/cash-"));
+        assertTrue(key.getValue().endsWith(".pdf"));
+
+        assertEquals("CASH", advance.getDisbursementMode());
+        assertEquals("John Doe", advance.getDisbursementAcknowledgedBy());
+        assertEquals(key.getValue(), advance.getDisbursementProofReference());
+        assertEquals("counted in front of HR", advance.getDisbursementConfirmationNote());
+        assertNull(advance.getDisbursementReference());
+        assertNotNull(advance.getDisbursedAt());
+    }
+
+    @Test
+    void disburse_upi_storesPaymentProofAndRecordsUpiDetails() {
+        CashAdvance advance = approvedAdvance();
+        MockMultipartFile proof = new MockMultipartFile("paymentProof", "shot.png", "image/png", new byte[]{9});
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepository.save(any(CashAdvance.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        cashAdvanceService.disburse(advanceId, "FIN001", new CashAdvanceDisbursement(
+                "UPI", null, null, null, LocalDate.of(2026, 10, 2), null, "UPI-778", "asha@hdfcbank", proof, null));
+
+        assertEquals("UPI", advance.getDisbursementMode());
+        assertEquals("UPI-778", advance.getDisbursementReference());
+        assertEquals("asha@hdfcbank", advance.getDisbursementPayeeUpiId());
+        assertEquals(LocalDate.of(2026, 10, 2), advance.getDisbursementPaymentDate());
+        assertTrue(advance.getDisbursementProofReference().endsWith(".png"));
+        verify(storageService).upload(eq(advance.getDisbursementProofReference()), eq(proof));
+    }
+
+    @Test
+    void disburse_rejectsMissingReceiver_andChangesNothing() {
+        CashAdvance advance = approvedAdvance();
+        MockMultipartFile ack = new MockMultipartFile("signedAcknowledgment", "ack.pdf", "application/pdf", new byte[]{1});
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                cashAdvanceService.disburse(advanceId, "FIN001", new CashAdvanceDisbursement(
+                        "CASH", "  ", ack, null, null, null, null, null, null, null)));
+
+        assertEquals("Enter the name of the person who received the cash.", ex.getMessage());
+        assertEquals("APPROVED", advance.getStatus());
+        assertNull(advance.getDisbursedAt());
+        verify(storageService, never()).upload(anyString(), any());
+        verify(cashAdvanceRepository, never()).save(any());
+    }
+
+    @Test
+    void disburse_rejectsUnknownMode_andChangesNothing() {
+        CashAdvance advance = approvedAdvance();
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                cashAdvanceService.disburse(advanceId, "FIN001", new CashAdvanceDisbursement(
+                        "CHEQUE", null, null, null, null, null, null, null, null, null)));
+
+        assertEquals("APPROVED", advance.getStatus());
+        verify(cashAdvanceRepository, never()).save(any());
+    }
+
+    private CashAdvance approvedAdvance() {
+        return CashAdvance.builder()
+                .advanceId(advanceId)
+                .amount(new BigDecimal("1000.00"))
+                .status("APPROVED")
+                .build();
+    }
+
+    private CashAdvanceDisbursement bankTransfer() {
+        return new CashAdvanceDisbursement(
+                "BANK_TRANSFER", null, null, "UTR123", LocalDate.of(2026, 10, 1),
+                "HDFC A/C 1234 (Asha)", null, null, null, null);
     }
 
     @Test

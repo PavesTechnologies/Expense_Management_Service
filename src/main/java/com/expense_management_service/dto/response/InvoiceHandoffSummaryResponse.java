@@ -8,6 +8,8 @@ public record InvoiceHandoffSummaryResponse(
         BigDecimal readyBaseAmount,
         long readyProjectCount,
         long handedOffCount,
-        String baseCurrencyCode
+        String baseCurrencyCode,
+        /** Distinct clients among the ready line items — the unit AR invoices by. */
+        long readyClientCount
 ) {
 }

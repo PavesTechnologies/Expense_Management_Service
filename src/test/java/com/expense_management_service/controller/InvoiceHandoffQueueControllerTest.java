@@ -142,6 +142,51 @@ class InvoiceHandoffQueueControllerTest {
     }
 
     @Test
+    void getHandedOffByClient_returns200_forArServiceAccount() throws Exception {
+        UUID lineItemId = UUID.randomUUID();
+        UUID clientId = UUID.randomUUID();
+        // No project: a client-billable line may be billed to a client without one.
+        InvoiceHandoffRecordResponse record = new InvoiceHandoffRecordResponse(UUID.randomUUID(), lineItemId,
+                UUID.randomUUID(), "ER-001", "emp-1", LocalDate.now(), "Travel", "desc", null, "INR", null, null,
+                null, null, null, null, clientId, "Finance Account", "INV-1", LocalDateTime.now(), null);
+        when(invoiceHandoffService.getHandedOffByClient(clientId, 0, 10))
+                .thenReturn(new PageResponse<>(List.of(record), 0, 10, 1, 1, true, true));
+
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-client")
+                        .param("clientId", clientId.toString()).param("page", "0").param("size", "10")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.content[0].lineItemId").value(lineItemId.toString()))
+                .andExpect(jsonPath("$.data.content[0].resolvedClientId").value(clientId.toString()))
+                .andExpect(jsonPath("$.data.content[0].pmsProjectId").doesNotExist());
+    }
+
+    @Test
+    void getHandedOffByClient_returns404_whenNothingWasHandedOff() throws Exception {
+        UUID clientId = UUID.randomUUID();
+        when(invoiceHandoffService.getHandedOffByClient(clientId, 0, 20))
+                .thenThrow(new ResourceNotFoundException("No handed-off expenses found for client " + clientId));
+
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-client")
+                        .param("clientId", clientId.toString())
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE))))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.success").value(false));
+    }
+
+    @Test
+    void getHandedOffByClient_returns400_whenClientIdIsMissingOrNotAUuid() throws Exception {
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-client")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Required parameter 'clientId' is missing"));
+        mockMvc.perform(get("/xms/finance/invoice-handoff-queue/handed-off/by-client")
+                        .param("clientId", "37")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE))))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
     void getHandedOffByPmsProject_returns200_forArServiceAccount() throws Exception {
         UUID lineItemId = UUID.randomUUID();
         InvoiceHandoffRecordResponse record = new InvoiceHandoffRecordResponse(UUID.randomUUID(), lineItemId,

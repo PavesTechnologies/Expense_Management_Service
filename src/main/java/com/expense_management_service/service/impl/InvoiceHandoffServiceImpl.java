@@ -175,6 +175,19 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
 
     @Override
     @Transactional(readOnly = true)
+    public PageResponse<InvoiceHandoffRecordResponse> getHandedOffByClient(UUID clientId, int page, int size) {
+        PageResponse<InvoiceHandoffRecordResponse> result = getHandedOff(clientId, null, null, null, null, page, size);
+        if (result.content().isEmpty()) {
+            throw new ResourceNotFoundException(result.totalElements() == 0
+                    ? "No handed-off expenses found for client " + clientId
+                    : "Page " + page + " is beyond the last page (" + (result.totalPages() - 1)
+                            + ") of handed-off expenses for client " + clientId);
+        }
+        return result;
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public InvoiceHandoffSummaryResponse getSummary() {
         // Same eligibility rule as the queue itself, unpaged, so the numbers can never disagree with it.
         List<ExpenseLineItem> ready = expenseLineItemRepository
@@ -189,8 +202,13 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 .filter(Objects::nonNull)
                 .distinct()
                 .count();
+        long readyClients = ready.stream()
+                .map(ExpenseLineItem::getResolvedClientId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .count();
         return new InvoiceHandoffSummaryResponse(ready.size(), readyAmount, readyProjects,
-                invoiceSyncRepository.countBySyncStatus(STATUS_HANDED_OFF), baseCurrencyCode);
+                invoiceSyncRepository.countBySyncStatus(STATUS_HANDED_OFF), baseCurrencyCode, readyClients);
     }
 
     private InvoiceHandoffRecordResponse toRecordResponse(InvoiceSync sync) {

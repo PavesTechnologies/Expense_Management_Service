@@ -21,8 +21,9 @@ public interface InvoiceHandoffService {
 
     /**
      * All filters are optional and combined with AND; both date bounds are inclusive on the
-     * expense date. {@code projectId} is XMS's internal project UUID; external callers (AR)
-     * should use {@code pmsProjectId} - PMS's stable numeric id - or {@code projectCode}.
+     * expense date. External callers (AR) match on {@code clientId} - RMS's client UUID. Project
+     * filters still work but only match line items that have a project, which is optional;
+     * {@code projectId} is XMS's internal project UUID.
      */
     PageResponse<InvoiceHandoffEligibleExpenseResponse> getEligibleExpenses(
             UUID clientId, UUID projectId, Long pmsProjectId, String projectCode,
@@ -51,8 +52,18 @@ public interface InvoiceHandoffService {
      * Completed handoffs for one PMS project, newest first - same records as {@link #getHandedOff}.
      * Throws {@code ResourceNotFoundException} when the requested page is empty, whether the
      * project has no handoffs at all or the page is past the last one.
+     *
+     * Superseded for AR by {@link #getHandedOffByClient} (AR matches on client); line items
+     * billed to a client without a project never appear here.
      */
     PageResponse<InvoiceHandoffRecordResponse> getHandedOffByPmsProject(Long pmsProjectId, int page, int size);
+
+    /**
+     * Completed handoffs for one RMS client, newest first - same records as {@link #getHandedOff}.
+     * Throws {@code ResourceNotFoundException} when the requested page is empty, whether the
+     * client has no handoffs at all or the page is past the last one.
+     */
+    PageResponse<InvoiceHandoffRecordResponse> getHandedOffByClient(UUID clientId, int page, int size);
 
     InvoiceHandoffSummaryResponse getSummary();
 }

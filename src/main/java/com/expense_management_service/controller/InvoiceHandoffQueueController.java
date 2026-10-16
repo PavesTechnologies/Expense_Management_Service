@@ -37,8 +37,10 @@ public class InvoiceHandoffQueueController {
     private final InvoiceHandoffService invoiceHandoffService;
 
     /**
-     * Also callable by the AR service account, which filters by {@code pmsProjectId} (or
-     * {@code projectCode}) + billing period - never by {@code projectId}, which is XMS-internal.
+     * Also callable by the AR service account, which filters by {@code clientId} (RMS's client
+     * UUID) + billing period. Project filters remain for compatibility but only match line items
+     * that have a project, which is optional on a client-billable expense; {@code projectId} is
+     * XMS-internal.
      */
     @GetMapping("/eligible-expenses")
     @PreAuthorize("hasAnyRole('FINANCE_EXECUTIVE','AR_SERVICE')")
@@ -68,7 +70,8 @@ public class InvoiceHandoffQueueController {
 
     /**
      * Also callable by the AR service account to pull what the invoice team has handed off,
-     * filtered by {@code pmsProjectId} (or {@code projectCode}) and/or handed-off date.
+     * filtered by {@code clientId} and/or handed-off date. {@code pmsProjectId}/{@code
+     * projectCode} remain for compatibility; they skip line items billed without a project.
      */
     @GetMapping("/handed-off")
     @PreAuthorize("hasAnyRole('FINANCE_EXECUTIVE','AR_SERVICE')")
@@ -85,10 +88,28 @@ public class InvoiceHandoffQueueController {
     }
 
     /**
+     * Same records as {@code /handed-off}, for one RMS client ({@code clientId} required) — the
+     * key AR invoices by. 404 when the requested page is empty; 400 when {@code clientId} is
+     * missing or not a UUID. Open to any authenticated caller, like {@code /handed-off/by-project}.
+     */
+    @GetMapping("/handed-off/by-client")
+    @PreAuthorize("isAuthenticated()")
+    public ApiResponse<PageResponse<InvoiceHandoffRecordResponse>> getHandedOffByClient(
+            @RequestParam UUID clientId,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        return ApiResponse.success(invoiceHandoffService.getHandedOffByClient(clientId, page, Math.min(size, 100)));
+    }
+
+    /**
      * Same records as {@code /handed-off}, for one PMS project ({@code pmsProjectId} required).
      * 404 when the requested page is empty; 400 when {@code pmsProjectId} is missing or not numeric.
      * Open to any authenticated caller - no specific role required.
+     *
+     * @deprecated AR matches on client: use {@code /handed-off/by-client}. Kept until AR has
+     * switched; line items billed to a client without a project never appear here.
      */
+    @Deprecated
     @GetMapping("/handed-off/by-project")
     @PreAuthorize("isAuthenticated()")
     public ApiResponse<PageResponse<InvoiceHandoffRecordResponse>> getHandedOffByPmsProject(

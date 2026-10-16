@@ -32,6 +32,8 @@ import static org.mockito.Mockito.when;
 class InterimPolicyEvaluationGatewayImplTest {
 
     @Mock private PolicyEvaluator policyEvaluator;
+    @Mock private com.expense_management_service.service.ReceiptDuplicateService receiptDuplicateService;
+    @Mock private com.expense_management_service.service.CrossDepartmentAllocationService crossDepartmentAllocationService;
     @Mock private PolicyViolationRepository policyViolationRepository;
 
     private InterimPolicyEvaluationGatewayImpl gateway;
@@ -59,7 +61,48 @@ class InterimPolicyEvaluationGatewayImplTest {
 
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
-        gateway = new InterimPolicyEvaluationGatewayImpl(policyEvaluator, policyViolationRepository, new PolicyViolationMapper());
+        gateway = new InterimPolicyEvaluationGatewayImpl(policyEvaluator, policyViolationRepository, new PolicyViolationMapper(),
+                receiptDuplicateService, crossDepartmentAllocationService);
+    }
+
+    @Test
+    void evaluate_blocksSubmission_whenAReceiptWasAlreadyClaimed_evenWithNoPolicyViolations() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport report = report(reportId, ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build());
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+        when(policyViolationRepository.saveAll(any())).thenReturn(List.of());
+        when(receiptDuplicateService.findBlockingMatchesForReport(report)).thenReturn(List.of(
+                new com.expense_management_service.service.ReceiptDuplicateService.DuplicateMatch(
+                        UUID.randomUUID(), "bill.jpg", UUID.randomUUID(),
+                        com.expense_management_service.service.ReceiptDuplicateService.MatchReason.SAME_FILE,
+                        UUID.randomUUID(), UUID.randomUUID(), "ER-0042", false, false,
+                        "This exact receipt file has already been claimed on another employee's expense report.")));
+
+        PolicyDecision decision = gateway.evaluate(report);
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason())
+                .contains("already been claimed")
+                .contains("Receipt 'bill.jpg'")
+                .doesNotContain("ER-0042");
+    }
+
+    @Test
+    void evaluate_blocksSubmission_whenACrossDepartmentChargeHasNoReason() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport report = report(reportId, ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build());
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+        when(policyViolationRepository.saveAll(any())).thenReturn(List.of());
+        when(receiptDuplicateService.findBlockingMatchesForReport(report)).thenReturn(List.of());
+        when(crossDepartmentAllocationService.findLinesMissingReason(report))
+                .thenReturn(List.of("Expense 'Spice Route' on 2026-10-10 is charged to HR Programs, outside your department."));
+
+        PolicyDecision decision = gateway.evaluate(report);
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason()).contains("HR Programs");
     }
 
     @Test

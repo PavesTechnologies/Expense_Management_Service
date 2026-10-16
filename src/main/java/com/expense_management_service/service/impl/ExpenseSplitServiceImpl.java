@@ -73,6 +73,17 @@ public class ExpenseSplitServiceImpl implements ExpenseSplitService {
                 .toList();
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public List<ExpenseSplitResponse> getSplitsForReview(UUID lineItemId) {
+        if (!expenseLineItemRepository.existsById(lineItemId)) {
+            throw new ResourceNotFoundException("ExpenseLineItem not found with id: " + lineItemId);
+        }
+        return expenseSplitRepository.findByLineItem_LineItemIdAndRemovedAtIsNullOrderBySplitOrderAsc(lineItemId).stream()
+                .map(expenseSplitMapper::toResponse)
+                .toList();
+    }
+
     /**
      * Reconciles in place rather than delete-all-and-recreate (production-readiness audit finding,
      * post-Phase-8): once a split has any {@code ApprovalSplitReview} history, its row can never be
@@ -268,7 +279,7 @@ public class ExpenseSplitServiceImpl implements ExpenseSplitService {
             split.setSplitOrder(splitOrder);
             return split;
         }
-        CostCenter costCenter = findCostCenter(r.costCenterId());
+        CostCenter costCenter = findActiveCostCenter(r.costCenterId());
         return ExpenseSplit.builder()
                 .lineItem(lineItem)
                 .costCenter(costCenter)
@@ -325,5 +336,18 @@ public class ExpenseSplitServiceImpl implements ExpenseSplitService {
     private CostCenter findCostCenter(UUID costCenterId) {
         return costCenterRepository.findById(costCenterId)
                 .orElseThrow(() -> new ResourceNotFoundException("CostCenter not found with id: " + costCenterId));
+    }
+
+    /**
+     * New allocations must target an active cost center, same as a line item's own cost center.
+     * Existing rows keep their cost center even if it was deactivated later (see reconcileOne).
+     */
+    private CostCenter findActiveCostCenter(UUID costCenterId) {
+        CostCenter costCenter = findCostCenter(costCenterId);
+        if (!"ACTIVE".equalsIgnoreCase(costCenter.getStatus())) {
+            throw new IllegalArgumentException("Cost center " + costCenter.getCostCenterCode()
+                    + " is not Active and cannot be selected for a split allocation");
+        }
+        return costCenter;
     }
 }

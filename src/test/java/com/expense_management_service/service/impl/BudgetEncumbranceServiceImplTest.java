@@ -141,6 +141,49 @@ class BudgetEncumbranceServiceImplTest {
     }
 
     @Test
+    void validateAndEncumber_unsplitLinesOnDifferentCostCenters_reserveAgainstTheirOwnCostCenters() {
+        // Line 1 has no cost center of its own (-> report's); line 2 is charged to CC-A.
+        ExpenseLineItem onHeader = normalLineItem(BigDecimal.valueOf(3000));
+        ExpenseLineItem onA = normalLineItem(BigDecimal.valueOf(2000));
+        onA.setCostCenter(costCenterA);
+        ExpenseLineItem alsoOnHeader = normalLineItem(BigDecimal.valueOf(1000));
+        alsoOnHeader.setCostCenter(headerCostCenter);
+        report.setExpenseLineItems(List.of(onHeader, onA, alsoOnHeader));
+        CostCenterBudget headerBudget = budgetWith(headerCostCenter, BigDecimal.valueOf(50000), null);
+        CostCenterBudget budgetA = budgetWith(costCenterA, BigDecimal.valueOf(50000), null);
+        when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(headerCostCenter.getCostCenterId(), "FY2026"))
+                .thenReturn(Optional.of(headerBudget));
+        when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(costCenterA.getCostCenterId(), "FY2026"))
+                .thenReturn(Optional.of(budgetA));
+        when(budgetEncumbranceRepository.findForUpdateByBudget_BudgetIdAndStatus(any(), eq(BudgetEncumbranceStatus.ACTIVE)))
+                .thenReturn(List.of());
+        when(budgetEncumbranceRepository.saveAll(anyList())).thenAnswer(inv -> inv.getArgument(0));
+
+        BudgetEncumbranceOutcome outcome = service.validateAndEncumber(report, 1);
+
+        assertThat(outcome.encumbrances())
+                .extracting(e -> e.costCenterId(), e -> e.amount().intValue())
+                .containsExactlyInAnyOrder(
+                        org.assertj.core.groups.Tuple.tuple(headerCostCenter.getCostCenterId(), 4000),
+                        org.assertj.core.groups.Tuple.tuple(costCenterA.getCostCenterId(), 2000));
+    }
+
+    @Test
+    void reconcileForCycle_legacyRemainderRowWithoutCostCenter_stillMatchesTheReportsCostCenter() {
+        report.setExpenseLineItems(List.of(normalLineItem(BigDecimal.valueOf(10000))));
+        // Row created before encumbrances recorded their cost center, and unbudgeted (no budget either).
+        BudgetEncumbrance legacy = BudgetEncumbrance.builder().encumbranceId(UUID.randomUUID()).report(report)
+                .submissionCycle(1).amount(BigDecimal.valueOf(10000)).status(BudgetEncumbranceStatus.ACTIVE)
+                .unbudgeted(true).build();
+        when(budgetEncumbranceRepository.findByReport_ReportIdAndSubmissionCycleAndStatus(reportId, 1, BudgetEncumbranceStatus.ACTIVE))
+                .thenReturn(List.of(legacy));
+
+        service.reconcileForCycle(report, 1);
+
+        verify(budgetEncumbranceRepository, never()).saveAll(anyList());
+    }
+
+    @Test
     void validateAndEncumber_zeroLineItems_createsNothing() {
         report.setExpenseLineItems(List.of());
 

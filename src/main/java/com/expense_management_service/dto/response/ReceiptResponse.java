@@ -1,5 +1,6 @@
 package com.expense_management_service.dto.response;
 
+import com.expense_management_service.enums.DuplicateReceiptStatus;
 import com.expense_management_service.enums.OcrStatus;
 
 import java.time.LocalDateTime;
@@ -24,6 +25,20 @@ public record ReceiptResponse(
         /** Advisory only, never blocks anything — true when this exact file's bytes were already uploaded as a different receipt (by anyone, on any report). */
         boolean possibleDuplicateFileReuse,
         /** The other receipt this one's file bytes match, when {@link #possibleDuplicateFileReuse} is true — null otherwise. */
-        UUID duplicateOfReceiptId
+        UUID duplicateOfReceiptId,
+        /**
+         * Whether this receipt was already claimed elsewhere (see {@code ReceiptDuplicateService}):
+         * BLOCKING stops submission, WARNING needs an explanation. Unlike
+         * {@link #possibleDuplicateFileReuse}, only counts receipts on submitted reports.
+         */
+        DuplicateReceiptStatus duplicateStatus,
+        /** Employee-facing explanation when {@link #duplicateStatus} isn't NONE; null otherwise. */
+        String duplicateMessage
 ) {
+    public ReceiptResponse(UUID receiptId, UUID reportId, UUID lineItemId, String originalFileName, String contentType,
+                           Integer fileSize, String uploadedBy, LocalDateTime uploadedAt, OcrStatus ocrStatus,
+                           boolean possibleDuplicateFileReuse, UUID duplicateOfReceiptId) {
+        this(receiptId, reportId, lineItemId, originalFileName, contentType, fileSize, uploadedBy, uploadedAt, ocrStatus,
+                possibleDuplicateFileReuse, duplicateOfReceiptId, DuplicateReceiptStatus.NONE, null);
+    }
 }

@@ -76,8 +76,8 @@ class ExpenseSplitServiceImplTest {
 
         costCenterAId = UUID.randomUUID();
         costCenterBId = UUID.randomUUID();
-        costCenterA = CostCenter.builder().costCenterId(costCenterAId).costCenterCode("CC-A").costCenterName("Engineering").build();
-        costCenterB = CostCenter.builder().costCenterId(costCenterBId).costCenterCode("CC-B").costCenterName("Marketing").build();
+        costCenterA = CostCenter.builder().costCenterId(costCenterAId).costCenterCode("CC-A").costCenterName("Engineering").status("ACTIVE").build();
+        costCenterB = CostCenter.builder().costCenterId(costCenterBId).costCenterCode("CC-B").costCenterName("Marketing").status("ACTIVE").build();
     }
 
     private void stubOwnedEditableLineItem() {
@@ -167,7 +167,7 @@ class ExpenseSplitServiceImplTest {
         stubCostCenters();
         UUID costCenterCId = UUID.randomUUID();
         when(costCenterRepository.findById(costCenterCId))
-                .thenReturn(Optional.of(CostCenter.builder().costCenterId(costCenterCId).costCenterCode("CC-C").costCenterName("Sales").build()));
+                .thenReturn(Optional.of(CostCenter.builder().costCenterId(costCenterCId).costCenterCode("CC-C").costCenterName("Sales").status("ACTIVE").build()));
         stubSaveAllPassthrough();
 
         ExpenseSplitReplaceRequest request = new ExpenseSplitReplaceRequest(List.of(
@@ -180,6 +180,43 @@ class ExpenseSplitServiceImplTest {
         assertThat(result).hasSize(3);
         BigDecimal sum = result.stream().map(ExpenseSplitResponse::allocatedAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
         assertThat(sum).isEqualByComparingTo("10000");
+    }
+
+    @Test
+    void getSplitsForReview_returnsSplitsWithoutAnOwnershipCheck() {
+        when(expenseLineItemRepository.existsById(lineItemId)).thenReturn(true);
+        when(expenseSplitRepository.findByLineItem_LineItemIdAndRemovedAtIsNullOrderBySplitOrderAsc(lineItemId)).thenReturn(List.of(
+                ExpenseSplit.builder().splitId(UUID.randomUUID()).costCenter(costCenterA).splitType(SplitType.PERCENTAGE)
+                        .percentage(new BigDecimal("50")).allocatedAmount(new BigDecimal("250")).splitOrder(0).build()));
+
+        assertThat(service.getSplitsForReview(lineItemId)).singleElement()
+                .satisfies(s -> assertThat(s.costCenterName()).isEqualTo("Engineering"));
+    }
+
+    @Test
+    void getSplitsForReview_throwsNotFound_forAnUnknownLineItem() {
+        when(expenseLineItemRepository.existsById(lineItemId)).thenReturn(false);
+
+        assertThatThrownBy(() -> service.getSplitsForReview(lineItemId))
+                .isInstanceOf(com.expense_management_service.common.exception.ResourceNotFoundException.class);
+    }
+
+    @Test
+    void replaceSplits_rejectsANewSplitOnAnInactiveCostCenter() {
+        stubOwnedEditableLineItem();
+        when(costCenterRepository.findById(costCenterAId)).thenReturn(Optional.of(costCenterA));
+        UUID inactiveId = UUID.randomUUID();
+        when(costCenterRepository.findById(inactiveId))
+                .thenReturn(Optional.of(CostCenter.builder().costCenterId(inactiveId).costCenterCode("CC-OLD").status("INACTIVE").build()));
+
+        ExpenseSplitReplaceRequest request = new ExpenseSplitReplaceRequest(List.of(
+                new ExpenseSplitRequest(costCenterAId, SplitType.PERCENTAGE, new BigDecimal("50"), null),
+                new ExpenseSplitRequest(inactiveId, SplitType.PERCENTAGE, new BigDecimal("50"), null)));
+
+        assertThatThrownBy(() -> service.replaceSplitsForLineItem(lineItemId, request, OWNER_EMPLOYEE_ID))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("CC-OLD is not Active");
+        verify(expenseSplitRepository, never()).saveAll(anyList());
     }
 
     // ---------------------------------------------------------------------
@@ -488,7 +525,7 @@ class ExpenseSplitServiceImplTest {
         stubCostCenters();
         UUID costCenterCId = UUID.randomUUID();
         when(costCenterRepository.findById(costCenterCId))
-                .thenReturn(Optional.of(CostCenter.builder().costCenterId(costCenterCId).costCenterCode("CC-C").costCenterName("Sales").build()));
+                .thenReturn(Optional.of(CostCenter.builder().costCenterId(costCenterCId).costCenterCode("CC-C").costCenterName("Sales").status("ACTIVE").build()));
         stubSaveAllPassthrough();
 
         ExpenseSplitReplaceRequest request = new ExpenseSplitReplaceRequest(List.of(

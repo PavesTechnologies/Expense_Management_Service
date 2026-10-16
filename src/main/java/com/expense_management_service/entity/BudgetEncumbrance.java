@@ -23,13 +23,12 @@ import java.util.UUID;
  * specifically to represent the unbudgeted case ({@code unbudgeted == true}), where no
  * {@code CostCenterBudget} row exists at all for the target cost center/fiscal year to point to.
  * <p>
- * {@code split} is nullable: null represents the single report-level reservation for a normal
- * (non-split) expense's unsplit remainder, sized and targeted exactly like the existing
- * {@code consumeBudget(report.getCostCenter(), report.getFiscalYear(), report.getTotalAmount())}
- * call already is; a populated value represents one specific {@code ExpenseSplit}'s reservation. A
- * database unique constraint prevents duplicate split-level rows within one report/cycle; "at most
- * one null-split (report-level) row per report/cycle" is a service-layer invariant (Phase 3), not a
- * database constraint, since SQL unique indexes do not treat multiple NULLs as a single value.
+ * {@code split} is nullable: null represents the reservation for the unsplit line items charged to
+ * one cost center (each unsplit line counts against its own cost center, else the report's); a
+ * populated value represents one specific {@code ExpenseSplit}'s reservation. A database unique
+ * constraint prevents duplicate split-level rows within one report/cycle; "at most one null-split
+ * row per cost center per report/cycle" is a service-layer invariant, not a database constraint,
+ * since SQL unique indexes do not treat multiple NULLs as a single value.
  */
 @Entity
 @Table(name = "budget_encumbrance", uniqueConstraints = {
@@ -55,6 +54,16 @@ public class BudgetEncumbrance {
     @JoinColumn(name = "budget_id")
     @ToString.Exclude
     private CostCenterBudget budget;
+
+    /**
+     * The cost center this row reserves against — set on every row created from now on, so an
+     * unbudgeted remainder row still knows its cost center. Null on older rows: those meant the
+     * split's cost center, or (for a null-split row) the report's own cost center.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "cost_center_id")
+    @ToString.Exclude
+    private CostCenter costCenter;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "report_id", nullable = false)

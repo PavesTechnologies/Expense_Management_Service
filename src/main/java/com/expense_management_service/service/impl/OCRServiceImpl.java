@@ -22,6 +22,7 @@ import com.expense_management_service.security.RoleConstants;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.OCRService;
 import com.expense_management_service.service.OcrDocumentStrategy;
+import com.expense_management_service.service.ReceiptDuplicateService;
 import com.expense_management_service.service.TextractIntegrationException;
 import com.expense_management_service.service.TextractNotApplicableException;
 import lombok.RequiredArgsConstructor;
@@ -62,6 +63,7 @@ public class OCRServiceImpl implements OCRService {
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
     private final DelegationService delegationService;
     private final OcrCategoryResolver ocrCategoryResolver;
+    private final ReceiptDuplicateService receiptDuplicateService;
 
     /** Confidence (0.00-1.00) below which extracted fields are flagged for employee review. */
     @Value("${ocr.confidence-threshold:0.80}")
@@ -273,7 +275,7 @@ public class OCRServiceImpl implements OCRService {
     private ReceiptOcrResponse toResponseWithFlags(ReceiptOcr ocr, Receipt receipt) {
         boolean possibleDuplicate = ocr.getProcessingStatus() == OcrStatus.OCR_COMPLETED && isDuplicate(ocr, receipt);
         return receiptOcrMapper.toResponse(ocr, possibleDuplicate, isReviewRecommended(ocr),
-                ocrCategoryResolver.resolve(ocr.getCategory()));
+                ocrCategoryResolver.resolve(ocr.getCategory()), receiptDuplicateService.summarize(receipt));
     }
 
     /**

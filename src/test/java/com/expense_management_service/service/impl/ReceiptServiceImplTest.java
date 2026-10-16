@@ -50,6 +50,8 @@ import static org.mockito.Mockito.when;
 class ReceiptServiceImplTest {
 
     @Mock
+    private com.expense_management_service.service.ReceiptDuplicateService receiptDuplicateService;
+    @Mock
     private ReceiptRepository receiptRepository;
     @Mock
     private ExpenseReportRepository expenseReportRepository;
@@ -78,7 +80,9 @@ class ReceiptServiceImplTest {
     void setUp() {
         receiptService = new ReceiptServiceImpl(receiptRepository, expenseReportRepository, expenseLineItemRepository,
                 storageService, currentUserService, new ReceiptMapper(), applicationEventPublisher,
-                approvalAssignmentRepository, delegationService);
+                approvalAssignmentRepository, delegationService, receiptDuplicateService);
+        org.mockito.Mockito.lenient().when(receiptDuplicateService.summarize(any()))
+                .thenReturn(com.expense_management_service.service.ReceiptDuplicateService.DuplicateSummary.NONE);
         ReflectionTestUtils.setField(receiptService, "maxFileSizeBytes", 10L * 1024 * 1024);
         ReflectionTestUtils.setField(receiptService, "presignedUrlTtlMinutes", 15L);
 

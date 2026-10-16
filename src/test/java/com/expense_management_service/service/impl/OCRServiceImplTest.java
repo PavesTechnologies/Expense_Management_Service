@@ -52,6 +52,8 @@ import com.expense_management_service.service.DelegationService;
 class OCRServiceImplTest {
 
     @Mock
+    private com.expense_management_service.service.ReceiptDuplicateService receiptDuplicateService;
+    @Mock
     private ReceiptRepository receiptRepository;
     @Mock
     private ReceiptOcrRepository receiptOcrRepository;
@@ -78,7 +80,9 @@ class OCRServiceImplTest {
     void setUp() {
         ocrService = new OCRServiceImpl(receiptRepository, receiptOcrRepository, auditLogRepository,
                 List.of(ocrDocumentStrategy), new ReceiptOcrMapper(), currentUserService,
-                approvalAssignmentRepository, delegationService, ocrCategoryResolver);
+                approvalAssignmentRepository, delegationService, ocrCategoryResolver, receiptDuplicateService);
+        lenient().when(receiptDuplicateService.summarize(any()))
+                .thenReturn(com.expense_management_service.service.ReceiptDuplicateService.DuplicateSummary.NONE);
         ReflectionTestUtils.setField(ocrService, "confidenceThreshold", new BigDecimal("0.80"));
 
         receiptId = UUID.randomUUID();
@@ -461,7 +465,7 @@ class OCRServiceImplTest {
         private OCRServiceImpl newService(List<OcrDocumentStrategy> strategies) {
             OCRServiceImpl service = new OCRServiceImpl(receiptRepository, receiptOcrRepository, auditLogRepository,
                     strategies, new ReceiptOcrMapper(), currentUserService, approvalAssignmentRepository, delegationService,
-                    ocrCategoryResolver);
+                    ocrCategoryResolver, receiptDuplicateService);
             ReflectionTestUtils.setField(service, "confidenceThreshold", new BigDecimal("0.80"));
             return service;
         }

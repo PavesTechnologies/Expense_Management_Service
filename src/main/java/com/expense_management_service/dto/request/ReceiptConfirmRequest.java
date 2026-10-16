@@ -35,8 +35,18 @@ public record ReceiptConfirmRequest(
         UUID taxCodeId,
         @Size(max = 500) String taxOverrideReason,
         /** RMS client for a client-billable new line — see {@code ExpenseLineItemRequest.clientId}. */
-        UUID clientId
+        UUID clientId,
+        /** See {@code ExpenseLineItemRequest.allocationReason}. */
+        @Size(max = 500) String allocationReason
 ) {
+    public ReceiptConfirmRequest(UUID lineItemId, UUID categoryId, LocalDate expenseDate, String merchantName,
+                                 String description, BigDecimal amount, UUID currencyId, BigDecimal taxAmount,
+                                 UUID costCenterId, UUID projectId, Boolean clientBillable, UUID taxCodeId,
+                                 String taxOverrideReason, UUID clientId) {
+        this(lineItemId, categoryId, expenseDate, merchantName, description, amount, currencyId, taxAmount,
+                costCenterId, projectId, clientBillable, taxCodeId, taxOverrideReason, clientId, null);
+    }
+
     /** Pre-client-selection shape. */
     public ReceiptConfirmRequest(UUID lineItemId, UUID categoryId, LocalDate expenseDate, String merchantName,
                                  String description, BigDecimal amount, UUID currencyId, BigDecimal taxAmount,

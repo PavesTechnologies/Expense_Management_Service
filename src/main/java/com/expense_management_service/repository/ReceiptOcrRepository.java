@@ -3,6 +3,8 @@ package com.expense_management_service.repository;
 import com.expense_management_service.entity.ReceiptOcr;
 import com.expense_management_service.enums.OcrStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -29,4 +31,20 @@ public interface ReceiptOcrRepository extends JpaRepository<ReceiptOcr, UUID> {
      */
     List<ReceiptOcr> findByMerchantNameIgnoreCaseAndAmountAndCurrencyCodeIgnoreCaseAndReceiptDateAndProcessingStatusAndReceipt_ReceiptIdNot(
             String merchantName, BigDecimal amount, String currencyCode, LocalDate receiptDate, OcrStatus processingStatus, UUID excludedReceiptId);
+
+    /**
+     * Completed extractions whose invoice number, upper-cased with spaces removed, equals
+     * {@code normalizedInvoiceNumber} — candidate same-bill matches for {@code ReceiptDuplicateService},
+     * which then checks supplier and date.
+     */
+    @Query("""
+            SELECT o FROM ReceiptOcr o
+            WHERE o.processingStatus = :status
+              AND o.invoiceNumber IS NOT NULL
+              AND REPLACE(UPPER(TRIM(o.invoiceNumber)), ' ', '') = :normalizedInvoiceNumber
+              AND o.receipt.receiptId <> :excludedReceiptId
+            """)
+    List<ReceiptOcr> findCompletedByNormalizedInvoiceNumber(@Param("status") OcrStatus status,
+                                                            @Param("normalizedInvoiceNumber") String normalizedInvoiceNumber,
+                                                            @Param("excludedReceiptId") UUID excludedReceiptId);
 }

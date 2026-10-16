@@ -49,6 +49,8 @@ import static org.mockito.Mockito.when;
 class DefaultPolicyEvaluatorTest {
 
     @Mock
+    private com.expense_management_service.service.ReceiptDuplicateService receiptDuplicateService;
+    @Mock
     private PolicyRuleRepository policyRuleRepository;
     @Mock
     private ExpenseLineItemRepository expenseLineItemRepository;
@@ -72,7 +74,7 @@ class DefaultPolicyEvaluatorTest {
     @BeforeEach
     void setUp() {
         evaluator = new DefaultPolicyEvaluator(policyRuleRepository, expenseLineItemRepository, policyAssignmentResolver,
-                policyRuleLimitRepository, policySeverityThresholdRepository, policyVersionService);
+                policyRuleLimitRepository, policySeverityThresholdRepository, policyVersionService, receiptDuplicateService);
         categoryId = UUID.randomUUID();
         category = ExpenseCategory.builder().categoryId(categoryId).categoryName("Travel").status("ACTIVE").build();
         report = ExpenseReport.builder().reportId(UUID.randomUUID()).employeeId("5100014").build();

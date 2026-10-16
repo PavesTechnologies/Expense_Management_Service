@@ -106,6 +106,14 @@ public class ExpenseLineItem {
     @Column(name = "tax_override_reason", length = 500)
     private String taxOverrideReason;
 
+    /**
+     * Why this expense is charged to a cost center outside the employee's home department
+     * (directly or through a split). Required at submission only in that case — see
+     * {@code CrossDepartmentAllocationService}.
+     */
+    @Column(name = "allocation_reason", length = 500)
+    private String allocationReason;
+
     /** Copied from the tax code when the snapshot is taken. */
     @Column(name = "itc_recoverable_percent", precision = 5, scale = 2)
     private BigDecimal itcRecoverablePercent;

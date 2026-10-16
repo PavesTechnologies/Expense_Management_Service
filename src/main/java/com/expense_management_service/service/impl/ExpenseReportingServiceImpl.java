@@ -5,6 +5,7 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.YearMonth;
 import java.time.format.TextStyle;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -93,6 +94,7 @@ public class ExpenseReportingServiceImpl implements ExpenseReportingService {
 
         List<Line> lines = lines(start, end, scopeIds);
         Map<String, EmployeeCache> employees = employees(lines.stream().map(Line::employeeId).collect(Collectors.toSet()));
+        List<Allocation> allocations = allocations(lines, start, end, scopeIds, employees);
 
         BigDecimal spend = sum(lines);
         long reportCount = lines.stream().map(Line::reportId).distinct().count();
@@ -104,24 +106,38 @@ public class ExpenseReportingServiceImpl implements ExpenseReportingService {
                 byMonth(lines, start, end),
                 group(lines, l -> l.categoryName() != null ? l.categoryName() : "Uncategorized",
                         l -> l.categoryName() != null ? l.categoryName() : "Uncategorized"),
-                byCostCenter(lines, start, end, scopeIds),
-                group(lines, l -> departmentOf(employees.get(l.employeeId())), l -> departmentOf(employees.get(l.employeeId()))),
+                byCostCenter(allocations),
+                byDepartment(allocations),
                 byEmployee(lines, employees),
                 byStatus(lines),
                 cashAdvances(start, end, scopeIds),
                 reimbursements(start, end, scopeIds));
     }
 
-    /** One line item in range: (lineItemId, expenseDate, amount, baseAmount, category, line cost center, report cost center, report). */
+    /**
+     * One line item in range: (lineItemId, expenseDate, amount, baseAmount, category, the line's cost
+     * center or else its report's, report, and that cost center's department).
+     */
     record Line(UUID lineItemId, LocalDate expenseDate, BigDecimal amount, BigDecimal baseAmount, String categoryName,
-                UUID costCenterId, String costCenterName, UUID reportId, String employeeId, ReportStatus reportStatus) {
+                UUID costCenterId, String costCenterName, UUID reportId, String employeeId, ReportStatus reportStatus,
+                UUID costCenterDepartmentUuid) {
+    }
+
+    /**
+     * Where a line's spend is charged, in base currency: the whole line for an unsplit line, or one
+     * row per active split. {@code departmentKey} is the cost center's department - the business
+     * purpose's department, not the payer's - falling back to the payer's department only when the
+     * cost center has none.
+     */
+    record Allocation(UUID lineItemId, String costCenterKey, String costCenterName, String departmentKey, BigDecimal amount) {
     }
 
     private List<Line> lines(LocalDate start, LocalDate end, Set<String> scopeIds) {
         TypedQuery<Object[]> query = em.createQuery("""
                         select l.lineItemId, l.expenseDate, l.amount, l.baseAmount, c.categoryName,
                                coalesce(lcc.costCenterId, rcc.costCenterId), coalesce(lcc.costCenterName, rcc.costCenterName),
-                               r.reportId, r.employeeId, r.reportStatus
+                               r.reportId, r.employeeId, r.reportStatus,
+                               case when lcc.costCenterId is not null then lcc.departmentUuid else rcc.departmentUuid end
                         from ExpenseLineItem l join l.report r left join l.category c
                              left join l.costCenter lcc left join r.costCenter rcc
                         where l.expenseDate between :start and :end and r.reportStatus not in :excluded
@@ -130,7 +146,7 @@ public class ExpenseReportingServiceImpl implements ExpenseReportingService {
         if (scopeIds != null) query.setParameter("ids", scopeIds);
         return query.getResultList().stream()
                 .map(row -> new Line((UUID) row[0], (LocalDate) row[1], amount(row[2]), amount(row[3]), (String) row[4],
-                        (UUID) row[5], (String) row[6], (UUID) row[7], (String) row[8], (ReportStatus) row[9]))
+                        (UUID) row[5], (String) row[6], (UUID) row[7], (String) row[8], (ReportStatus) row[9], (UUID) row[10]))
                 .toList();
     }
 
@@ -154,41 +170,66 @@ public class ExpenseReportingServiceImpl implements ExpenseReportingService {
     }
 
     /**
-     * Unsplit lines count under their own (or their report's) cost center; split lines count under
-     * each split's cost center by its share of the line, converted with the line's own base rate.
+     * Split lines contribute each split's {@code allocatedAmount} - already in base currency (splits
+     * are sized from the line's baseAmount) - so it is used as-is, never rescaled by the line's rate.
      */
-    private List<Row> byCostCenter(List<Line> lines, LocalDate start, LocalDate end, Set<String> scopeIds) {
+    private List<Allocation> allocations(List<Line> lines, LocalDate start, LocalDate end, Set<String> scopeIds,
+                                         Map<String, EmployeeCache> employees) {
         TypedQuery<Object[]> query = em.createQuery("""
-                        select l.lineItemId, l.amount, l.baseAmount, cc.costCenterId, cc.costCenterName, s.allocatedAmount
+                        select l.lineItemId, cc.costCenterId, cc.costCenterName, s.allocatedAmount, cc.departmentUuid, r.employeeId
                         from ExpenseSplit s join s.lineItem l join l.report r join s.costCenter cc
                         where s.removedAt is null and l.expenseDate between :start and :end and r.reportStatus not in :excluded
                         """ + (scopeIds != null ? " and r.employeeId in :ids" : ""), Object[].class)
                 .setParameter("start", start).setParameter("end", end).setParameter("excluded", EXCLUDED);
         if (scopeIds != null) query.setParameter("ids", scopeIds);
-        List<Object[]> splits = query.getResultList();
-        Set<UUID> splitLineIds = new HashSet<>();
 
-        Map<String, String> labels = new HashMap<>();
-        Map<String, Long> counts = new HashMap<>();
-        Map<String, BigDecimal> amounts = new HashMap<>();
-        for (Object[] s : splits) {
+        List<Allocation> allocations = new ArrayList<>();
+        Set<UUID> splitLineIds = new HashSet<>();
+        for (Object[] s : query.getResultList()) {
             splitLineIds.add((UUID) s[0]);
-            BigDecimal lineAmount = amount(s[1]);
-            BigDecimal share = lineAmount.signum() == 0 ? BigDecimal.ZERO
-                    : amount(s[2]).multiply(amount(s[5])).divide(lineAmount, 4, RoundingMode.HALF_UP);
-            String key = s[3].toString();
-            labels.put(key, (String) s[4]);
-            counts.merge(key, 1L, Long::sum);
-            amounts.merge(key, share, BigDecimal::add);
+            allocations.add(new Allocation((UUID) s[0], s[1].toString(), (String) s[2],
+                    departmentKey((UUID) s[4], employees.get((String) s[5])), amount(s[3])));
         }
         for (Line l : lines) {
             if (splitLineIds.contains(l.lineItemId())) continue;
-            String key = l.costCenterId() != null ? l.costCenterId().toString() : UNASSIGNED;
-            labels.put(key, l.costCenterName() != null ? l.costCenterName() : "No cost center");
-            counts.merge(key, 1L, Long::sum);
-            amounts.merge(key, l.baseAmount(), BigDecimal::add);
+            allocations.add(new Allocation(l.lineItemId(),
+                    l.costCenterId() != null ? l.costCenterId().toString() : UNASSIGNED,
+                    l.costCenterName() != null ? l.costCenterName() : "No cost center",
+                    departmentKey(l.costCenterDepartmentUuid(), employees.get(l.employeeId())),
+                    l.baseAmount()));
         }
-        return sorted(labels.keySet().stream().map(k -> new Row(k, labels.get(k), counts.get(k), amounts.get(k))).toList());
+        return allocations;
+    }
+
+    /** Unsplit lines count under their own (or their report's) cost center; split lines under each split's cost center by its allocated share. */
+    private List<Row> byCostCenter(List<Allocation> allocations) {
+        Map<String, String> labels = new HashMap<>();
+        allocations.forEach(a -> labels.put(a.costCenterKey(), a.costCenterName()));
+        return groupAllocations(allocations, Allocation::costCenterKey, labels::get);
+    }
+
+    /** Each share counts under its cost center's department, so a bill split Engineering/HR shows under both. */
+    private List<Row> byDepartment(List<Allocation> allocations) {
+        return groupAllocations(allocations, Allocation::departmentKey, key -> key);
+    }
+
+    /** Counts distinct line items per group (a line split twice within one group counts once). */
+    private List<Row> groupAllocations(List<Allocation> allocations, Function<Allocation, String> key,
+                                       Function<String, String> label) {
+        Map<String, Set<UUID>> lineIds = new HashMap<>();
+        Map<String, BigDecimal> amounts = new HashMap<>();
+        for (Allocation a : allocations) {
+            String k = key.apply(a);
+            lineIds.computeIfAbsent(k, x -> new HashSet<>()).add(a.lineItemId());
+            amounts.merge(k, a.amount(), BigDecimal::add);
+        }
+        return sorted(amounts.keySet().stream()
+                .map(k -> new Row(k, label.apply(k), lineIds.get(k).size(), amounts.get(k)))
+                .toList());
+    }
+
+    private static String departmentKey(UUID costCenterDepartment, EmployeeCache payer) {
+        return costCenterDepartment != null ? costCenterDepartment.toString() : departmentOf(payer);
     }
 
     private List<Row> byEmployee(List<Line> lines, Map<String, EmployeeCache> employees) {

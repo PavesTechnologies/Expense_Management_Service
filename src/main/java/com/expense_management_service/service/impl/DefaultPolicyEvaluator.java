@@ -8,8 +8,10 @@ import com.expense_management_service.entity.PolicyRule;
 import com.expense_management_service.entity.PolicyRuleLimit;
 import com.expense_management_service.entity.PolicySeverityThreshold;
 import com.expense_management_service.entity.PolicyViolation;
+import com.expense_management_service.enums.PolicyEnforcementType;
 import com.expense_management_service.enums.PolicyOverageTier;
 import com.expense_management_service.enums.PolicyRuleType;
+import com.expense_management_service.enums.PolicySeverity;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.PolicyRuleLimitRepository;
@@ -18,6 +20,7 @@ import com.expense_management_service.repository.PolicySeverityThresholdReposito
 import com.expense_management_service.service.PolicyAssignmentResolver;
 import com.expense_management_service.service.PolicyEvaluator;
 import com.expense_management_service.service.PolicyVersionService;
+import com.expense_management_service.service.ReceiptDuplicateService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
@@ -64,9 +67,43 @@ public class DefaultPolicyEvaluator implements PolicyEvaluator {
     private final PolicyRuleLimitRepository policyRuleLimitRepository;
     private final PolicySeverityThresholdRepository policySeverityThresholdRepository;
     private final PolicyVersionService policyVersionService;
+    private final ReceiptDuplicateService receiptDuplicateService;
 
     @Override
     public List<PolicyViolation> evaluate(ExpenseLineItem lineItem) {
+        List<PolicyViolation> violations = evaluateConfiguredRules(lineItem);
+        duplicateReceiptWarning(lineItem).ifPresent(violations::add);
+        return violations;
+    }
+
+    /**
+     * Built-in, always on (no admin rule needed): a receipt on this line matches a claimed
+     * receipt by merchant + amount + currency + date. Stored as a rule-less DUPLICATE_EXPENSE
+     * violation so the existing explain-before-submit gate and approver display apply. Stronger
+     * matches (same file/invoice) aren't explainable — the submission gateway blocks those.
+     */
+    private Optional<PolicyViolation> duplicateReceiptWarning(ExpenseLineItem lineItem) {
+        if (lineItem.getLineItemId() == null) {
+            return Optional.empty();
+        }
+        try {
+            return receiptDuplicateService.findWarningMatchesForLineItem(lineItem.getLineItemId()).stream()
+                    .findFirst()
+                    .map(match -> PolicyViolation.builder()
+                            .lineItem(lineItem)
+                            .ruleType(PolicyRuleType.DUPLICATE_EXPENSE)
+                            .severity(PolicySeverity.WARN)
+                            .enforcementType(PolicyEnforcementType.WARN)
+                            .message("Possible duplicate receipt: " + match.message())
+                            .detectedAt(LocalDateTime.now())
+                            .build());
+        } catch (Exception ex) {
+            log.warn("Duplicate-receipt check failed for line item {} - skipping it", lineItem.getLineItemId(), ex);
+            return Optional.empty();
+        }
+    }
+
+    private List<PolicyViolation> evaluateConfiguredRules(ExpenseLineItem lineItem) {
         List<PolicyViolation> violations = new ArrayList<>();
         ExpenseCategory category = lineItem.getCategory();
         if (category == null) {

@@ -44,14 +44,27 @@ public record ExpenseLineItemRequest(
          * {@code GET /xms/clients}). Ignored when {@code clientBillable} is not true. When null,
          * the client is derived from {@code projectId}'s PMS project instead.
          */
-        UUID clientId
+        UUID clientId,
+        /**
+         * Why the expense is charged to a cost center outside the employee's home department.
+         * Optional on save; required at submission when the line (or its split) is cross-department.
+         */
+        @Size(max = 500) String allocationReason
 ) {
+    public ExpenseLineItemRequest(UUID categoryId, LocalDate expenseDate, String merchantName, String description,
+                                  BigDecimal amount, UUID currencyId, BigDecimal taxAmount, UUID costCenterId,
+                                  UUID projectId, Boolean clientBillable, UUID taxCodeId, String taxOverrideReason,
+                                  UUID clientId) {
+        this(categoryId, expenseDate, merchantName, description, amount, currencyId, taxAmount, costCenterId,
+                projectId, clientBillable, taxCodeId, taxOverrideReason, clientId, null);
+    }
+
     /** Pre-client-selection shape: a billable line item's client is derived from its project. */
     public ExpenseLineItemRequest(UUID categoryId, LocalDate expenseDate, String merchantName, String description,
                                   BigDecimal amount, UUID currencyId, BigDecimal taxAmount, UUID costCenterId,
                                   UUID projectId, Boolean clientBillable, UUID taxCodeId, String taxOverrideReason) {
         this(categoryId, expenseDate, merchantName, description, amount, currencyId, taxAmount, costCenterId,
-                projectId, clientBillable, taxCodeId, taxOverrideReason, null);
+                projectId, clientBillable, taxCodeId, taxOverrideReason, null, null);
     }
 
     /** Pre-tax-code shape: {@code taxAmount} is compared with the calculation for the category's code. */
@@ -59,6 +72,6 @@ public record ExpenseLineItemRequest(
                                   BigDecimal amount, UUID currencyId, BigDecimal taxAmount, UUID costCenterId,
                                   UUID projectId, Boolean clientBillable) {
         this(categoryId, expenseDate, merchantName, description, amount, currencyId, taxAmount, costCenterId,
-                projectId, clientBillable, null, null, null);
+                projectId, clientBillable, null, null, null, null);
     }
 }

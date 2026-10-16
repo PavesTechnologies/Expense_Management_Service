@@ -45,7 +45,7 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
     private final CostCenterBudgetService costCenterBudgetService;
     private final BudgetEncumbranceMapper budgetEncumbranceMapper;
 
-    /** One resolved reservation target - either a specific ExpenseSplit, or the combined unsplit remainder (split == null) against the report's own header Cost Center. */
+    /** One resolved reservation target - either a specific ExpenseSplit, or the combined unsplit lines (split == null) charged to one Cost Center. */
     private record Target(CostCenter costCenter, BigDecimal amount, ExpenseSplit split) {
     }
 
@@ -120,6 +120,7 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
             CostCenterBudget budget = lockedBudgets.get(target.costCenter().getCostCenterId());
             toCreate.add(BudgetEncumbrance.builder()
                     .budget(budget)
+                    .costCenter(target.costCenter())
                     .report(report)
                     .split(target.split())
                     .submissionCycle(submissionCycle)
@@ -134,10 +135,14 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
         return new BudgetEncumbranceOutcome(saved.stream().map(budgetEncumbranceMapper::toResponse).toList(), warnings);
     }
 
-    /** Splits every line item into its own targets when it has any; otherwise its full amount joins the report-level "unsplit remainder" target against report.getCostCenter(). */
+    /**
+     * Splits every line item into its own targets when it has any; otherwise its full amount joins
+     * the "unsplit remainder" for the line's own Cost Center (the report's when the line has none) -
+     * the same cost center reporting attributes the line to.
+     */
     private List<Target> resolveTargets(ExpenseReport report) {
         List<Target> targets = new ArrayList<>();
-        BigDecimal unsplitRemainder = BigDecimal.ZERO;
+        Map<UUID, Target> remainderByCostCenter = new LinkedHashMap<>();
 
         List<ExpenseLineItem> lineItems = report.getExpenseLineItems() != null ? report.getExpenseLineItems() : List.of();
         for (ExpenseLineItem lineItem : lineItems) {
@@ -154,14 +159,28 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
                 // Base currency, matching ExpenseSplitServiceImpl's allocatedAmount basis and
                 // CostCenterBudget's own currency - report.getTotalAmount() is computed the same way
                 // (SUM of baseAmount), so this reconciles exactly for an all-normal report.
-                unsplitRemainder = unsplitRemainder.add(lineItem.getBaseAmount());
+                CostCenter costCenter = lineItem.getCostCenter() != null ? lineItem.getCostCenter() : report.getCostCenter();
+                BigDecimal amount = lineItem.getBaseAmount() != null ? lineItem.getBaseAmount() : BigDecimal.ZERO;
+                remainderByCostCenter.merge(costCenter.getCostCenterId(), new Target(costCenter, amount, null),
+                        (a, b) -> new Target(a.costCenter(), a.amount().add(b.amount()), null));
             }
         }
 
-        if (unsplitRemainder.signum() > 0) {
-            targets.add(new Target(report.getCostCenter(), unsplitRemainder, null));
-        }
+        remainderByCostCenter.values().stream()
+                .filter(target -> target.amount().signum() > 0)
+                .forEach(targets::add);
         return targets;
+    }
+
+    /** Which cost center a null-split (remainder) row reserves against - see {@code BudgetEncumbrance.costCenter}. */
+    private static UUID remainderCostCenterId(BudgetEncumbrance encumbrance, ExpenseReport report) {
+        if (encumbrance.getCostCenter() != null) {
+            return encumbrance.getCostCenter().getCostCenterId();
+        }
+        if (encumbrance.getBudget() != null && encumbrance.getBudget().getCostCenter() != null) {
+            return encumbrance.getBudget().getCostCenter().getCostCenterId();
+        }
+        return report.getCostCenter() != null ? report.getCostCenter().getCostCenterId() : null;
     }
 
     @Override
@@ -270,7 +289,7 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
                 .findByReport_ReportIdAndSubmissionCycleAndStatus(report.getReportId(), submissionCycle, BudgetEncumbranceStatus.ACTIVE);
         List<Target> currentTargets = resolveTargets(report);
 
-        if (matchesExactly(active, currentTargets)) {
+        if (matchesExactly(active, currentTargets, report)) {
             log.info("Report {} cycle {}: encumbrance reconciliation found no budget-impacting change - leaving {} ACTIVE encumbrance(s) untouched",
                     report.getReportId(), submissionCycle, active.size());
             return;
@@ -280,12 +299,13 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
                 report.getReportId(), submissionCycle);
 
         Map<UUID, BudgetEncumbrance> activeBySplitId = new HashMap<>();
-        BudgetEncumbrance activeRemainder = null;
+        // Invariant: at most one null-split row per cost center per report/cycle (see class javadoc).
+        Map<UUID, BudgetEncumbrance> activeRemainderByCostCenter = new HashMap<>();
         for (BudgetEncumbrance e : active) {
             if (e.getSplit() != null) {
                 activeBySplitId.put(e.getSplit().getSplitId(), e);
             } else {
-                activeRemainder = e; // invariant: at most one null-split row per report/cycle (see class javadoc)
+                activeRemainderByCostCenter.put(remainderCostCenterId(e, report), e);
             }
         }
 
@@ -294,7 +314,7 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
         List<Reconciliation> toUpdate = new ArrayList<>();
         List<Target> toCreate = new ArrayList<>();
         Set<UUID> matchedSplitIds = new HashSet<>();
-        boolean remainderMatched = false;
+        Set<UUID> matchedRemainderCostCenterIds = new HashSet<>();
 
         for (Target target : currentTargets) {
             if (target.split() != null) {
@@ -307,12 +327,16 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
                         toUpdate.add(new Reconciliation(existing, target));
                     }
                 }
-            } else if (activeRemainder == null) {
-                toCreate.add(target);
             } else {
-                remainderMatched = true;
-                if (activeRemainder.getAmount().compareTo(target.amount()) != 0) {
-                    toUpdate.add(new Reconciliation(activeRemainder, target));
+                UUID costCenterId = target.costCenter().getCostCenterId();
+                BudgetEncumbrance existing = activeRemainderByCostCenter.get(costCenterId);
+                if (existing == null) {
+                    toCreate.add(target);
+                } else {
+                    matchedRemainderCostCenterIds.add(costCenterId);
+                    if (existing.getAmount().compareTo(target.amount()) != 0) {
+                        toUpdate.add(new Reconciliation(existing, target));
+                    }
                 }
             }
         }
@@ -323,7 +347,7 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
                 if (!matchedSplitIds.contains(e.getSplit().getSplitId())) {
                     toRelease.add(e);
                 }
-            } else if (!remainderMatched) {
+            } else if (!matchedRemainderCostCenterIds.contains(remainderCostCenterId(e, report))) {
                 toRelease.add(e);
             }
         }
@@ -417,6 +441,7 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
                                 .orElse(null));
                 newRows.add(BudgetEncumbrance.builder()
                         .budget(budget)
+                        .costCenter(target.costCenter())
                         .report(report)
                         .split(target.split())
                         .submissionCycle(submissionCycle)
@@ -433,42 +458,35 @@ public class BudgetEncumbranceServiceImpl implements BudgetEncumbranceService {
     }
 
     /**
-     * True iff every currently-ACTIVE encumbrance corresponds 1:1 (matched by split identity, or by
-     * the single null-split "unsplit remainder" row) to a current target of the identical amount and
+     * True iff every currently-ACTIVE encumbrance corresponds 1:1 (matched by split identity, or for
+     * a null-split "unsplit remainder" row by its cost center) to a current target of the identical amount and
      * unbudgeted-ness - i.e. nothing budget-impacting actually changed since these were created. A
      * split's Cost Center never changes in place (see {@code ExpenseSplitServiceImpl}'s reconcile-by-
      * Cost-Center design - a Cost Center change is always modeled as remove-old-split + add-new-
      * split, which is caught here as a splitId that no longer matches any current target), so
      * matching by splitId alone is sufficient to also catch a Cost Center change.
      */
-    private boolean matchesExactly(List<BudgetEncumbrance> active, List<Target> currentTargets) {
+    private boolean matchesExactly(List<BudgetEncumbrance> active, List<Target> currentTargets, ExpenseReport report) {
         if (active.size() != currentTargets.size()) {
             return false;
         }
         Map<UUID, BudgetEncumbrance> activeBySplit = new HashMap<>();
-        BudgetEncumbrance activeRemainder = null;
+        Map<UUID, BudgetEncumbrance> activeRemainderByCostCenter = new HashMap<>();
         for (BudgetEncumbrance e : active) {
             if (e.getSplit() != null) {
                 activeBySplit.put(e.getSplit().getSplitId(), e);
-            } else if (activeRemainder == null) {
-                activeRemainder = e;
-            } else {
-                return false; // more than one null-split row is already an inconsistent state - force reconciliation
+            } else if (activeRemainderByCostCenter.putIfAbsent(remainderCostCenterId(e, report), e) != null) {
+                return false; // two null-split rows for one cost center is already inconsistent - force reconciliation
             }
         }
         for (Target target : currentTargets) {
-            if (target.split() != null) {
-                BudgetEncumbrance matched = activeBySplit.remove(target.split().getSplitId());
-                if (matched == null || matched.getAmount().compareTo(target.amount()) != 0) {
-                    return false;
-                }
-            } else {
-                if (activeRemainder == null || activeRemainder.getAmount().compareTo(target.amount()) != 0) {
-                    return false;
-                }
-                activeRemainder = null;
+            BudgetEncumbrance matched = target.split() != null
+                    ? activeBySplit.remove(target.split().getSplitId())
+                    : activeRemainderByCostCenter.remove(target.costCenter().getCostCenterId());
+            if (matched == null || matched.getAmount().compareTo(target.amount()) != 0) {
+                return false;
             }
         }
-        return activeBySplit.isEmpty() && activeRemainder == null;
+        return activeBySplit.isEmpty() && activeRemainderByCostCenter.isEmpty();
     }
 }

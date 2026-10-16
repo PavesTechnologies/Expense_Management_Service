@@ -68,6 +68,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         CurrentUser caller = currentUserService.getCurrentUser();
         assertEmployeeActive(caller);
         assertBusinessPurposeLongEnough(request.businessPurpose());
+        assertTripRange(request);
 
         String fiscalYear = currentFiscalYear();
         assertTitleNotDuplicate(caller.employeeId(), fiscalYear, request.title(), null);
@@ -124,6 +125,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         assertOwnerOrAdmin(entity);
         assertEditable(entity);
         assertBusinessPurposeLongEnough(request.businessPurpose());
+        assertTripRange(request);
         assertTitleNotDuplicate(entity.getEmployeeId(), entity.getFiscalYear(), request.title(), reportId);
 
         expenseReportMapper.updateEntity(entity, request);
@@ -220,6 +222,23 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         if (!umsUser.isActive()) {
             throw new EmployeeInactiveException(
                     "Your account is marked Inactive in UMS. Expense reports cannot be created while inactive — please contact HR Support to reactivate your account.");
+        }
+    }
+
+    private void assertTripRange(ExpenseReportRequest request) {
+        if (!SubmissionDeadlinePolicy.isValidTripRange(request.tripStartDate(), request.tripEndDate())) {
+            throw new BusinessRuleViolationException("The trip end date cannot be before the start date.");
+        }
+        assertReportingPeriod(request.reportingPeriodStart(), request.reportingPeriodEnd());
+    }
+
+    /** Shared by create, update and submit so the same rule applies on every path. */
+    static void assertReportingPeriod(LocalDate reportingPeriodStart, LocalDate reportingPeriodEnd) {
+        if (reportingPeriodEnd != null && reportingPeriodEnd.isAfter(LocalDate.now())) {
+            throw new BusinessRuleViolationException("The reporting period cannot end in the future.");
+        }
+        if (!SubmissionDeadlinePolicy.isValidReportingPeriod(reportingPeriodStart, reportingPeriodEnd, LocalDate.now())) {
+            throw new BusinessRuleViolationException("The reporting period end date cannot be before its start date.");
         }
     }
 

@@ -100,6 +100,41 @@ public class CashAdvance {
     @Column(name = "settled_by", length = 255)
     private String settledBy;
 
+    /** When Finance disbursed the advance. The 30-day expense window starts here; null means the clock has not started. */
+    @Column(name = "disbursed_at")
+    private LocalDateTime disbursedAt;
+
+    /** BANK_TRANSFER or CASH. */
+    @Column(name = "disbursement_mode", length = 20)
+    private String disbursementMode;
+
+    /** Bank transaction reference (bank transfer). */
+    @Column(name = "disbursement_reference", length = 255)
+    private String disbursementReference;
+
+    @Column(name = "disbursement_payment_date")
+    private LocalDate disbursementPaymentDate;
+
+    /** Who received the cash (cash). */
+    @Column(name = "disbursement_acknowledged_by", length = 255)
+    private String disbursementAcknowledgedBy;
+
+    /** Number of the signed cash acknowledgment slip (cash). */
+    @Column(name = "disbursement_proof_reference", length = 255)
+    private String disbursementProofReference;
+
+    /** Finance override: replaces disbursed_at + 30 days when set. */
+    @Column(name = "expense_deadline_extended_until")
+    private LocalDate expenseDeadlineExtendedUntil;
+
+    /** Finance override: when true the expense window is open regardless of date. */
+    @Column(name = "expense_deadline_reopened", nullable = false)
+    private boolean expenseDeadlineReopened;
+
+    /** Set once the 7-day reminder has been sent, so it goes out only once. */
+    @Column(name = "deadline_reminder_sent_at")
+    private LocalDateTime deadlineReminderSentAt;
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

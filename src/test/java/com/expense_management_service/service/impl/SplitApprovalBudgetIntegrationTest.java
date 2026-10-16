@@ -363,6 +363,7 @@ class SplitApprovalBudgetIntegrationTest {
         ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(lineItemId)
                 .amount(new BigDecimal("1000")).baseAmount(new BigDecimal("1000")).expenseSplits(List.of()).build();
         ExpenseReport report = ExpenseReport.builder().reportId(reportId).employeeId(submitterId)
+                .tripEndDate(java.time.LocalDate.now().plusDays(10))
                 .reportStatus(ReportStatus.DRAFT).costCenter(headerCostCenter).fiscalYear("FY2026")
                 .totalAmount(new BigDecimal("1000")).expenseLineItems(List.of(lineItem)).build();
         lineItem.setReport(report);
@@ -517,6 +518,7 @@ class SplitApprovalBudgetIntegrationTest {
         splitLine.setExpenseSplits(List.of(splitA));
         normalLine.setExpenseSplits(List.of());
         ExpenseReport report = ExpenseReport.builder().reportId(reportId).employeeId(submitterId)
+                .tripEndDate(java.time.LocalDate.now().plusDays(10))
                 .reportStatus(ReportStatus.DRAFT).costCenter(headerCostCenter).fiscalYear("FY2026")
                 .totalAmount(new BigDecimal("1000")).expenseLineItems(List.of(splitLine, normalLine)).build();
         splitLine.setReport(report);

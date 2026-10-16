@@ -119,9 +119,21 @@ public class CashAdvance {
     @Column(name = "disbursement_acknowledged_by", length = 255)
     private String disbursementAcknowledgedBy;
 
-    /** Number of the signed cash acknowledgment slip (cash). */
+    /** Storage key of the uploaded proof: the signed cash acknowledgment (cash) or payment screenshot (UPI). */
     @Column(name = "disbursement_proof_reference", length = 255)
     private String disbursementProofReference;
+
+    /** Bank and beneficiary account the transfer went to (bank transfer). */
+    @Column(name = "disbursement_transfer_details", columnDefinition = "TEXT")
+    private String disbursementTransferDetails;
+
+    /** Payee UPI ID the payment was sent to (UPI). */
+    @Column(name = "disbursement_payee_upi_id", length = 255)
+    private String disbursementPayeeUpiId;
+
+    /** Optional note Finance added when recording the payout. */
+    @Column(name = "disbursement_confirmation_note", columnDefinition = "TEXT")
+    private String disbursementConfirmationNote;
 
     /** Finance override: replaces disbursed_at + 30 days when set. */
     @Column(name = "expense_deadline_extended_until")

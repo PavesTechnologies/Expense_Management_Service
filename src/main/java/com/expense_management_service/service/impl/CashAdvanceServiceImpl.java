@@ -5,6 +5,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -15,6 +16,7 @@ import org.springframework.data.domain.Pageable;
 
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
+import com.expense_management_service.dto.request.CashAdvanceDisbursement;
 import com.expense_management_service.dto.request.CashAdvanceRepaymentRequest;
 import com.expense_management_service.dto.request.CashAdvanceRequest;
 import com.expense_management_service.dto.response.CashAdvanceAdjustmentResponse;
@@ -23,6 +25,7 @@ import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.dto.response.CashAdvanceSettlementResponse;
 import com.expense_management_service.dto.response.CashAdvanceUtilizationResponse;
 import com.expense_management_service.entity.AuditLog;
+import com.expense_management_service.storage.StorageService;
 import com.expense_management_service.entity.CashAdvance;
 import com.expense_management_service.entity.CashAdvanceAdjustment;
 import com.expense_management_service.entity.CashAdvanceRepayment;
@@ -52,6 +55,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -83,6 +87,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     private final CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
     private final CashAdvanceAdjustmentMapper cashAdvanceAdjustmentMapper;
     private final CashAdvanceUtilizationCalculator cashAdvanceUtilizationCalculator;
+    private final StorageService storageService;
 
 
     // ============================================================
@@ -869,7 +874,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     @Override
     public CashAdvanceResponse disburse(
             UUID advanceId,
-            String financeUserId) {
+            String financeUserId,
+            CashAdvanceDisbursement disbursement) {
 
         CashAdvance entity =
                 findEntity(advanceId);
@@ -894,9 +900,23 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
+        // Validate the confirmation before anything is stored or changed, so a rejected request leaves no trace.
+        CashAdvanceDisbursementRules.validate(disbursement, LocalDate.now());
+        String mode = CashAdvanceDisbursementRules.normalizedMode(disbursement.disbursementMode());
+
+        String proofKey = null;
+        if (CashAdvanceDisbursementRules.CASH.equals(mode)) {
+            proofKey = storeProof(advanceId, mode, disbursement.signedAcknowledgment());
+        } else if (CashAdvanceDisbursementRules.UPI.equals(mode)) {
+            proofKey = storeProof(advanceId, mode, disbursement.paymentProof());
+        }
+
         String oldStatus = entity.getStatus();
 
         entity.setStatus("IN_PROGRESS");
+        // The 30-day expense window starts here (CashAdvanceExpenseWindow reads this field).
+        entity.setDisbursedAt(LocalDateTime.now());
+        applyDisbursementDetails(entity, disbursement, mode, proofKey);
 
         if (entity.getOutstandingBalance() == null) {
             entity.setOutstandingBalance(entity.getAmount());
@@ -925,10 +945,52 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         approvalEventPublisher.publish(
                 "CASH_ADVANCE_DISBURSED",
                 saved.getAdvanceId(),
-                "disbursedBy=" + actingUser
+                "disbursedBy=" + actingUser + ",mode=" + mode
         );
 
         return cashAdvanceMapper.toResponse(saved);
+    }
+
+    /** Stores an uploaded proof under a unique key and returns that key. Callers only pass validated files. */
+    private String storeProof(UUID advanceId, String mode, MultipartFile file) {
+        String objectKey = "disbursements/" + advanceId + "/"
+                + mode.toLowerCase(Locale.ROOT) + "-" + UUID.randomUUID() + "."
+                + CashAdvanceDisbursementRules.proofExtension(file);
+        storageService.upload(objectKey, file);
+        return objectKey;
+    }
+
+    /** Copies only the fields that belong to the chosen mode, so the record never mixes cash and transfer details. */
+    private static void applyDisbursementDetails(
+            CashAdvance entity,
+            CashAdvanceDisbursement disbursement,
+            String mode,
+            String proofKey) {
+
+        entity.setDisbursementMode(mode);
+        entity.setDisbursementConfirmationNote(
+                disbursement.confirmationNote() == null || disbursement.confirmationNote().isBlank()
+                        ? null
+                        : disbursement.confirmationNote().trim());
+
+        switch (mode) {
+            case CashAdvanceDisbursementRules.CASH -> {
+                entity.setDisbursementAcknowledgedBy(disbursement.receivedByName().trim());
+                entity.setDisbursementProofReference(proofKey);
+            }
+            case CashAdvanceDisbursementRules.BANK_TRANSFER -> {
+                entity.setDisbursementReference(disbursement.transactionReference().trim());
+                entity.setDisbursementPaymentDate(disbursement.transferDate());
+                entity.setDisbursementTransferDetails(disbursement.transferDetails().trim());
+            }
+            case CashAdvanceDisbursementRules.UPI -> {
+                entity.setDisbursementReference(disbursement.upiTransactionId().trim());
+                entity.setDisbursementPayeeUpiId(disbursement.payeeUpiId().trim());
+                entity.setDisbursementPaymentDate(disbursement.transferDate());
+                entity.setDisbursementProofReference(proofKey);
+            }
+            default -> throw new IllegalStateException("Unhandled disbursement mode: " + mode);
+        }
     }
 
 

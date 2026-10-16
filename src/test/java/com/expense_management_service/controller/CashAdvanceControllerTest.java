@@ -1,12 +1,14 @@
 package com.expense_management_service.controller;
 
 import com.expense_management_service.config.SecurityConfig;
+import com.expense_management_service.dto.request.CashAdvanceDisbursement;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.JwtAuthConverter;
 import com.expense_management_service.service.CashAdvanceService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
@@ -32,9 +34,12 @@ import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -155,13 +160,53 @@ class CashAdvanceControllerTest {
         );
 
         when(currentUserService.getEmployeeId()).thenReturn("FIN001");
-        when(cashAdvanceService.disburse(advanceId, "FIN001")).thenReturn(response);
+        when(cashAdvanceService.disburse(eq(advanceId), eq("FIN001"), any(CashAdvanceDisbursement.class))).thenReturn(response);
 
         mockMvc.perform(post("/xms/employee/cash-advances/{advanceId}/disburse", advanceId)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.status").value("DISBURSED"));
+    }
+
+    @Test
+    void disburse_passesBankTransferFieldsToService() throws Exception {
+        CashAdvanceResponse response = new CashAdvanceResponse(
+                advanceId, "EMP001", "MGR001", new BigDecimal("500.00"), currencyId, "USD",
+                new BigDecimal("500.00"), "Travel", "IN_PROGRESS", LocalDate.now().plusDays(7),
+                new BigDecimal("500.00"), null, null
+        );
+        when(currentUserService.getEmployeeId()).thenReturn("FIN001");
+        when(cashAdvanceService.disburse(eq(advanceId), eq("FIN001"), any(CashAdvanceDisbursement.class))).thenReturn(response);
+
+        mockMvc.perform(multipart("/xms/employee/cash-advances/{advanceId}/disburse", advanceId)
+                        .param("disbursementMode", "BANK_TRANSFER")
+                        .param("transactionReference", "UTR123")
+                        .param("transferDate", "2026-10-01")
+                        .param("transferDetails", "HDFC A/C 1234")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
+                .andExpect(status().isOk());
+
+        ArgumentCaptor<CashAdvanceDisbursement> captor = ArgumentCaptor.forClass(CashAdvanceDisbursement.class);
+        verify(cashAdvanceService).disburse(eq(advanceId), eq("FIN001"), captor.capture());
+        CashAdvanceDisbursement sent = captor.getValue();
+        assertEquals("BANK_TRANSFER", sent.disbursementMode());
+        assertEquals("UTR123", sent.transactionReference());
+        assertEquals(LocalDate.of(2026, 10, 1), sent.transferDate());
+        assertEquals("HDFC A/C 1234", sent.transferDetails());
+    }
+
+    @Test
+    void disburse_returns400_whenProofIsInvalid() throws Exception {
+        when(currentUserService.getEmployeeId()).thenReturn("FIN001");
+        when(cashAdvanceService.disburse(eq(advanceId), eq("FIN001"), any(CashAdvanceDisbursement.class)))
+                .thenThrow(new IllegalArgumentException("Enter the transaction reference."));
+
+        mockMvc.perform(multipart("/xms/employee/cash-advances/{advanceId}/disburse", advanceId)
+                        .param("disbursementMode", "BANK_TRANSFER")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Enter the transaction reference."));
     }
 
     @Test

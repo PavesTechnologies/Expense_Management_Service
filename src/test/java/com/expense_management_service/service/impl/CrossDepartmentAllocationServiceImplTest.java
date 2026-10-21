@@ -124,6 +124,32 @@ class CrossDepartmentAllocationServiceImplTest {
     }
 
     @Test
+    void unknownHomeDepartment_splitAcrossTwoDepartments_stillNeedsAReason() {
+        when(employeeCacheRepository.findByEmployeeId("alice")).thenReturn(Optional.empty());
+        ExpenseLineItem lunch = line("Spice Route", engineeringCc, null);
+        report.getExpenseLineItems().add(lunch);
+        when(expenseSplitRepository.findByLineItem_LineItemIdAndRemovedAtIsNullOrderBySplitOrderAsc(lunch.getLineItemId()))
+                .thenReturn(List.of(split(lunch, engineeringCc), split(lunch, hrCc)));
+
+        assertThat(service.findLinesMissingReason(report)).singleElement().asString()
+                .contains("'Spice Route'")
+                .contains("Engineering Ops")
+                .contains("HR Programs")
+                .contains("different departments");
+    }
+
+    @Test
+    void unknownHomeDepartment_splitWithinOneDepartment_needsNoReason() {
+        when(employeeCacheRepository.findByEmployeeId("alice")).thenReturn(Optional.empty());
+        ExpenseLineItem offsite = line("Offsite", engineeringCc, null);
+        report.getExpenseLineItems().add(offsite);
+        when(expenseSplitRepository.findByLineItem_LineItemIdAndRemovedAtIsNullOrderBySplitOrderAsc(offsite.getLineItemId()))
+                .thenReturn(List.of(split(offsite, engineeringCc), split(offsite, costCenter("Engineering R&D", ENGINEERING))));
+
+        assertThat(service.findLinesMissingReason(report)).isEmpty();
+    }
+
+    @Test
     void costCenterWithoutADepartment_isNotTreatedAsCrossDepartment() {
         report.getExpenseLineItems().add(line("Shared services", costCenter("Corporate", null), null));
 

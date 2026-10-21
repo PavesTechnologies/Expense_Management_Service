@@ -4,6 +4,9 @@ import com.expense_management_service.common.exception.BusinessRuleViolationExce
 import com.expense_management_service.entity.CashAdvance;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.CostCenterBudget;
+import com.expense_management_service.entity.ExpenseLineItem;
+import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.ExpenseSplit;
 import com.expense_management_service.repository.CostCenterBudgetRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -156,6 +159,99 @@ class CashAdvanceBudgetMovementsTest {
         movements.releaseAllocation(advance, null);
 
         verify(costCenterBudgetRepository, never()).save(any());
+    }
+
+    // ---------------------------------------------------------------------
+    // Offset of a report split across cost centers
+    // ---------------------------------------------------------------------
+
+    /** Rs 500 restaurant bill for an Engineering + HR event, split 250 / 250, paid from the Engineering advance. */
+    private ExpenseReport splitReport(CostCenter hr) {
+        ExpenseLineItem lunch = ExpenseLineItem.builder().lineItemId(UUID.randomUUID())
+                .baseAmount(new BigDecimal("500.00")).costCenter(costCenter).build();
+        lunch.getExpenseSplits().add(ExpenseSplit.builder().splitId(UUID.randomUUID()).lineItem(lunch)
+                .costCenter(costCenter).allocatedAmount(new BigDecimal("250.00")).build());
+        lunch.getExpenseSplits().add(ExpenseSplit.builder().splitId(UUID.randomUUID()).lineItem(lunch)
+                .costCenter(hr).allocatedAmount(new BigDecimal("250.00")).build());
+        ExpenseReport report = ExpenseReport.builder().reportId(UUID.randomUUID()).costCenter(costCenter).fiscalYear(FY).build();
+        report.getExpenseLineItems().add(lunch);
+        return report;
+    }
+
+    private CostCenterBudget hrBudget(CostCenter hr) {
+        CostCenterBudget hrBudget = CostCenterBudget.builder()
+                .budgetId(UUID.randomUUID())
+                .costCenter(hr)
+                .fiscalYear(FY)
+                .budgetAmount(new BigDecimal("8000.00"))
+                .availableBudget(new BigDecimal("8000.00"))
+                .cashAdvanceAllocated(BigDecimal.ZERO)
+                .cashAdvanceFeeAllocated(BigDecimal.ZERO)
+                .build();
+        when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(
+                eq(hr.getCostCenterId()), eq(FY))).thenReturn(Optional.of(hrBudget));
+        return hrBudget;
+    }
+
+    @Test
+    void offsetOfASplitReport_chargesEachCostCenterOnlyItsShare() {
+        CostCenter hr = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("HR").build();
+        stubLock();
+        CostCenterBudget hrBudget = hrBudget(hr);
+
+        movements.moveAllocationToUtilized(advance, new BigDecimal("500.00"), splitReport(hr));
+
+        // Engineering: the whole 500 leaves the allocation; HR's 250 goes back to available - 250 utilized.
+        assertEquals(0, new BigDecimal("4500.00").compareTo(budget.getCashAdvanceAllocated()));
+        assertEquals(0, new BigDecimal("5250.00").compareTo(budget.getAvailableBudget()));
+        assertEquals(0, new BigDecimal("250.00").compareTo(
+                budget.getBudgetAmount().subtract(budget.getAvailableBudget()).subtract(budget.getCashAdvanceAllocated())));
+        // HR: its 250 share is charged to its own budget.
+        assertEquals(0, new BigDecimal("7750.00").compareTo(hrBudget.getAvailableBudget()));
+    }
+
+    @Test
+    void deletedOffsetOfASplitReport_restoresBothCostCenters() {
+        CostCenter hr = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("HR").build();
+        stubLock();
+        CostCenterBudget hrBudget = hrBudget(hr);
+        ExpenseReport report = splitReport(hr);
+
+        movements.moveAllocationToUtilized(advance, new BigDecimal("500.00"), report);
+        movements.reverseOffset(advance, new BigDecimal("500.00"), report);
+
+        assertEquals(0, new BigDecimal("5000.00").compareTo(budget.getCashAdvanceAllocated()));
+        assertEquals(0, new BigDecimal("5000.00").compareTo(budget.getAvailableBudget()));
+        assertEquals(0, new BigDecimal("8000.00").compareTo(hrBudget.getAvailableBudget()));
+    }
+
+    @Test
+    void offsetOfASplitReport_withAnUnbudgetedCostCenter_stillReleasesItsShareFromTheAdvance() {
+        CostCenter hr = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("HR").build();
+        stubLock();
+        when(costCenterBudgetRepository.findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(
+                eq(hr.getCostCenterId()), eq(FY))).thenReturn(Optional.empty());
+
+        movements.moveAllocationToUtilized(advance, new BigDecimal("500.00"), splitReport(hr));
+
+        // Engineering carries only its own 250; HR's share isn't tracked against any budget.
+        assertEquals(0, new BigDecimal("4500.00").compareTo(budget.getCashAdvanceAllocated()));
+        assertEquals(0, new BigDecimal("5250.00").compareTo(budget.getAvailableBudget()));
+    }
+
+    @Test
+    void offsetOfAReportAllOnTheAdvancesCostCenter_isUnchanged() {
+        CostCenter hr = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("HR").build();
+        stubLock();
+        ExpenseReport report = splitReport(hr);
+        report.getExpenseLineItems().get(0).getExpenseSplits().clear();
+
+        movements.moveAllocationToUtilized(advance, new BigDecimal("500.00"), report);
+
+        assertEquals(0, new BigDecimal("4500.00").compareTo(budget.getCashAdvanceAllocated()));
+        assertEquals(0, new BigDecimal("5000.00").compareTo(budget.getAvailableBudget()));
+        verify(costCenterBudgetRepository, never()).findWithLockByCostCenter_CostCenterIdAndFiscalYearIgnoreCase(
+                eq(hr.getCostCenterId()), any());
     }
 
     @Test

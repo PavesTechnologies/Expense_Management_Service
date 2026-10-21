@@ -124,7 +124,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         }
 
         CashAdvanceAdjustment saved = cashAdvanceAdjustmentRepository.save(entity);
-        cashAdvanceBudgetMovements.moveAllocationToUtilized(advance, adjustedAmount);
+        cashAdvanceBudgetMovements.moveAllocationToUtilized(advance, adjustedAmount, report);
         refreshReimbursable(report);
 
         auditLogRepository.save(AuditLog.builder()
@@ -179,7 +179,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
                 restoredBalance = advance.getAmount();
             }
             advance.setOutstandingBalance(restoredBalance);
-            cashAdvanceBudgetMovements.reverseOffset(advance, entity.getAdjustedAmount());
+            cashAdvanceBudgetMovements.reverseOffset(advance, entity.getAdjustedAmount(), entity.getReport());
             if (restoredBalance.compareTo(advance.getAmount()) == 0) {
                 advance.setStatus("IN_PROGRESS");
             } else {

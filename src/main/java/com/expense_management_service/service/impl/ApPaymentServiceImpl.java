@@ -215,9 +215,9 @@ public class ApPaymentServiceImpl implements ApPaymentService {
      * Phase 6: consumes budget via whichever {@code BudgetEncumbrance} rows exist for the report's
      * current submission cycle - split-aware, per-Cost-Center consumption for any report submitted
      * after Phase 5's encumbrance wiring went live. Falls back to the original, pre-Phase-3 direct
-     * whole-report {@code consumeBudget} call ONLY when the report has zero encumbrances at all (an
-     * in-flight report that reached APPROVED_FOR_PAYMENT before this wiring existed) - the two paths
-     * are mutually exclusive, so budget is still never consumed twice.
+     * {@code consumeBudget} ONLY when the report has zero encumbrances at all (an in-flight report that
+     * reached APPROVED_FOR_PAYMENT before this wiring existed) - the two paths are mutually exclusive, so
+     * budget is still never consumed twice. Both direct paths follow the report's splits.
      */
     private void consumeBudgetAtPayment(ExpenseReport report) {
         if (report.getCashAdvance() != null) {
@@ -225,16 +225,20 @@ public class ApPaymentServiceImpl implements ApPaymentService {
             // Charge only what AP pays now, and release the reservation made for the full total.
             int linkedCycle = approvalWorkflowService.getCurrentSubmissionCycle(report.getReportId());
             budgetEncumbranceService.releaseActiveForCycle(report.getReportId(), linkedCycle);
-            java.math.BigDecimal payable = report.getReimbursableAmount() != null ? report.getReimbursableAmount() : java.math.BigDecimal.ZERO;
-            if (payable.signum() > 0) {
-                costCenterBudgetService.consumeBudget(report.getCostCenter(), report.getFiscalYear(), payable);
-            }
+            consumeAcrossCostCenters(report, report.getReimbursableAmount());
             return;
         }
         int cycle = approvalWorkflowService.getCurrentSubmissionCycle(report.getReportId());
         boolean consumedViaEncumbrances = budgetEncumbranceService.consumeActiveForReport(report.getReportId(), cycle);
         if (!consumedViaEncumbrances) {
-            costCenterBudgetService.consumeBudget(report.getCostCenter(), report.getFiscalYear(), report.getTotalAmount());
+            consumeAcrossCostCenters(report, report.getTotalAmount());
+        }
+    }
+
+    /** Charges {@code amount} to each cost center the report's lines and splits allocate it to. */
+    private void consumeAcrossCostCenters(ExpenseReport report, BigDecimal amount) {
+        for (ReportCostCenterShares.Share share : ReportCostCenterShares.distribute(amount, report)) {
+            costCenterBudgetService.consumeBudget(share.costCenter(), report.getFiscalYear(), share.amount());
         }
     }
 

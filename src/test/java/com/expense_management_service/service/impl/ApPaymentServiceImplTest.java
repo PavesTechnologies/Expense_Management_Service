@@ -7,7 +7,10 @@ import com.expense_management_service.enums.PaymentMethod;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.entity.AuditLog;
+import com.expense_management_service.entity.CashAdvance;
+import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.ExpenseSplit;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.entity.CostCenter;
@@ -279,6 +282,77 @@ class ApPaymentServiceImplTest {
         verify(budgetEncumbranceService).consumeActiveForReport(reportId, 1);
         verify(costCenterBudgetService, times(1))
                 .consumeBudget(report.getCostCenter(), "2026", new BigDecimal("12500.00"));
+    }
+
+    // ---------------------------------------------------------------------
+    // markPaymentCompleted - a split is honoured on the direct (non-encumbrance) paths
+    // ---------------------------------------------------------------------
+
+    /** Rs 500 restaurant bill for an Engineering + HR event, split 250 / 250, on a report charged to Engineering. */
+    private ExpenseReport splitReport(String reimbursable, CostCenter engineering, CostCenter hr) {
+        ExpenseLineItem lunch = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).baseAmount(new BigDecimal("500.00"))
+                .costCenter(engineering).build();
+        lunch.getExpenseSplits().add(ExpenseSplit.builder().splitId(UUID.randomUUID()).lineItem(lunch)
+                .costCenter(engineering).allocatedAmount(new BigDecimal("250.00")).build());
+        lunch.getExpenseSplits().add(ExpenseSplit.builder().splitId(UUID.randomUUID()).lineItem(lunch)
+                .costCenter(hr).allocatedAmount(new BigDecimal("250.00")).build());
+        ExpenseReport report = ExpenseReport.builder().reportId(reportId).reportNumber("EXP-1").employeeId("5100001")
+                .reportStatus(ReportStatus.APPROVED).paymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT)
+                .costCenter(engineering).fiscalYear("2026").totalAmount(new BigDecimal("500.00"))
+                .reimbursableAmount(new BigDecimal(reimbursable)).build();
+        report.getExpenseLineItems().add(lunch);
+        return report;
+    }
+
+    @Test
+    void markPaymentCompleted_advanceLinkedSplitReport_chargesEachCostCenterItsShare() {
+        CostCenter engineering = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("ENG").build();
+        CostCenter hr = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("HR").build();
+        ExpenseReport report = splitReport("500.00", engineering, hr);
+        report.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).build());
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
+
+        service.markPaymentCompleted(reportId, payment(new BigDecimal("500.00")), "5100099");
+
+        verify(costCenterBudgetService).consumeBudget(engineering, "2026", new BigDecimal("250.00"));
+        verify(costCenterBudgetService).consumeBudget(hr, "2026", new BigDecimal("250.00"));
+        verify(costCenterBudgetService, times(2)).consumeBudget(any(), any(), any());
+    }
+
+    @Test
+    void markPaymentCompleted_advanceLinkedSplitReport_proRatesWhatIsLeftAfterTheOffset() {
+        // Rs 300 of the Rs 500 was offset against the advance; AP pays the remaining Rs 200.
+        CostCenter engineering = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("ENG").build();
+        CostCenter hr = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("HR").build();
+        ExpenseReport report = splitReport("200.00", engineering, hr);
+        report.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).build());
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
+
+        service.markPaymentCompleted(reportId, payment(new BigDecimal("200.00")), "5100099");
+
+        verify(costCenterBudgetService).consumeBudget(engineering, "2026", new BigDecimal("100.00"));
+        verify(costCenterBudgetService).consumeBudget(hr, "2026", new BigDecimal("100.00"));
+        verify(costCenterBudgetService, times(2)).consumeBudget(any(), any(), any());
+    }
+
+    @Test
+    void markPaymentCompleted_fallbackPath_alsoFollowsTheSplit() {
+        CostCenter engineering = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("ENG").build();
+        CostCenter hr = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("HR").build();
+        ExpenseReport report = splitReport("500.00", engineering, hr);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
+        when(budgetEncumbranceService.consumeActiveForReport(reportId, 1)).thenReturn(false);
+
+        service.markPaymentCompleted(reportId, payment(new BigDecimal("500.00")), "5100099");
+
+        verify(costCenterBudgetService).consumeBudget(engineering, "2026", new BigDecimal("250.00"));
+        verify(costCenterBudgetService).consumeBudget(hr, "2026", new BigDecimal("250.00"));
     }
 
     // ---------------------------------------------------------------------

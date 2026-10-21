@@ -46,28 +46,44 @@ public class CrossDepartmentAllocationServiceImpl implements CrossDepartmentAllo
 
     @Override
     public List<String> findLinesMissingReason(ExpenseReport report) {
-        Optional<String> home = homeDepartmentOf(report.getEmployeeId());
-        if (home.isEmpty() || report.getExpenseLineItems() == null) {
+        if (report.getExpenseLineItems() == null) {
             return List.of();
         }
+        Optional<String> home = homeDepartmentOf(report.getEmployeeId());
         List<String> messages = new ArrayList<>();
         for (ExpenseLineItem line : report.getExpenseLineItems()) {
             if (StringUtils.hasText(line.getAllocationReason())) {
                 continue;
             }
-            List<String> outside = allocationCostCenters(line, report).stream()
-                    .filter(cc -> cc.getDepartmentUuid() != null
-                            && !cc.getDepartmentUuid().toString().equalsIgnoreCase(home.get()))
-                    .map(CostCenter::getCostCenterName)
-                    .filter(Objects::nonNull)
-                    .distinct()
-                    .toList();
-            if (!outside.isEmpty()) {
-                messages.add(describe(line) + " is charged to " + String.join(", ", outside)
-                        + ", outside your department. Add a reason for the cross-department charge.");
+            List<CostCenter> costCenters = allocationCostCenters(line, report);
+            if (home.isPresent()) {
+                List<String> outside = costCenters.stream()
+                        .filter(cc -> cc.getDepartmentUuid() != null
+                                && !cc.getDepartmentUuid().toString().equalsIgnoreCase(home.get()))
+                        .map(CostCenter::getCostCenterName)
+                        .filter(Objects::nonNull)
+                        .distinct()
+                        .toList();
+                if (!outside.isEmpty()) {
+                    messages.add(describe(line) + " is charged to " + String.join(", ", outside)
+                            + ", outside your department. Add a reason for the cross-department charge.");
+                }
+            } else if (spansDepartments(costCenters)) {
+                // The payer's department is unknown, so no single share can be judged against it - but a line
+                // split across two departments is cross-department whichever of them is home.
+                messages.add(describe(line) + " is split across " + String.join(", ", names(costCenters))
+                        + ", which belong to different departments. Add a reason for the cross-department charge.");
             }
         }
         return messages;
+    }
+
+    private static boolean spansDepartments(List<CostCenter> costCenters) {
+        return costCenters.stream().map(CostCenter::getDepartmentUuid).filter(Objects::nonNull).distinct().count() > 1;
+    }
+
+    private static List<String> names(List<CostCenter> costCenters) {
+        return costCenters.stream().map(CostCenter::getCostCenterName).filter(Objects::nonNull).distinct().toList();
     }
 
     /** Where the line's cost actually lands: its active splits, else its own cost center, else the report's. */

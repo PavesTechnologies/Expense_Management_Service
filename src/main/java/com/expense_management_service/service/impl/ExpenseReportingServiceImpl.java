@@ -288,13 +288,13 @@ public class ExpenseReportingServiceImpl implements ExpenseReportingService {
     private Reimbursements reimbursements(LocalDate start, LocalDate end, Set<String> scopeIds) {
         String scopeClause = scopeIds != null ? " and r.employeeId in :ids" : "";
         TypedQuery<Object[]> paid = em.createQuery("""
-                        select count(r), coalesce(sum(r.totalAmount), 0) from ExpenseReport r
+                        select count(r), coalesce(sum(coalesce(r.paidAmount, r.reimbursableAmount, r.totalAmount)), 0) from ExpenseReport r
                         where r.paymentRoutingStatus = :completed and r.paymentCompletedAt >= :start and r.paymentCompletedAt < :end
                         """ + scopeClause, Object[].class)
                 .setParameter("completed", PaymentRoutingStatus.PAYMENT_COMPLETED)
                 .setParameter("start", start.atStartOfDay()).setParameter("end", end.plusDays(1).atStartOfDay());
         TypedQuery<Object[]> awaiting = em.createQuery("""
-                        select count(r), coalesce(sum(r.totalAmount), 0) from ExpenseReport r
+                        select count(r), coalesce(sum(coalesce(r.reimbursableAmount, r.totalAmount)), 0) from ExpenseReport r
                         where r.paymentRoutingStatus = :approved
                         """ + scopeClause, Object[].class)
                 .setParameter("approved", PaymentRoutingStatus.APPROVED_FOR_PAYMENT);

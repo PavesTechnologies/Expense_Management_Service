@@ -44,12 +44,17 @@ public class VerificationQuery {
     private String raisedBy;
 
     @Lob
-    @Column(name = "query_text", nullable = false)
+    @Column(name = "query_text", nullable = false, columnDefinition = "TEXT")
     private String queryText;
 
     @Lob
-    @Column(name = "employee_response")
+    @Column(name = "employee_response", columnDefinition = "TEXT")
     private String employeeResponse;
+
+    /** What kind of correction Finance asked for; varchar, not a MySQL ENUM. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "category", columnDefinition = "varchar(32)")
+    private com.expense_management_service.enums.CorrectionCategory category;
 
     @Column(name = "status", length = 255)
     private String status;

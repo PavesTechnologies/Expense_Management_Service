@@ -65,4 +65,31 @@ public class ApprovalReviewStrategy implements LevelReviewStrategy {
                     approvalLineItemReviewRepository.save(review);
                 });
     }
+
+    @Override
+    public List<ExpenseLineItem> addReviewsForNewLines(ApprovalLevelInstance instance, List<ExpenseLineItem> lineItems) {
+        java.util.Set<java.util.UUID> reviewed = new java.util.HashSet<>();
+        approvalLineItemReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId())
+                .forEach(review -> reviewed.add(review.getLineItem().getLineItemId()));
+        List<ExpenseLineItem> added = lineItems.stream().filter(line -> !reviewed.contains(line.getLineItemId())).toList();
+        createPendingReviews(instance, added);
+        return added;
+    }
+
+    @Override
+    public List<ExpenseLineItem> reopenReviewsForRevisedLines(ApprovalLevelInstance instance) {
+        List<ExpenseLineItem> reopened = new java.util.ArrayList<>();
+        approvalLineItemReviewRepository.findByLevelInstance_InstanceIdAndStatus(
+                        instance.getInstanceId(), LineItemReviewStatus.APPROVED)
+                .forEach(review -> {
+                    var line = review.getLineItem();
+                    if (line != null && line.getRevisedAt() != null
+                            && (review.getActionedAt() == null || line.getRevisedAt().isAfter(review.getActionedAt()))) {
+                        review.setStatus(LineItemReviewStatus.PENDING);
+                        approvalLineItemReviewRepository.save(review);
+                        reopened.add(line);
+                    }
+                });
+        return reopened;
+    }
 }

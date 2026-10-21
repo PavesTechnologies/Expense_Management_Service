@@ -202,7 +202,7 @@ class FinanceVerificationControllerTest {
         UUID reportId = UUID.randomUUID();
         UUID lineItemId = UUID.randomUUID();
         when(currentUserService.getEmployeeId()).thenReturn("5100050");
-        when(financeVerificationService.queryLineItem(eq(reportId), eq(lineItemId), eq("5100050"), eq("Missing itemized bill")))
+        when(financeVerificationService.queryLineItem(eq(reportId), eq(lineItemId), eq("5100050"), eq("Missing itemized bill"), org.mockito.ArgumentMatchers.isNull()))
                 .thenReturn(sampleReportResponse("AWAITING_CORRECTION"));
 
         mockMvc.perform(post("/xms/finance-verification/{reportId}/line-items/{lineItemId}/query", reportId, lineItemId)

@@ -24,7 +24,13 @@ import static com.expense_management_service.service.impl.ExpenseFieldSupport.te
 final class TaxExtractor {
 
     private static final String FIELD_TAX = "TAX";
-    private static final List<String> GST_COMPONENT_LABEL_KEYWORDS = List.of("CGST", "SGST", "IGST");
+    private static final List<String> GST_COMPONENT_LABEL_KEYWORDS = List.of("CGST", "SGST", "IGST", "UTGST", "CESS");
+    /**
+     * Whole-word match: "CESS" must not match "PROCESSING CHARGES". Cess and UTGST are part of the
+     * GST charged, so leaving them out under-reads the receipt's tax and flags a false mismatch.
+     */
+    private static final java.util.regex.Pattern GST_COMPONENT_LABEL =
+            java.util.regex.Pattern.compile("(?<![A-Z])(" + String.join("|", GST_COMPONENT_LABEL_KEYWORDS) + ")(?![A-Z])");
     /**
      * Labels that contain a tax keyword but whose value is not a tax amount: registration numbers
      * (a GSTIN such as 29ABCDE1234F1Z5 would otherwise parse as 2912341), HSN/SAC codes and rate columns.
@@ -135,7 +141,7 @@ final class TaxExtractor {
                 continue;
             }
             String normalizedLabel = label.toUpperCase(Locale.ROOT);
-            boolean isGstComponent = GST_COMPONENT_LABEL_KEYWORDS.stream().anyMatch(normalizedLabel::contains);
+            boolean isGstComponent = GST_COMPONENT_LABEL.matcher(normalizedLabel).find();
             if (!isGstComponent || !isTaxAmountField(field)) {
                 continue;
             }

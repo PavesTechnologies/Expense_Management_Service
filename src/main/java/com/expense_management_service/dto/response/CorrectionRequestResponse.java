@@ -14,6 +14,11 @@ public record CorrectionRequestResponse(
         UUID lineItemId,
         String comment,
         String requestedBy,
-        LocalDateTime requestedAt
+        LocalDateTime requestedAt,
+        /** Finance's reason category (e.g. TAX_MISMATCH); null for an approver's request. */
+        String category
 ) {
+    public CorrectionRequestResponse(UUID lineItemId, String comment, String requestedBy, LocalDateTime requestedAt) {
+        this(lineItemId, comment, requestedBy, requestedAt, null);
+    }
 }

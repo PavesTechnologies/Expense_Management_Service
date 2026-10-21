@@ -118,15 +118,26 @@ class NotificationEventListenerTest {
     }
 
     @Test
-    void approvedForPayment_tellsApToPay_andTellsEmployeePaymentWasInitiated() {
+    void approvedForPayment_tellsApToPay_andTellsEmployeeItIsAwaitingPayment_notPaid() {
         listener.onWorkflowEvent(new ApprovalDomainEvent("REPORT_APPROVED_FOR_PAYMENT", reportId, "reason=internal"));
 
         NotificationDraft ap = draftForRole(NotificationService.ROLE_AP);
         assertThat(ap.category()).isEqualTo(NotificationCategory.ACTION_REQUIRED);
         assertThat(ap.actionLabel()).isEqualTo("Process payment");
         NotificationDraft owner = draftFor("5100014");
-        assertThat(owner.title()).isEqualTo("Payment initiated for EXP-1024");
+        assertThat(owner.title()).isEqualTo("Report EXP-1024 is awaiting payment");
+        assertThat(owner.category()).isEqualTo(NotificationCategory.PENDING);
+        assertThat(owner.title() + owner.message()).doesNotContainIgnoringCase("paid for").doesNotContainIgnoringCase("initiated");
         assertThat(owner.link()).isEqualTo("/expense-management/expenses/reports/" + reportId);
+    }
+
+    @Test
+    void settledWithNoPayment_tellsEmployeeNothingIsDue() {
+        listener.onWorkflowEvent(new ApprovalDomainEvent("REPORT_SETTLED_NO_PAYMENT", reportId, "reason=nothing-owed"));
+
+        NotificationDraft owner = draftFor("5100014");
+        assertThat(owner.title()).isEqualTo("Report EXP-1024 settled, nothing to pay");
+        assertThat(owner.category()).isEqualTo(NotificationCategory.COMPLETED);
     }
 
     @Test

@@ -24,6 +24,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.repository.AuditLogRepository;
@@ -123,7 +124,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         }
 
         CashAdvanceAdjustment saved = cashAdvanceAdjustmentRepository.save(entity);
-        cashAdvanceBudgetMovements.moveAllocationToUtilized(advance, adjustedAmount);
+        cashAdvanceBudgetMovements.moveAllocationToUtilized(advance, adjustedAmount, report);
         refreshReimbursable(report);
 
         auditLogRepository.save(AuditLog.builder()
@@ -144,9 +145,12 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
     @Override
     public CashAdvanceAdjustmentResponse update(UUID adjustmentId, CashAdvanceAdjustmentRequest request) {
         CashAdvanceAdjustment entity = findEntity(adjustmentId);
+        assertNotPaid(entity.getReport());
+        ExpenseReport targetReport = findReport(request.reportId());
+        assertNotPaid(targetReport);
         cashAdvanceAdjustmentMapper.updateEntity(entity, request);
         entity.setCashAdvance(findCashAdvance(request.advanceId()));
-        entity.setReport(findReport(request.reportId()));
+        entity.setReport(targetReport);
         return cashAdvanceAdjustmentMapper.toResponse(cashAdvanceAdjustmentRepository.save(entity));
     }
 
@@ -165,6 +169,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
     @Override
     public void delete(UUID adjustmentId) {
         CashAdvanceAdjustment entity = findEntity(adjustmentId);
+        assertNotPaid(entity.getReport());
         CashAdvance advance = entity.getCashAdvance();
         String actingUser = currentUserService.getEmployeeId();
         if (advance != null && entity.getAdjustedAmount() != null) {
@@ -174,7 +179,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
                 restoredBalance = advance.getAmount();
             }
             advance.setOutstandingBalance(restoredBalance);
-            cashAdvanceBudgetMovements.reverseOffset(advance, entity.getAdjustedAmount());
+            cashAdvanceBudgetMovements.reverseOffset(advance, entity.getAdjustedAmount(), entity.getReport());
             if (restoredBalance.compareTo(advance.getAmount()) == 0) {
                 advance.setStatus("IN_PROGRESS");
             } else {
@@ -256,6 +261,34 @@ private boolean isAdminCaller() {
     private void refreshReimbursable(ExpenseReport report) {
         report.setReimbursableAmount(ReimbursementCalculator.reimbursable(report.getTotalAmount(),
                 cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId())));
+        reconcilePaymentDue(report);
         expenseReportRepository.save(report);
+    }
+
+    /**
+     * An offset made after approval can wipe out what the employee is owed, or (when removed)
+     * restore it. AP's queue only ever holds reports with something to pay: a report left with
+     * nothing to pay leaves it as "no payment due" (never "paid"), and one owing again rejoins it.
+     */
+    private void reconcilePaymentDue(ExpenseReport report) {
+        if (report.getReportStatus() != ReportStatus.APPROVED) {
+            return;
+        }
+        boolean owed = report.getReimbursableAmount() != null && report.getReimbursableAmount().signum() > 0;
+        if (!owed && report.getPaymentRoutingStatus() == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) {
+            report.setPaymentRoutingStatus(PaymentRoutingStatus.NONE);
+            report.setNoPaymentDue(true);
+        } else if (owed && Boolean.TRUE.equals(report.getNoPaymentDue())
+                && report.getPaymentRoutingStatus() == PaymentRoutingStatus.NONE) {
+            report.setPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+            report.setNoPaymentDue(false);
+        }
+    }
+
+    private static void assertNotPaid(ExpenseReport report) {
+        if (report != null && report.getPaymentRoutingStatus() == PaymentRoutingStatus.PAYMENT_COMPLETED) {
+            throw new BusinessRuleViolationException("Expense report " + report.getReportNumber()
+                    + " is already paid, so its cash advance adjustment can no longer be changed.");
+        }
     }
 }

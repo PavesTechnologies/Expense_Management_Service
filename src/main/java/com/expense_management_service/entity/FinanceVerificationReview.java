@@ -76,8 +76,13 @@ public class FinanceVerificationReview {
 
     /** Required when {@code status == QUERIED}; never required for VERIFIED - same convention as {@code ApprovalLineItemReview.comment}. */
     @Lob
-    @Column(name = "comment")
+    @Column(name = "comment", columnDefinition = "TEXT")
     private String comment;
+
+    /** Why Finance queried this line (when QUERIED), so the employee knows what to fix; varchar, not a MySQL ENUM. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "query_category", columnDefinition = "varchar(32)")
+    private com.expense_management_service.enums.CorrectionCategory queryCategory;
 
     /** Who actually acted - differs from the assignment's approverId only when a delegate acted. */
     @Column(name = "acted_by", length = 255)

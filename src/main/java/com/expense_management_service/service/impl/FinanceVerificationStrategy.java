@@ -82,6 +82,33 @@ public class FinanceVerificationStrategy implements LevelReviewStrategy {
     }
 
     @Override
+    public List<ExpenseLineItem> addReviewsForNewLines(ApprovalLevelInstance instance, List<ExpenseLineItem> lineItems) {
+        java.util.Set<java.util.UUID> reviewed = new java.util.HashSet<>();
+        financeVerificationReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId())
+                .forEach(review -> reviewed.add(review.getLineItem().getLineItemId()));
+        List<ExpenseLineItem> added = lineItems.stream().filter(line -> !reviewed.contains(line.getLineItemId())).toList();
+        createPendingReviews(instance, added);
+        return added;
+    }
+
+    @Override
+    public List<ExpenseLineItem> reopenReviewsForRevisedLines(ApprovalLevelInstance instance) {
+        List<ExpenseLineItem> reopened = new java.util.ArrayList<>();
+        financeVerificationReviewRepository.findByLevelInstance_InstanceIdAndStatus(
+                        instance.getInstanceId(), FinanceVerificationStatus.VERIFIED)
+                .forEach(review -> {
+                    var line = review.getLineItem();
+                    if (line != null && line.getRevisedAt() != null
+                            && (review.getActionedAt() == null || line.getRevisedAt().isAfter(review.getActionedAt()))) {
+                        review.setStatus(FinanceVerificationStatus.PENDING);
+                        financeVerificationReviewRepository.save(review);
+                        reopened.add(line);
+                    }
+                });
+        return reopened;
+    }
+
+    @Override
     public void resumeCorrectedReviews(ApprovalLevelInstance instance) {
         financeVerificationReviewRepository.findByLevelInstance_InstanceIdAndStatus(
                         instance.getInstanceId(), FinanceVerificationStatus.QUERIED)

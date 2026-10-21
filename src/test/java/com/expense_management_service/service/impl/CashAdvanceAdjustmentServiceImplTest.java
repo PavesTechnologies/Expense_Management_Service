@@ -190,4 +190,36 @@ class CashAdvanceAdjustmentServiceImplTest {
 
         assertThrows(BusinessRuleViolationException.class, () -> adjustmentService.create(request));
     }
+
+    @Test
+    void delete_isRejected_onceTheReportIsPaid_soThePaidAmountCanNeverChange() {
+        testReport.setPaymentRoutingStatus(com.expense_management_service.enums.PaymentRoutingStatus.PAYMENT_COMPLETED);
+        com.expense_management_service.entity.CashAdvanceAdjustment adjustment = com.expense_management_service.entity.CashAdvanceAdjustment.builder()
+                .adjustmentId(adjustmentId).cashAdvance(testAdvance).report(testReport).adjustedAmount(new BigDecimal("400.00")).build();
+        when(cashAdvanceAdjustmentRepository.findById(adjustmentId)).thenReturn(Optional.of(adjustment));
+
+        assertThrows(BusinessRuleViolationException.class, () -> adjustmentService.delete(adjustmentId));
+        verify(cashAdvanceAdjustmentRepository, never()).delete(any());
+    }
+
+    @Test
+    void delete_ofTheOffsetThatSettledAReport_sendsItBackToApForPayment() {
+        // Approved, fully covered by the advance -> settled with no payment due. Removing the offset
+        // means the employee is owed money again, so AP must pick it up.
+        testReport.setTotalAmount(new BigDecimal("400.00"));
+        testReport.setReimbursableAmount(BigDecimal.ZERO);
+        testReport.setNoPaymentDue(true);
+        testReport.setPaymentRoutingStatus(com.expense_management_service.enums.PaymentRoutingStatus.NONE);
+        com.expense_management_service.entity.CashAdvanceAdjustment adjustment = com.expense_management_service.entity.CashAdvanceAdjustment.builder()
+                .adjustmentId(adjustmentId).cashAdvance(testAdvance).report(testReport).adjustedAmount(new BigDecimal("400.00")).build();
+        when(cashAdvanceAdjustmentRepository.findById(adjustmentId)).thenReturn(Optional.of(adjustment));
+        when(cashAdvanceAdjustmentRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
+        when(currentUserService.getEmployeeId()).thenReturn("FINANCE001");
+
+        adjustmentService.delete(adjustmentId);
+
+        assertEquals(0, new BigDecimal("400.00").compareTo(testReport.getReimbursableAmount()));
+        assertEquals(com.expense_management_service.enums.PaymentRoutingStatus.APPROVED_FOR_PAYMENT, testReport.getPaymentRoutingStatus());
+        assertFalse(testReport.getNoPaymentDue());
+    }
 }

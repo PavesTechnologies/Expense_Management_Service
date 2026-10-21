@@ -110,7 +110,7 @@ public class TeamExpenseServiceImpl implements TeamExpenseService {
         return new Member(who.employeeId(), who.name(), who.email(), member.getEmploymentStatus(),
                 reports.size(), inProgress.size(),
                 reports.stream().filter(r -> r.getReportStatus() == ReportStatus.REJECTED).count(),
-                sum(claimed), sum(inProgress), sum(approved), sum(reimbursed),
+                sum(claimed), sum(inProgress), sum(approved), sumPaid(reimbursed),
                 reports.stream().map(ExpenseReport::getSubmittedAt).filter(Objects::nonNull)
                         .max(Comparator.naturalOrder()).orElse(null));
     }
@@ -122,6 +122,15 @@ public class TeamExpenseServiceImpl implements TeamExpenseService {
 
     private static BigDecimal sum(List<ExpenseReport> reports) {
         return reports.stream().map(ExpenseReport::getTotalAmount).filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** What was actually paid: AP's confirmed amount, else the amount owed (gross less cash-advance offsets). */
+    private static BigDecimal sumPaid(List<ExpenseReport> reports) {
+        return reports.stream()
+                .map(r -> r.getPaidAmount() != null ? r.getPaidAmount()
+                        : r.getReimbursableAmount() != null ? r.getReimbursableAmount() : r.getTotalAmount())
+                .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 

@@ -153,13 +153,20 @@ public class NotificationEventListener {
             case "REPORT_APPROVED" -> c.toOwner(NotificationCategory.COMPLETED, "Expense report %s approved",
                     "Report %s is fully approved.", "Approved", "View report");
 
+            // Routing to AP is not a payment: the employee hears "paid" only from PAYMENT_COMPLETED,
+            // after AP confirms the actual payment.
             case "REPORT_APPROVED_FOR_PAYMENT" -> {
                 c.toRole(ROLE_AP, NotificationCategory.ACTION_REQUIRED, "Expense report %s is ready for payment",
-                        "Reimburse %s %s. Finance has verified the report.".formatted(c.ownerName(), c.amountText()),
+                        "Pay %s %s. Finance has verified the report.".formatted(c.ownerName(), c.payableText()),
                         "Approved for payment", "Process payment", "/expense-management/ap-payments/queue");
-                c.toOwner(NotificationCategory.PENDING, "Payment initiated for %s",
-                        "Report %s was sent to Accounts Payable for reimbursement.", "With AP for payment", null);
+                c.toOwner(NotificationCategory.PENDING, "Report %s is awaiting payment",
+                        "Report %s is approved and with Accounts Payable. You'll be notified once "
+                                + c.payableText() + " has actually been paid.", "Awaiting payment", null);
             }
+
+            case "REPORT_SETTLED_NO_PAYMENT" -> c.toOwner(NotificationCategory.COMPLETED, "Report %s settled, nothing to pay",
+                    "Report %s is approved and fully covered by your cash advance, so no payment is due.",
+                    "Settled - no payment due", "View report");
 
             case "REPORT_INVOICE_HANDOFF" -> c.toRole(ROLE_FINANCE, NotificationCategory.ACTION_REQUIRED,
                     "Client-billable report %s ready for invoice handoff",
@@ -167,10 +174,11 @@ public class NotificationEventListener {
                     "Invoice handoff pending", "Hand off", "/expense-management/client-billing");
 
             case "PAYMENT_COMPLETED" -> {
+                String reference = c.report.getPaymentReference() != null ? " (reference " + c.report.getPaymentReference() + ")" : "";
                 c.toOwner(NotificationCategory.COMPLETED, "Payment completed for %s",
-                        "You've been reimbursed " + c.amountText() + " for report %s.", "Paid", "View report");
+                        "You've been paid " + c.paidText() + " for report %s" + reference + ".", "Paid", "View report");
                 c.toRole(ROLE_AP, NotificationCategory.COMPLETED, "Payment recorded for %s",
-                        "%s marked %s's reimbursement (%s) as paid.".formatted(nameOf(match(BY, detail)), c.ownerName(), c.amountText()),
+                        "%s confirmed payment of %s to %s%s.".formatted(nameOf(match(BY, detail)), c.paidText(), c.ownerName(), reference),
                         "Paid", null, "/expense-management/ap-payments/queue");
             }
 
@@ -241,6 +249,17 @@ public class NotificationEventListener {
 
         String amountText() {
             return baseCurrencyCode + " " + String.format("%,.2f", amount());
+        }
+
+        /** What the employee is actually owed - gross less cash-advance offsets. */
+        String payableText() {
+            BigDecimal payable = report.getReimbursableAmount() != null ? report.getReimbursableAmount() : amount();
+            return baseCurrencyCode + " " + String.format("%,.2f", payable);
+        }
+
+        /** What AP confirmed paying. */
+        String paidText() {
+            return report.getPaidAmount() != null ? baseCurrencyCode + " " + String.format("%,.2f", report.getPaidAmount()) : payableText();
         }
 
         String ownerLink() {

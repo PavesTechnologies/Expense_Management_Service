@@ -252,6 +252,8 @@ public class TaxSnapshotServiceImpl implements TaxSnapshotService {
         }
         Map<String, Object> before = describe(line);
         line.setSupplierGstin(gstin);
+        // The GSTIN's state decides whether the bill should be CGST + SGST or IGST - re-check now.
+        applyValidation(line, taxCalculationService.roundingTolerance(Math.max(1, line.getTaxComponents().size()), scaleOf(line)));
         expenseLineItemRepository.save(line);
         taxAuditService.record(ENTITY, line.getLineItemId(), "TAX_SUPPLIER_GSTIN_SET", before, describe(line), AuditSource.FINANCE, reason.trim());
     }
@@ -260,7 +262,7 @@ public class TaxSnapshotServiceImpl implements TaxSnapshotService {
     private void applyValidation(ExpenseLineItem line, BigDecimal roundingTolerance) {
         TaxValidationService.Result v = taxValidationService.validate(new TaxValidationService.Input(
                 line.getTaxCodeId() != null, line.getTaxAmount(), line.getCalculatedTaxAmount(), roundingTolerance,
-                line.getOcrTaxAmount(), line.getOcrTaxConfidence()));
+                line.getOcrTaxAmount(), line.getOcrTaxConfidence(), line.getTaxType(), line.getSupplierGstin()));
         line.setTaxValidationStatus(v.status());
         line.setTaxValidationReasons(v.reasons().isEmpty() ? null : String.join(",", v.reasons()));
     }

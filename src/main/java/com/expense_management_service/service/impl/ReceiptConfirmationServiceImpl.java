@@ -1,15 +1,18 @@
 package com.expense_management_service.service.impl;
 
+import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
 import com.expense_management_service.dto.request.ReceiptConfirmRequest;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
 import com.expense_management_service.dto.response.ReceiptConfirmResponse;
+import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.Receipt;
 import com.expense_management_service.entity.ReceiptOcr;
 import com.expense_management_service.enums.OcrStatus;
+import com.expense_management_service.repository.AuditLogRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ReceiptOcrRepository;
@@ -28,6 +31,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -44,6 +48,9 @@ import java.util.UUID;
 @Slf4j
 public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationService {
 
+    /** A claimed amount within a cent of the receipt total is a rounding difference, not a mismatch. */
+    private static final BigDecimal AMOUNT_TOLERANCE = new BigDecimal("0.01");
+
     private final ReceiptRepository receiptRepository;
     private final ReceiptOcrRepository receiptOcrRepository;
     private final ExpenseLineItemRepository expenseLineItemRepository;
@@ -51,6 +58,7 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
     private final CurrencyRepository currencyRepository;
     private final CurrentUserService currentUserService;
     private final TaxSnapshotService taxSnapshotService;
+    private final AuditLogRepository auditLogRepository;
 
     @Override
     public ReceiptConfirmResponse confirm(UUID receiptId, ReceiptConfirmRequest request) {
@@ -85,6 +93,14 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
         BigDecimal taxAmount = firstNonNull(request.taxAmount(), latestOcr.map(ReceiptOcr::getTaxAmount).orElse(null));
         UUID currencyId = resolveCurrencyId(request.currencyId(), latestOcr.map(ReceiptOcr::getCurrencyCode).orElse(null));
 
+        BigDecimal extractedAmount = latestOcr.map(ReceiptOcr::getAmount).orElse(null);
+        boolean amountMismatch = isAmountMismatch(amount, extractedAmount, currencyId, latestOcr);
+        if (amountMismatch && amount.compareTo(extractedAmount) > 0 && !hasText(request.description())) {
+            throw new BusinessRuleViolationException("The receipt total is " + extractedAmount.toPlainString()
+                    + " but " + amount.toPlainString() + " was entered. Claim no more than the receipt shows, "
+                    + "or add a description explaining the difference.");
+        }
+
         ExpenseLineItemRequest lineItemRequest = new ExpenseLineItemRequest(
                 request.categoryId(), expenseDate, merchantName, request.description(), amount, currencyId,
                 taxAmount, request.costCenterId(), request.projectId(), request.clientBillable(),
@@ -94,10 +110,51 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
         markCreatedByOcr(created.lineItemId(), latestOcr.isPresent());
         linkReceiptToLineItem(receipt, created.lineItemId());
         attachOcrTax(created.lineItemId(), latestOcr);
+        if (amountMismatch) {
+            auditAmountMismatch(created.lineItemId(), amount, extractedAmount, request.description());
+        }
 
-        log.info("Confirmed receipt {} — created line item {}", receipt.getReceiptId(), created.lineItemId());
-        return new ReceiptConfirmResponse(receipt.getReceiptId(), created.lineItemId(), OcrStatus.VERIFIED, false, amount,
-                latestOcr.map(ReceiptOcr::getAmount).orElse(null));
+        log.info("Confirmed receipt {} — created line item {} (amountMismatch={})",
+                receipt.getReceiptId(), created.lineItemId(), amountMismatch);
+        return new ReceiptConfirmResponse(receipt.getReceiptId(), created.lineItemId(), OcrStatus.VERIFIED, amountMismatch,
+                amount, extractedAmount);
+    }
+
+    /**
+     * The claimed amount differs from the receipt total OCR read, beyond a cent of rounding. Only compared when
+     * both are in the same currency - a claim entered in another currency than the receipt's can't be checked
+     * against its total.
+     */
+    private boolean isAmountMismatch(BigDecimal amount, BigDecimal extractedAmount, UUID currencyId, Optional<ReceiptOcr> latestOcr) {
+        if (extractedAmount == null || extractedAmount.signum() <= 0) {
+            return false;
+        }
+        String ocrCurrency = latestOcr.map(ReceiptOcr::getCurrencyCode).orElse(null);
+        if (ocrCurrency != null) {
+            Optional<String> lineCurrency = currencyRepository.findById(currencyId).map(Currency::getCurrencyCode);
+            if (lineCurrency.isPresent() && !lineCurrency.get().equalsIgnoreCase(ocrCurrency)) {
+                return false;
+            }
+        }
+        return amount.subtract(extractedAmount).abs().compareTo(AMOUNT_TOLERANCE) > 0;
+    }
+
+    /** Records what the receipt said against what was claimed, so a reviewer can trace the difference. */
+    private void auditAmountMismatch(UUID lineItemId, BigDecimal amount, BigDecimal extractedAmount, String description) {
+        auditLogRepository.save(AuditLog.builder()
+                .entityName("ExpenseLineItem")
+                .entityId(lineItemId)
+                .action("RECEIPT_AMOUNT_MISMATCH")
+                .oldValue("Receipt total " + extractedAmount.toPlainString())
+                .newValue("Claimed " + amount.toPlainString())
+                .reason(hasText(description) ? description.trim() : null)
+                .performedBy(currentUserService.getCurrentUser().employeeId())
+                .performedAt(LocalDateTime.now())
+                .build());
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private ReceiptConfirmResponse attachToExistingLineItem(Receipt receipt, ReceiptConfirmRequest request, Optional<ReceiptOcr> latestOcr) {
@@ -109,10 +166,15 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
 
         BigDecimal enteredAmount = existing.getAmount();
         BigDecimal extractedAmount = latestOcr.map(ReceiptOcr::getAmount).orElse(null);
-        boolean amountMismatch = extractedAmount != null && enteredAmount.compareTo(extractedAmount) != 0;
+        boolean amountMismatch = existing.getCurrency() != null
+                ? isAmountMismatch(enteredAmount, extractedAmount, existing.getCurrency().getCurrencyId(), latestOcr)
+                : extractedAmount != null && enteredAmount.subtract(extractedAmount).abs().compareTo(AMOUNT_TOLERANCE) > 0;
 
         linkReceiptToLineItem(receipt, existing.getLineItemId());
         attachOcrTax(existing.getLineItemId(), latestOcr);
+        if (amountMismatch) {
+            auditAmountMismatch(existing.getLineItemId(), enteredAmount, extractedAmount, existing.getDescription());
+        }
 
         log.info("Confirmed receipt {} — linked to existing line item {} (amountMismatch={})",
                 receipt.getReceiptId(), existing.getLineItemId(), amountMismatch);

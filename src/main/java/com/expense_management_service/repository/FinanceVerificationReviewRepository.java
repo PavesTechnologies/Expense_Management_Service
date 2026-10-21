@@ -12,6 +12,9 @@ public interface FinanceVerificationReviewRepository extends JpaRepository<Finan
 
     List<FinanceVerificationReview> findByLevelInstance_InstanceId(UUID instanceId);
 
+    /** Every Finance review of one line item, across levels and cycles. */
+    List<FinanceVerificationReview> findByLineItem_LineItemId(UUID lineItemId);
+
     List<FinanceVerificationReview> findByLevelInstance_InstanceIdAndStatus(UUID instanceId, FinanceVerificationStatus status);
 
     Optional<FinanceVerificationReview> findByLineItem_LineItemIdAndLevelInstance_InstanceId(UUID lineItemId, UUID instanceId);

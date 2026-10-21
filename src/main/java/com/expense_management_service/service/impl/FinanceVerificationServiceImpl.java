@@ -14,6 +14,7 @@ import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.FinanceVerificationReview;
 import com.expense_management_service.entity.GlAccount;
 import com.expense_management_service.enums.AssignmentStatus;
+import com.expense_management_service.enums.CorrectionCategory;
 import com.expense_management_service.dto.request.FinanceSupplierGstinRequest;
 import com.expense_management_service.dto.response.FinanceGlDetailsResponse;
 import com.expense_management_service.entity.TaxCode;
@@ -138,9 +139,16 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
 
     @Override
     public ExpenseReportResponse queryLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, String reason) {
+        return queryLineItem(reportId, lineItemId, actingEmployeeId, reason, CorrectionCategory.OTHER);
+    }
+
+    @Override
+    public ExpenseReportResponse queryLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, String reason,
+                                               CorrectionCategory category) {
         if (reason == null || reason.isBlank()) {
             throw new IllegalArgumentException("A reason is required to raise a Finance query");
         }
+        CorrectionCategory effectiveCategory = category != null ? category : CorrectionCategory.OTHER;
         FinanceActionContext ctx = resolveContext(reportId, lineItemId, actingEmployeeId);
 
         verificationQueryRepository.save(VerificationQuery.builder()
@@ -148,6 +156,7 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
                 .levelInstance(ctx.activeInstance())
                 .raisedBy(actingEmployeeId)
                 .queryText(reason)
+                .category(effectiveCategory)
                 .status(FinanceVerificationStrategy.QUERY_STATUS_RAISED)
                 .raisedAt(LocalDateTime.now())
                 .build());
@@ -155,13 +164,17 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
         FinanceVerificationReview review = ctx.review();
         review.setStatus(FinanceVerificationStatus.QUERIED);
         review.setComment(reason);
+        review.setQueryCategory(effectiveCategory);
         review.setActedBy(actingEmployeeId);
         review.setActionedAt(LocalDateTime.now());
         financeVerificationReviewRepository.save(review);
 
         ctx.report().setReportStatus(ReportStatus.AWAITING_CORRECTION);
         expenseReportRepository.save(ctx.report());
-        approvalEventPublisher.publish("VERIFICATION_QUERY_RAISED", reportId, "lineItem=" + lineItemId + " by=" + actingEmployeeId);
+        // comment= last: the audit listener records it as the reason, so the correction request
+        // stays in the report history even after the review row is later reused.
+        approvalEventPublisher.publish("VERIFICATION_QUERY_RAISED", reportId, "lineItem=" + lineItemId + " by=" + actingEmployeeId
+                + " category=" + effectiveCategory + " comment=" + reason);
 
         log.info("Finance query raised on line item {} of report {} by {}: {}", lineItemId, reportId, actingEmployeeId, reason);
         return expenseReportResponseFactory.toResponse(findReport(reportId));

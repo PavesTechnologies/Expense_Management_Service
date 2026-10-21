@@ -66,6 +66,8 @@ import static org.mockito.Mockito.when;
 class ExpenseLineItemServiceImplTest {
 
     @Mock
+    private SubmittedLineItemRemover submittedLineItemRemover;
+    @Mock
     private ExpenseLineItemRepository expenseLineItemRepository;
     @Mock
     private ExpenseReportRepository expenseReportRepository;
@@ -124,7 +126,8 @@ class ExpenseLineItemServiceImplTest {
                 new ExpenseLineItemMapper(), policyEvaluator, policyViolationRepository, new PolicyViolationMapper(),
                 approvalAssignmentRepository, delegationService, expenseSplitService,
                 new TaxSnapshotServiceImpl(new TaxCalculationServiceImpl(taxCodeRepository, taxMappingService, systemConfigurationRepository),
-                        expenseLineItemRepository, taxAuditService, new TaxValidationServiceImpl(systemConfigurationRepository), currencyRepository));
+                        expenseLineItemRepository, taxAuditService, new TaxValidationServiceImpl(systemConfigurationRepository), currencyRepository),
+                submittedLineItemRemover);
         ReflectionTestUtils.setField(expenseLineItemService, "baseCurrencyCode", "INR");
 
         reportId = UUID.randomUUID();

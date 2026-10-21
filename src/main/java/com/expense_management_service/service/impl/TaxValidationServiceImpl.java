@@ -1,6 +1,7 @@
 package com.expense_management_service.service.impl;
 
 import com.expense_management_service.entity.SystemConfiguration;
+import com.expense_management_service.enums.TaxType;
 import com.expense_management_service.enums.TaxValidationStatus;
 import com.expense_management_service.repository.SystemConfigurationRepository;
 import com.expense_management_service.service.TaxCalculationService;
@@ -65,8 +66,13 @@ public class TaxValidationServiceImpl implements TaxValidationService {
             }
         }
 
+        boolean supplyTypeMismatch = isSupplyTypeMismatch(in.taxType(), in.supplierGstin());
+        if (supplyTypeMismatch) {
+            reasons.add(REASON_SUPPLY_TYPE_MISMATCH);
+        }
+
         TaxValidationStatus status;
-        if (ocrMismatch) {
+        if (ocrMismatch || supplyTypeMismatch) {
             status = TaxValidationStatus.MISMATCH;
         } else if (!in.hasTaxCode()) {
             status = tax.signum() > 0 ? TaxValidationStatus.CONFIGURATION_MISSING : TaxValidationStatus.NOT_APPLICABLE;
@@ -85,6 +91,36 @@ public class TaxValidationServiceImpl implements TaxValidationService {
         return status == TaxValidationStatus.MISMATCH
                 || status == TaxValidationStatus.CONFIGURATION_MISSING
                 || (status == TaxValidationStatus.WARNING && reasons.contains(TaxCalculationService.REASON_OVERRIDE));
+    }
+
+    /**
+     * Same-state supplier = CGST + SGST, other-state supplier = IGST. Only GST types are checked, and
+     * only when both the supplier GSTIN and the company's GST state are known - never guessed.
+     */
+    private boolean isSupplyTypeMismatch(TaxType taxType, String supplierGstin) {
+        if (taxType != TaxType.CGST_SGST && taxType != TaxType.IGST) {
+            return false;
+        }
+        String supplierState = gstStateCode(supplierGstin);
+        String companyState = systemConfigurationRepository.findByConfigKey(COMPANY_GST_STATE_CODE_KEY)
+                .map(SystemConfiguration::getConfigValue)
+                .map(String::trim)
+                .filter(v -> v.matches("\\d{2}"))
+                .orElse(null);
+        if (supplierState == null || companyState == null) {
+            return false;
+        }
+        TaxType expected = supplierState.equals(companyState) ? TaxType.CGST_SGST : TaxType.IGST;
+        return taxType != expected;
+    }
+
+    /** The 2-digit state code a GSTIN starts with, or null when it isn't a GSTIN. */
+    static String gstStateCode(String gstin) {
+        if (gstin == null) {
+            return null;
+        }
+        String trimmed = gstin.trim();
+        return trimmed.length() == 15 && trimmed.substring(0, 2).matches("\\d{2}") ? trimmed.substring(0, 2) : null;
     }
 
     private BigDecimal config(String key, BigDecimal fallback) {

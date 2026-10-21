@@ -114,6 +114,14 @@ public class ExpenseLineItem {
     @Column(name = "allocation_reason", length = 500)
     private String allocationReason;
 
+    /**
+     * When the employee last edited this line after the report was submitted (during a correction).
+     * On resubmission, any review already given on the line before this time is reopened, so a
+     * changed line is always looked at again. Null for lines never edited after submission.
+     */
+    @Column(name = "revised_at")
+    private LocalDateTime revisedAt;
+
     /** Copied from the tax code when the snapshot is taken. */
     @Column(name = "itc_recoverable_percent", precision = 5, scale = 2)
     private BigDecimal itcRecoverablePercent;

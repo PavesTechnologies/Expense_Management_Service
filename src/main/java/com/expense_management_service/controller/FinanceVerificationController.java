@@ -83,7 +83,7 @@ public class FinanceVerificationController {
     public ApiResponse<ExpenseReportResponse> queryLineItem(@PathVariable UUID reportId, @PathVariable UUID lineItemId,
                                                              @Valid @RequestBody FinanceQueryRequest request) {
         return ApiResponse.success("Finance query raised",
-                financeVerificationService.queryLineItem(reportId, lineItemId, currentUserService.getEmployeeId(), request.reason()));
+                financeVerificationService.queryLineItem(reportId, lineItemId, currentUserService.getEmployeeId(), request.reason(), request.category()));
     }
 
     @GetMapping("/my-queue")

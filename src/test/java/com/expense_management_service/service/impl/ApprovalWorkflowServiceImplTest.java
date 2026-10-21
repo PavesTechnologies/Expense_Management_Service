@@ -628,6 +628,52 @@ class ApprovalWorkflowServiceImplTest {
     }
 
     @Test
+    void financeLevelCompletion_withNothingOwedToTheEmployee_settlesWithoutPayment_andNeverReachesAp() {
+        List<FinanceVerificationReview> financeReviews = new ArrayList<>();
+        when(financeVerificationReviewRepository.save(any(FinanceVerificationReview.class))).thenAnswer(inv -> {
+            FinanceVerificationReview r = inv.getArgument(0);
+            financeReviews.add(r);
+            return r;
+        });
+        when(financeVerificationReviewRepository.findByLevelInstance_InstanceId(any()))
+                .thenAnswer(inv -> financeReviews.stream()
+                        .filter(r -> r.getLevelInstance().getInstanceId().equals(inv.getArgument(0))).toList());
+
+        ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
+                approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
+                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class)),
+                approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
+                policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
+                new com.expense_management_service.mapper.PolicyViolationMapper(),
+                List.of(new ApprovalReviewStrategy(approvalLineItemReviewRepository),
+                        new FinanceVerificationStrategy(financeVerificationReviewRepository, verificationQueryRepository)),
+                new ExpenseReportResponseFactory(new ExpenseReportMapper(), policyViolationRepository),
+                materialChangeEvaluator, org.mockito.Mockito.mock(com.expense_management_service.service.TaxSnapshotService.class));
+
+        ExpenseReport report = draftReport();
+        report.setTotalAmount(new java.math.BigDecimal("50000"));
+        report.setFiscalYear("2026");
+        report.setCompanyPaid(true); // the company already paid the vendor - nothing to reimburse
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(approvalFlowResolutionService.resolveMatchingFlow(report)).thenReturn(financeOnlyFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of("5100050"));
+
+        serviceWithFinance.submit(reportId);
+        ApprovalLevelInstance financeInstance = savedInstances.stream()
+                .filter(i -> i.getLevelType() == com.expense_management_service.enums.LevelType.FINANCE_VERIFICATION)
+                .findFirst().orElseThrow();
+        financeReviews.stream().findFirst().orElseThrow().setStatus(FinanceVerificationStatus.VERIFIED);
+
+        serviceWithFinance.advanceAfterLevelReviewed(reportId, financeInstance.getInstanceId(), "5100050");
+
+        assertThat(report.getReportStatus()).isEqualTo(ReportStatus.APPROVED);
+        assertThat(report.getNoPaymentDue()).isTrue();
+        assertThat(report.getPaymentRoutingStatus()).isEqualTo(com.expense_management_service.enums.PaymentRoutingStatus.NONE);
+        verify(approvalEventPublisher, never()).publish(eq("REPORT_APPROVED_FOR_PAYMENT"), any(), any());
+        verify(approvalEventPublisher).publish(eq("REPORT_SETTLED_NO_PAYMENT"), eq(reportId), any());
+    }
+
+    @Test
     void submit_snapshotsLevelTypeOntoEveryInstance_forAMixedManagerFinanceFlow() {
         ExpenseReport report = draftReport();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));

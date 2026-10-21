@@ -90,13 +90,37 @@ class TaxCalculationServiceImplTest {
     }
 
     @Test
-    void inclusive_gst18_oddAmount_lastComponentAbsorbsRounding() {
+    void inclusive_gst18_oddAmount_roundsEachComponentOnItsOwn() {
         Result r = calc(code("GST18", TaxType.CGST_SGST, "9", "9"), "1000.00", null, 2);
 
         assertThat(r.taxableAmount()).isEqualByComparingTo("847.46");
         assertThat(r.taxAmount()).isEqualByComparingTo("152.54");
         assertThat(r.components().get(0).amount()).isEqualByComparingTo("76.27");
         assertThat(r.components().get(1).amount()).isEqualByComparingTo("76.27");
+    }
+
+    @Test
+    void inclusive_gst18_on1180_is180_splitAs90Cgst_and90Sgst() {
+        Result r = calc(code("GST18", TaxType.CGST_SGST, "9", "9"), "1180.00", null, 2);
+
+        assertThat(r.taxableAmount()).isEqualByComparingTo("1000.00");
+        assertThat(r.taxAmount()).isEqualByComparingTo("180.00");
+        assertThat(r.components()).extracting(TaxCalculationService.ComponentAmount::code)
+                .containsExactly(TaxComponentCode.CGST, TaxComponentCode.SGST);
+        assertThat(r.components().get(0).amount()).isEqualByComparingTo("90.00");
+        assertThat(r.components().get(1).amount()).isEqualByComparingTo("90.00");
+    }
+
+    @Test
+    void inclusive_equalRates_alwaysGiveEqualCgstAndSgst_theTaxableValueTakesTheRounding() {
+        // 100 / 1.18 = 84.7457...; 9% of that = 7.627 -> 7.63 each, like an invoice - never 7.63 + 7.62.
+        Result r = calc(code("GST18", TaxType.CGST_SGST, "9", "9"), "100.00", null, 2);
+
+        assertThat(r.components().get(0).amount()).isEqualByComparingTo("7.63");
+        assertThat(r.components().get(1).amount()).isEqualByComparingTo("7.63");
+        assertThat(r.taxAmount()).isEqualByComparingTo("15.26");
+        assertThat(r.taxableAmount()).isEqualByComparingTo("84.74");
+        assertThat(r.taxableAmount().add(r.taxAmount())).isEqualByComparingTo("100.00");
     }
 
     @Test

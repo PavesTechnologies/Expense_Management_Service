@@ -84,6 +84,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private final DelegationService delegationService;
     private final ExpenseSplitService expenseSplitService;
     private final TaxSnapshotService taxSnapshotService;
+    private final SubmittedLineItemRemover submittedLineItemRemover;
 
     /**
      * The organization's single accounting/base currency (e.g. "INR") — every line item's
@@ -141,11 +142,24 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         assertTaxAmountValid(request.amount(), request.taxAmount());
 
         var previousTax = taxSnapshotService.describe(entity);
+        boolean keepFinanceTax = keepsFinanceAdjustedTax(entity, request, category);
+        BigDecimal financeTaxAmount = entity.getTaxAmount();
         expenseLineItemMapper.updateEntity(entity, request);
         entity.setCategory(category);
         applyRelations(entity, request);
         applyCurrencyConversion(entity);
-        applyTaxSnapshot(entity, request, previousTax);
+        if (keepFinanceTax) {
+            // Finance corrected this line's tax and the employee changed nothing it depends on:
+            // recalculating from the tax code would silently undo Finance's figures.
+            entity.setTaxAmount(financeTaxAmount);
+        } else {
+            applyTaxSnapshot(entity, request, previousTax);
+        }
+        if (report.getSubmittedAt() != null) {
+            // Edited after submission (i.e. during a correction): already-given reviews of this line
+            // are reopened when the report is resubmitted.
+            entity.setRevisedAt(LocalDateTime.now());
+        }
 
         ExpenseLineItem saved = expenseLineItemRepository.save(entity);
         // Splits are allocated against baseAmount; an amount or currency edit would otherwise leave
@@ -179,6 +193,11 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         assertOwnerOrAdmin(report);
         assertReportEditable(report);
         ExpenseLineItem entity = findLineItem(reportId, lineItemId);
+        if (report.getSubmittedAt() != null) {
+            // Removed during a correction: clear the review/budget rows that reference it, keeping
+            // their outcome in the audit log.
+            submittedLineItemRemover.prepareForDeletion(entity, currentUserService.getCurrentUser().employeeId());
+        }
         expenseLineItemRepository.delete(entity);
         recalculateReportTotal(report);
         log.info("Deleted line item {} from expense report {}", lineItemId, reportId);
@@ -422,6 +441,25 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
      * Server-side tax (BR-TAX-001): the request's taxAmount is what the employee entered and is
      * compared with the category's (or the selected) tax code; see TaxSnapshotService.
      */
+    /**
+     * A Finance-adjusted tax stays as Finance set it unless the employee changes something the tax
+     * depends on: amount, currency, date, category, an explicit tax code, or an entered tax amount
+     * that differs from Finance's.
+     */
+    private static boolean keepsFinanceAdjustedTax(ExpenseLineItem entity, ExpenseLineItemRequest request, ExpenseCategory category) {
+        if (entity.getTaxSource() != com.expense_management_service.enums.TaxSource.FINANCE_ADJUSTED) {
+            return false;
+        }
+        boolean sameAmount = entity.getAmount() != null && request.amount() != null && entity.getAmount().compareTo(request.amount()) == 0;
+        boolean sameCurrency = entity.getCurrency() != null && Objects.equals(entity.getCurrency().getCurrencyId(), request.currencyId());
+        boolean sameDate = Objects.equals(entity.getExpenseDate(), request.expenseDate());
+        boolean sameCategory = entity.getCategory() != null && Objects.equals(entity.getCategory().getCategoryId(), category.getCategoryId());
+        boolean sameTaxCode = request.taxCodeId() == null || Objects.equals(request.taxCodeId(), entity.getTaxCodeId());
+        boolean sameTax = request.taxAmount() == null
+                || (entity.getTaxAmount() != null && entity.getTaxAmount().compareTo(request.taxAmount()) == 0);
+        return sameAmount && sameCurrency && sameDate && sameCategory && sameTaxCode && sameTax;
+    }
+
     private void applyTaxSnapshot(ExpenseLineItem entity, ExpenseLineItemRequest request, java.util.Map<String, Object> previousTax) {
         Currency baseCurrency = findOrganizationBaseCurrency();
         int baseScale = baseCurrency.getDecimalPlaces() != null ? baseCurrency.getDecimalPlaces() : 2;

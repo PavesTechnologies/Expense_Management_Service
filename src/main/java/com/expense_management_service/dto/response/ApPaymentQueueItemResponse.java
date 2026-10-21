@@ -1,6 +1,7 @@
 package com.expense_management_service.dto.response;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
@@ -29,6 +30,21 @@ public record ApPaymentQueueItemResponse(
         BigDecimal grossAmount,
         BigDecimal taxAmount,
         BigDecimal recoverableTaxAmount,
-        BigDecimal reimbursableAmount
+        BigDecimal reimbursableAmount,
+        /** What AP recorded when confirming the payment; all null until then. */
+        String paymentReference,
+        String paymentMethod,
+        LocalDate paymentDate,
+        BigDecimal paidAmount
 ) {
+    public ApPaymentQueueItemResponse(UUID reportId, String reportNumber, String employeeId, String title,
+                                      BigDecimal totalAmount, String currencyCode, UUID costCenterId, String costCenterName,
+                                      LocalDateTime approvedAt, String reportStatus, String paymentRoutingStatus,
+                                      String invoiceHandoffStatus, LocalDateTime paymentCompletedAt, String paymentCompletedBy,
+                                      BigDecimal grossAmount, BigDecimal taxAmount, BigDecimal recoverableTaxAmount,
+                                      BigDecimal reimbursableAmount) {
+        this(reportId, reportNumber, employeeId, title, totalAmount, currencyCode, costCenterId, costCenterName, approvedAt,
+                reportStatus, paymentRoutingStatus, invoiceHandoffStatus, paymentCompletedAt, paymentCompletedBy, grossAmount,
+                taxAmount, recoverableTaxAmount, reimbursableAmount, null, null, null, null);
+    }
 }

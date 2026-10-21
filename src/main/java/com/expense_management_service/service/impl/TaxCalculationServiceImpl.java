@@ -66,27 +66,18 @@ public class TaxCalculationServiceImpl implements TaxCalculationService {
                 .toList();
         BigDecimal totalRate = parts.stream().map(TaxCodeComponent::getRatePercent).reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        // Calculated breakdown: taxable first, then per-component tax, last component absorbs rounding.
-        BigDecimal calcTaxable;
-        BigDecimal calcTax;
-        if (treatment == TaxTreatment.INCLUSIVE) {
-            calcTaxable = totalRate.signum() == 0 ? amount
-                    : amount.multiply(HUNDRED).divide(HUNDRED.add(totalRate), scale, RoundingMode.HALF_UP);
-            calcTax = amount.subtract(calcTaxable);
-        } else {
-            calcTaxable = amount;
-            calcTax = parts.stream()
-                    .map(p -> amount.multiply(p.getRatePercent()).divide(HUNDRED, scale, RoundingMode.HALF_UP))
-                    .reduce(BigDecimal.ZERO.setScale(scale), BigDecimal::add);
-        }
+        // Calculated breakdown, invoice-style: each component is rounded on its own from the exact
+        // taxable value, so equal rates always give equal amounts (CGST 9% == SGST 9%). The tax is
+        // the sum of the components; for an inclusive amount the taxable value takes the rounding,
+        // so taxable + tax still equals the amount paid exactly.
+        BigDecimal exactTaxable = treatment == TaxTreatment.INCLUSIVE && totalRate.signum() != 0
+                ? amount.multiply(HUNDRED).divide(HUNDRED.add(totalRate), scale + 6, RoundingMode.HALF_UP)
+                : amount;
         List<BigDecimal> calcShares = new ArrayList<>();
-        BigDecimal running = BigDecimal.ZERO.setScale(scale);
-        for (int i = 0; i < parts.size(); i++) {
-            BigDecimal share = i == parts.size() - 1 ? calcTax.subtract(running)
-                    : calcTaxable.multiply(parts.get(i).getRatePercent()).divide(HUNDRED, scale, RoundingMode.HALF_UP);
-            calcShares.add(share);
-            running = running.add(share);
+        for (TaxCodeComponent part : parts) {
+            calcShares.add(exactTaxable.multiply(part.getRatePercent()).divide(HUNDRED, scale, RoundingMode.HALF_UP));
         }
+        BigDecimal calcTax = calcShares.stream().reduce(BigDecimal.ZERO.setScale(scale), BigDecimal::add);
 
         BigDecimal tolerance = roundingTolerance(parts.size(), scale);
         boolean override = entered != null && entered.subtract(calcTax).abs().compareTo(tolerance) > 0;

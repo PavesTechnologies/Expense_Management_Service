@@ -11,5 +11,8 @@ public interface ApprovalSplitReviewRepository extends JpaRepository<ApprovalSpl
 
     List<ApprovalSplitReview> findByAssignment_AssignmentId(UUID assignmentId);
 
+    /** Every split-owner review of one line item's splits. */
+    List<ApprovalSplitReview> findBySplit_LineItem_LineItemId(UUID lineItemId);
+
     Optional<ApprovalSplitReview> findBySplit_SplitIdAndAssignment_AssignmentId(UUID splitId, UUID assignmentId);
 }

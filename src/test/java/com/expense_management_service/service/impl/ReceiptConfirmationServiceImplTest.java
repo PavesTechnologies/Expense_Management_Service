@@ -1,16 +1,19 @@
 package com.expense_management_service.service.impl;
 
+import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
 import com.expense_management_service.dto.request.ReceiptConfirmRequest;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
 import com.expense_management_service.dto.response.ReceiptConfirmResponse;
+import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.Receipt;
 import com.expense_management_service.entity.ReceiptOcr;
 import com.expense_management_service.enums.OcrStatus;
+import com.expense_management_service.repository.AuditLogRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ReceiptOcrRepository;
@@ -59,6 +62,8 @@ class ReceiptConfirmationServiceImplTest {
     private CurrencyRepository currencyRepository;
     @Mock
     private CurrentUserService currentUserService;
+    @Mock
+    private AuditLogRepository auditLogRepository;
 
     private ReceiptConfirmationServiceImpl confirmationService;
 
@@ -70,7 +75,8 @@ class ReceiptConfirmationServiceImplTest {
     @BeforeEach
     void setUp() {
         confirmationService = new ReceiptConfirmationServiceImpl(receiptRepository, receiptOcrRepository,
-                expenseLineItemRepository, expenseLineItemService, currencyRepository, currentUserService, taxSnapshotService);
+                expenseLineItemRepository, expenseLineItemService, currencyRepository, currentUserService, taxSnapshotService,
+                auditLogRepository);
 
         reportId = UUID.randomUUID();
         ExpenseReport report = ExpenseReport.builder().reportId(reportId).employeeId(employeeId).build();
@@ -202,6 +208,98 @@ class ReceiptConfirmationServiceImplTest {
         assertThatThrownBy(() -> confirmationService.confirm(receiptId, requestWithCategoryOnly(UUID.randomUUID())))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("amount");
+    }
+
+    // ---------------------------------------------------------------------
+    // Receipt total (OCR) vs the amount entered for a new line item
+    // ---------------------------------------------------------------------
+
+    /** A new-line request in the receipt's own currency (USD), entering {@code amount} against OCR's 123.45. */
+    private ReceiptConfirmRequest newLineRequest(String amount, String description, UUID currencyId) {
+        return new ReceiptConfirmRequest(null, UUID.randomUUID(), LocalDate.of(2026, 1, 15), "Acme Taxi", description,
+                new BigDecimal(amount), currencyId, null, null, null, false);
+    }
+
+    private UUID stubUsdLineCreation(UUID lineItemId) {
+        UUID usdId = UUID.randomUUID();
+        lenient().when(currencyRepository.findById(usdId))
+                .thenReturn(Optional.of(Currency.builder().currencyId(usdId).currencyCode("USD").build()));
+        when(receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receiptId))
+                .thenReturn(Optional.of(completedOcr()));
+        lenient().when(expenseLineItemService.create(eq(reportId), any(ExpenseLineItemRequest.class)))
+                .thenReturn(sampleLineItemResponse(lineItemId));
+        lenient().when(expenseLineItemRepository.findById(lineItemId))
+                .thenReturn(Optional.of(ExpenseLineItem.builder().lineItemId(lineItemId).build()));
+        return usdId;
+    }
+
+    @Test
+    void confirm_newLineItem_claimingLessThanTheReceipt_isAllowed_butFlaggedAndAudited() {
+        UUID lineItemId = UUID.randomUUID();
+        UUID usdId = stubUsdLineCreation(lineItemId);
+
+        ReceiptConfirmResponse response = confirmationService.confirm(receiptId, newLineRequest("100.00", null, usdId));
+
+        assertThat(response.amountMismatch()).isTrue();
+        assertThat(response.enteredAmount()).isEqualByComparingTo("100.00");
+        assertThat(response.extractedAmount()).isEqualByComparingTo("123.45");
+        ArgumentCaptor<AuditLog> audit = ArgumentCaptor.forClass(AuditLog.class);
+        verify(auditLogRepository).save(audit.capture());
+        assertThat(audit.getValue().getAction()).isEqualTo("RECEIPT_AMOUNT_MISMATCH");
+        assertThat(audit.getValue().getEntityId()).isEqualTo(lineItemId);
+        assertThat(audit.getValue().getOldValue()).contains("123.45");
+        assertThat(audit.getValue().getNewValue()).contains("100.00");
+        assertThat(audit.getValue().getPerformedBy()).isEqualTo(employeeId);
+    }
+
+    @Test
+    void confirm_newLineItem_claimingMoreThanTheReceipt_withoutAnExplanation_isRejected() {
+        UUID usdId = stubUsdLineCreation(UUID.randomUUID());
+
+        assertThatThrownBy(() -> confirmationService.confirm(receiptId, newLineRequest("150.00", "  ", usdId)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("123.45")
+                .hasMessageContaining("150.00");
+
+        verify(expenseLineItemService, never()).create(any(), any());
+        verify(auditLogRepository, never()).save(any());
+    }
+
+    @Test
+    void confirm_newLineItem_claimingMoreThanTheReceipt_withAnExplanation_isAllowed_andTheReasonIsAudited() {
+        UUID lineItemId = UUID.randomUUID();
+        UUID usdId = stubUsdLineCreation(lineItemId);
+
+        ReceiptConfirmResponse response = confirmationService.confirm(receiptId,
+                newLineRequest("150.00", "Tip paid in cash, not on the receipt", usdId));
+
+        assertThat(response.amountMismatch()).isTrue();
+        ArgumentCaptor<AuditLog> audit = ArgumentCaptor.forClass(AuditLog.class);
+        verify(auditLogRepository).save(audit.capture());
+        assertThat(audit.getValue().getReason()).isEqualTo("Tip paid in cash, not on the receipt");
+    }
+
+    @Test
+    void confirm_newLineItem_withinACentOfTheReceipt_isNotAMismatch() {
+        UUID usdId = stubUsdLineCreation(UUID.randomUUID());
+
+        ReceiptConfirmResponse response = confirmationService.confirm(receiptId, newLineRequest("123.46", null, usdId));
+
+        assertThat(response.amountMismatch()).isFalse();
+        verify(auditLogRepository, never()).save(any());
+    }
+
+    @Test
+    void confirm_newLineItem_inAnotherCurrencyThanTheReceipt_isNotCompared() {
+        stubUsdLineCreation(UUID.randomUUID());
+        UUID inrId = UUID.randomUUID();
+        when(currencyRepository.findById(inrId))
+                .thenReturn(Optional.of(Currency.builder().currencyId(inrId).currencyCode("INR").build()));
+
+        ReceiptConfirmResponse response = confirmationService.confirm(receiptId, newLineRequest("10250.00", null, inrId));
+
+        assertThat(response.amountMismatch()).isFalse();
+        verify(auditLogRepository, never()).save(any());
     }
 
     @Test

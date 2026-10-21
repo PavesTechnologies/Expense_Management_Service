@@ -35,6 +35,18 @@ public record ExpenseReportResponse(
         int policyUnjustifiedCount,
         /** The cash advance this report settles, or null for an ordinary report. */
         UUID cashAdvanceId,
+        /** Start date of the trip or client meeting, or null if not yet entered. */
+        LocalDate tripStartDate,
+        /** Estimated trip end date entered by the employee, or null if not yet entered. */
+        LocalDate tripEndDate,
+        /** Last date the report may be submitted (trip end + configured days), or null without a trip end date. */
+        LocalDate submissionDeadline,
+        /** The configured {@code expense.submission.deadline-days}, so clients never hard-code the rule. */
+        int submissionDeadlineDays,
+        /** Actual reporting period start, or null if not entered. */
+        LocalDate reportingPeriodStart,
+        /** Actual reporting period end, or null if not entered. Never in the future. */
+        LocalDate reportingPeriodEnd,
         /** Approved with nothing to pay the employee (e.g. fully covered by a cash advance) - never "paid". */
         boolean noPaymentDue,
         /** What AP recorded when confirming the actual payment; null until then. */
@@ -51,7 +63,7 @@ public record ExpenseReportResponse(
     ) {
     }
 
-    /** Shape before payment confirmation details were exposed. */
+    /** Shape before trip dates, the submission deadline and payment confirmation details were exposed. */
     public ExpenseReportResponse(UUID reportId, String reportNumber, String employeeId, String title,
                                  String businessPurpose, String fiscalYear, UUID costCenterId, String costCenterName,
                                  String reportStatus, String paymentRoutingStatus, String invoiceHandoffStatus,
@@ -65,7 +77,7 @@ public record ExpenseReportResponse(
                 reportStatus, paymentRoutingStatus, invoiceHandoffStatus, currencyId, currencyCode, baseCurrencyCode,
                 totalAmount, reimbursableAmount, submittedAt, approvedAt, closedAt, createdAt, updatedAt,
                 lineItemCount, editable, deletable, policyWarningCount, policyUnjustifiedCount, cashAdvanceId,
-                false, null);
+                null, null, null, 0, null, null, false, null);
     }
 
 
@@ -82,6 +94,7 @@ public record ExpenseReportResponse(
         this(reportId, reportNumber, employeeId, title, businessPurpose, fiscalYear, costCenterId, costCenterName,
                 reportStatus, paymentRoutingStatus, invoiceHandoffStatus, currencyId, currencyCode, baseCurrencyCode,
                 totalAmount, reimbursableAmount, submittedAt, approvedAt, closedAt, createdAt, updatedAt,
-                lineItemCount, editable, deletable, policyWarningCount, policyUnjustifiedCount, null);
+                lineItemCount, editable, deletable, policyWarningCount, policyUnjustifiedCount, null, null, null, null, 0,
+                null, null, false, null);
     }
 }

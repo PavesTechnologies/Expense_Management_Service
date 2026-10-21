@@ -18,6 +18,7 @@ public record ApprovalQueueItemResponse(
         Integer levelOrder,
         List<PendingLineItemResponse> pendingLineItems,
         List<PendingSplitResponse> pendingSplits,
-        boolean eligibleForBulkApprove
+        boolean eligibleForBulkApprove,
+        UUID cashAdvanceId
 ) {
 }

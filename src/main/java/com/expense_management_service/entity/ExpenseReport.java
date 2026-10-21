@@ -96,6 +96,21 @@ public class ExpenseReport {
     @ToString.Exclude
     private CashAdvance cashAdvance;
 
+    /** Start date of the trip or client meeting. */
+    @Column(name = "trip_start_date")
+    private LocalDate tripStartDate;
+
+    /** Estimated end date of the trip or client meeting. The submission deadline is this date plus the configured days. */
+    @Column(name = "trip_end_date")
+    private LocalDate tripEndDate;
+
+    /** Actual reporting period covered by the expenses. Unlike the trip dates it is never in the future. */
+    @Column(name = "reporting_period_start")
+    private LocalDate reportingPeriodStart;
+
+    @Column(name = "reporting_period_end")
+    private LocalDate reportingPeriodEnd;
+
     /**
      * Optimistic-locking column. The {@code version} column already exists in the database
      * (NOT NULL, no default) but was unmapped, so every INSERT omitted it and MySQL rejected

@@ -1,5 +1,6 @@
 package com.expense_management_service.service.impl;
 
+import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.LineItemReviewRequest;
 import com.expense_management_service.dto.request.RejectReportRequest;
@@ -79,6 +80,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -118,6 +120,14 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     /** Report totals are stored in the organization base currency (sum of line baseAmount), so they are labelled with it. */
     @Value("${exchange.rate.base-currency}")
     private String baseCurrencyCode;
+
+    @Value("${expense.submission.deadline-days:30}")
+    private int submissionDeadlineDays = SubmissionDeadlinePolicy.DEFAULT_DEADLINE_DAYS;
+
+    @jakarta.annotation.PostConstruct
+    void validateSubmissionDeadlineConfig() {
+        SubmissionDeadlinePolicy.requireValidDays(submissionDeadlineDays);
+    }
 
     private final ExpenseReportRepository expenseReportRepository;
     private final ApprovalLevelInstanceRepository approvalLevelInstanceRepository;
@@ -167,6 +177,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
         assertDraft(report);
         assertHasLineItems(report);
+        assertWithinSubmissionDeadline(report);
         if (report.getCostCenter() == null) {
             throw new IllegalArgumentException("Expense report has no cost center assigned");
         }
@@ -195,6 +206,39 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
         log.info("Submitted expense report {} for approval (cycle {}, flow {})", reportId, cycle, flow.getFlowId());
         return toResponse(findReport(reportId));
+    }
+
+    /**
+     * Submission deadline. Advance-linked reports: advance disbursement date + configured days (no clock until the
+     * advance is disbursed). Regular reports: trip end date + configured days. A Finance extension replaces the
+     * computed date, and a Finance reopen lifts the check entirely.
+     */
+    private void assertWithinSubmissionDeadline(ExpenseReport report) {
+        // Re-checked at submit: the period end may have been saved on an earlier day. Finance extensions and reopens
+        // only move the submission deadline, so they never allow a future reporting period.
+        ExpenseReportServiceImpl.assertReportingPeriod(report.getReportingPeriodStart(), report.getReportingPeriodEnd());
+        CashAdvance advance = report.getCashAdvance();
+        boolean linked = advance != null;
+        if (!linked && report.getTripEndDate() == null) {
+            throw new BusinessRuleViolationException("Enter the estimated trip end date before submitting this report.");
+        }
+        LocalDate disbursedOn = linked && advance.getDisbursedAt() != null ? advance.getDisbursedAt().toLocalDate() : null;
+        LocalDate extendedUntil = linked ? advance.getExpenseDeadlineExtendedUntil() : null;
+        boolean reopened = linked && advance.isExpenseDeadlineReopened();
+
+        if (linked && disbursedOn == null && extendedUntil == null) {
+            // Advance not yet disbursed: the expense clock has not started, so there is no deadline to miss.
+            return;
+        }
+
+        LocalDate today = LocalDate.now();
+        if (SubmissionDeadlinePolicy.isOverdue(report.getTripEndDate(), linked, disbursedOn, extendedUntil, reopened,
+                submissionDeadlineDays, today)) {
+            LocalDate deadline = SubmissionDeadlinePolicy.effectiveDeadline(report.getTripEndDate(), linked, disbursedOn,
+                    extendedUntil, submissionDeadlineDays);
+            throw new BusinessRuleViolationException("The submission deadline for this report was " + deadline
+                    + ". Ask Finance to extend or reopen it before submitting.");
+        }
     }
 
     /**
@@ -611,7 +655,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
                 report.getReportStatus() != null ? report.getReportStatus().name() : null,
                 report.getSubmittedAt(),
-                instance.getLevelOrder(), pendingLineItems, pendingSplits, eligibleForBulkApprove);
+                instance.getLevelOrder(), pendingLineItems, pendingSplits, eligibleForBulkApprove,
+                report.getCashAdvance() != null ? report.getCashAdvance().getAdvanceId() : null);
     }
 
     // ---------------------------------------------------------------------

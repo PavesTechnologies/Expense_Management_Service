@@ -18,4 +18,8 @@ public interface FinanceVerificationReviewRepository extends JpaRepository<Finan
     List<FinanceVerificationReview> findByLevelInstance_InstanceIdAndStatus(UUID instanceId, FinanceVerificationStatus status);
 
     Optional<FinanceVerificationReview> findByLineItem_LineItemIdAndLevelInstance_InstanceId(UUID lineItemId, UUID instanceId);
+
+    /** Whether Finance gave this line the given verdict in the given submission cycle - see the invoice handoff gate. */
+    boolean existsByLineItem_LineItemIdAndStatusAndLevelInstance_SubmissionCycle(
+            UUID lineItemId, FinanceVerificationStatus status, Integer submissionCycle);
 }

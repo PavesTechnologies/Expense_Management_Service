@@ -1,6 +1,7 @@
 package com.expense_management_service.repository;
 
 import com.expense_management_service.entity.InvoiceSync;
+import com.expense_management_service.enums.ArDeliveryStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -44,4 +45,25 @@ public interface InvoiceSyncRepository extends JpaRepository<InvoiceSync, UUID> 
             Pageable pageable);
 
     long countBySyncStatus(String syncStatus);
+
+    long countBySyncStatusAndArDeliveryStatus(String syncStatus, ArDeliveryStatus arDeliveryStatus);
+
+    /**
+     * Handoffs the AR delivery retry job should send now, oldest first: every FAILED one still under the attempt
+     * limit, and any PENDING one recorded before {@code pendingRecordedBefore} - its send right after the handoff
+     * never ran (e.g. the service stopped between the commit and the send).
+     */
+    @Query("""
+            SELECT s.syncId FROM InvoiceSync s
+            WHERE s.syncStatus = :syncStatus
+              AND ((s.arDeliveryStatus = :failed AND COALESCE(s.arDeliveryAttempts, 0) < :maxAttempts)
+                   OR (s.arDeliveryStatus = :pending AND s.syncDate < :pendingRecordedBefore))
+            ORDER BY s.syncDate ASC
+            """)
+    List<UUID> findDueForArDelivery(
+            @Param("syncStatus") String syncStatus,
+            @Param("failed") ArDeliveryStatus failed,
+            @Param("pending") ArDeliveryStatus pending,
+            @Param("maxAttempts") int maxAttempts,
+            @Param("pendingRecordedBefore") LocalDateTime pendingRecordedBefore);
 }

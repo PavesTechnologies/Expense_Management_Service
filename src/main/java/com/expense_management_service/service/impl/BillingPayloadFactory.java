@@ -6,10 +6,10 @@ import com.expense_management_service.entity.Receipt;
 
 import java.math.BigDecimal;
 
-/** Builds the AR billing payload (v1) from a client-billable line. */
+/** Builds the AR billing payload (v2: adds the PMS project id) from a client-billable line. */
 final class BillingPayloadFactory {
 
-    static final int PAYLOAD_VERSION = 1;
+    static final int PAYLOAD_VERSION = 2;
 
     private BillingPayloadFactory() {
     }
@@ -35,6 +35,7 @@ final class BillingPayloadFactory {
                 line.getDescription(),
                 line.getMerchantName(),
                 project != null ? project.getProjectId() : null,
+                project != null ? project.getPmsProjectId() : null,
                 project != null ? project.getProjectCode() : null,
                 project != null ? project.getProjectName() : null,
                 line.getResolvedClientId(),

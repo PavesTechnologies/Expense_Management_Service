@@ -35,6 +35,22 @@ public record InvoiceHandoffRecordResponse(
         String resolvedClientName,
         String invoiceReference,
         LocalDateTime handedOffAt,
-        String remarks
+        String remarks,
+        /** PENDING, SENT or FAILED; null for a handoff recorded before delivery to AR existed (AR pulled it). */
+        String arDeliveryStatus,
+        Integer arDeliveryAttempts,
+        LocalDateTime arDeliveredAt,
+        String arDeliveryError
 ) {
+    /** Shape before delivery to AR was tracked. */
+    public InvoiceHandoffRecordResponse(UUID syncId, UUID lineItemId, UUID reportId, String reportNumber, String employeeId,
+                                        LocalDate expenseDate, String categoryName, String description, BigDecimal baseAmount,
+                                        String baseCurrencyCode, BigDecimal costBasis, BigDecimal recoverableTaxAmount,
+                                        String taxCode, Long pmsProjectId, String projectCode, String projectName,
+                                        UUID resolvedClientId, String resolvedClientName, String invoiceReference,
+                                        LocalDateTime handedOffAt, String remarks) {
+        this(syncId, lineItemId, reportId, reportNumber, employeeId, expenseDate, categoryName, description, baseAmount,
+                baseCurrencyCode, costBasis, recoverableTaxAmount, taxCode, pmsProjectId, projectCode, projectName,
+                resolvedClientId, resolvedClientName, invoiceReference, handedOffAt, remarks, null, null, null, null);
+    }
 }

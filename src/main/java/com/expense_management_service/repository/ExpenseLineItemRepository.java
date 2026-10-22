@@ -4,7 +4,9 @@ import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.enums.ReportStatus;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
@@ -41,6 +43,13 @@ public interface ExpenseLineItemRepository extends JpaRepository<ExpenseLineItem
      */
     List<ExpenseLineItem> findByMerchantNameIgnoreCaseAndExpenseDateAndAmountAndCurrency_CurrencyIdAndReport_EmployeeIdNotAndReport_ReportStatusNot(
             String merchantName, LocalDate expenseDate, BigDecimal amount, UUID currencyId, String employeeId, ReportStatus reportStatus);
+
+    /**
+     * The line item, locked for the rest of the transaction ({@code PESSIMISTIC_WRITE}), so two concurrent
+     * invoice handoffs of the same line run one after the other and the second sees the first's record.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    Optional<ExpenseLineItem> findWithLockByLineItemId(UUID lineItemId);
 
     /** Sum of every line item's base-currency amount for a report — the report-level total is always presented in base currency. */
     @Query("select coalesce(sum(l.baseAmount), 0) from ExpenseLineItem l where l.report.reportId = :reportId")

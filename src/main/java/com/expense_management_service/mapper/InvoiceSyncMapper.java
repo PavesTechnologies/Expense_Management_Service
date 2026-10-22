@@ -32,7 +32,11 @@ public class InvoiceSyncMapper {
                 entity.getSyncStatus(),
                 entity.getSyncDate(),
                 entity.getRetryCount(),
-                entity.getRemarks()
+                entity.getRemarks(),
+                entity.getArDeliveryStatus() != null ? entity.getArDeliveryStatus().name() : null,
+                entity.getArDeliveryAttempts(),
+                entity.getArDeliveredAt(),
+                entity.getArDeliveryError()
         );
     }
 }

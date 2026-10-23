@@ -12,13 +12,19 @@ import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.InvoiceSync;
 import com.expense_management_service.entity.ProjectCache;
+import com.expense_management_service.enums.FinanceVerificationStatus;
 import com.expense_management_service.enums.InvoiceHandoffStatus;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
+import com.expense_management_service.integration.pms.PmsClient;
+import com.expense_management_service.integration.pms.dto.PmsProjectDetailResponse;
 import com.expense_management_service.mapper.InvoiceSyncMapper;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.FinanceVerificationReviewRepository;
 import com.expense_management_service.repository.InvoiceSyncRepository;
+import com.expense_management_service.repository.ProjectCacheRepository;
+import com.expense_management_service.service.ApprovalWorkflowService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -65,16 +71,41 @@ class InvoiceHandoffServiceImplTest {
     private InvoiceSyncRepository invoiceSyncRepository;
     @Mock
     private ExpenseReportRepository expenseReportRepository;
+    @Mock
+    private ApprovalWorkflowService approvalWorkflowService;
+    @Mock
+    private FinanceVerificationReviewRepository financeVerificationReviewRepository;
+    @Mock
+    private PmsClient pmsClient;
+    @Mock
+    private ProjectCacheRepository projectCacheRepository;
+    @Mock
+    private org.springframework.context.ApplicationEventPublisher applicationEventPublisher;
 
     private InvoiceHandoffServiceImpl service;
 
     private UUID lineItemId;
     private ExpenseLineItem eligibleLineItem;
 
+    /**
+     * Makes {@code line} pass the handoff gate: its report is routed to invoicing and Finance verified the line in
+     * the current submission cycle (1). The handoff reads the line through the locking lookup.
+     */
+    private void stubHandoffable(ExpenseLineItem line) {
+        if (line.getReport().getInvoiceHandoffStatus() != InvoiceHandoffStatus.COMPLETED) {
+            line.getReport().setInvoiceHandoffStatus(InvoiceHandoffStatus.PENDING);
+        }
+        when(expenseLineItemRepository.findWithLockByLineItemId(line.getLineItemId())).thenReturn(Optional.of(line));
+        when(approvalWorkflowService.getCurrentSubmissionCycle(line.getReport().getReportId())).thenReturn(1);
+        when(financeVerificationReviewRepository.existsByLineItem_LineItemIdAndStatusAndLevelInstance_SubmissionCycle(
+                line.getLineItemId(), FinanceVerificationStatus.VERIFIED, 1)).thenReturn(true);
+    }
+
     @BeforeEach
     void setUp() {
         service = new InvoiceHandoffServiceImpl(expenseLineItemRepository, expenseReportRepository, invoiceSyncRepository, new InvoiceSyncMapper(),
-                approvalEventPublisher);
+                approvalEventPublisher, approvalWorkflowService, financeVerificationReviewRepository, pmsClient, projectCacheRepository,
+                applicationEventPublisher);
         ReflectionTestUtils.setField(service, "baseCurrencyCode", "INR");
 
         lineItemId = UUID.randomUUID();
@@ -130,7 +161,7 @@ class InvoiceHandoffServiceImplTest {
 
     @Test
     void markHandedOff_createsInvoiceSyncRecord_whenNotAlreadyHandedOff() {
-        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        stubHandoffable(eligibleLineItem);
         when(invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(lineItemId, "HANDED_OFF")).thenReturn(false);
         when(invoiceSyncRepository.save(any(InvoiceSync.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -142,7 +173,7 @@ class InvoiceHandoffServiceImplTest {
 
     @Test
     void markHandedOff_throwsDuplicateResourceException_whenAlreadyHandedOffAndNotReprocessing() {
-        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        stubHandoffable(eligibleLineItem);
         when(invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(lineItemId, "HANDED_OFF")).thenReturn(true);
 
         assertThatThrownBy(() -> service.markHandedOff(lineItemId, new InvoiceHandoffRequest(null, null, null)))
@@ -154,7 +185,7 @@ class InvoiceHandoffServiceImplTest {
 
     @Test
     void markHandedOff_throwsBusinessRuleViolation_whenReprocessingWithoutReason() {
-        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        stubHandoffable(eligibleLineItem);
         when(invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(lineItemId, "HANDED_OFF")).thenReturn(true);
 
         assertThatThrownBy(() -> service.markHandedOff(lineItemId, new InvoiceHandoffRequest(null, true, null)))
@@ -164,7 +195,7 @@ class InvoiceHandoffServiceImplTest {
 
     @Test
     void markHandedOff_allowsReprocess_whenReasonProvided() {
-        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        stubHandoffable(eligibleLineItem);
         when(invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(lineItemId, "HANDED_OFF")).thenReturn(true);
         when(invoiceSyncRepository.save(any(InvoiceSync.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -180,11 +211,12 @@ class InvoiceHandoffServiceImplTest {
         report.setPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
         UUID otherLineItemId = UUID.randomUUID();
         ExpenseLineItem otherBillable = ExpenseLineItem.builder()
-                .lineItemId(otherLineItemId).report(report).clientBillable(true).build();
+                .lineItemId(otherLineItemId).report(report).clientBillable(true)
+                .resolvedClientId(eligibleLineItem.getResolvedClientId()).build();
         ExpenseLineItem internal = ExpenseLineItem.builder()
                 .lineItemId(UUID.randomUUID()).report(report).clientBillable(false).build();
         report.getExpenseLineItems().addAll(List.of(eligibleLineItem, otherBillable, internal));
-        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        stubHandoffable(eligibleLineItem);
         when(invoiceSyncRepository.save(any(InvoiceSync.class))).thenAnswer(inv -> inv.getArgument(0));
 
         // First billable line handed off, second still outstanding -> stays PENDING.
@@ -194,7 +226,7 @@ class InvoiceHandoffServiceImplTest {
         assertThat(report.getInvoiceHandoffStatus()).isEqualTo(InvoiceHandoffStatus.PENDING);
 
         // Second billable line handed off -> COMPLETED; the AP track is never touched.
-        when(expenseLineItemRepository.findById(otherLineItemId)).thenReturn(Optional.of(otherBillable));
+        stubHandoffable(otherBillable);
         when(invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(otherLineItemId, "HANDED_OFF")).thenReturn(false, true);
         service.markHandedOff(otherLineItemId, new InvoiceHandoffRequest("INV-2", false, null));
         assertThat(report.getInvoiceHandoffStatus()).isEqualTo(InvoiceHandoffStatus.COMPLETED);
@@ -383,7 +415,7 @@ class InvoiceHandoffServiceImplTest {
 
         var payload = service.getBillingPayload(lineItemId);
 
-        assertThat(payload.payloadVersion()).isEqualTo(1);
+        assertThat(payload.payloadVersion()).isEqualTo(2);
         assertThat(payload.costBasis()).isEqualByComparingTo("10900.00");
         assertThat(payload.grossAmount()).isEqualByComparingTo("11800.00");
         assertThat(payload.inputTaxAmount()).isEqualByComparingTo("1800.00");
@@ -403,7 +435,7 @@ class InvoiceHandoffServiceImplTest {
 
     @Test
     void markHandedOff_publishesTheBillableHandedOffEvent() {
-        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        stubHandoffable(eligibleLineItem);
         when(invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(lineItemId, "HANDED_OFF")).thenReturn(false);
         when(invoiceSyncRepository.save(any(InvoiceSync.class))).thenAnswer(inv -> inv.getArgument(0));
 
@@ -412,5 +444,187 @@ class InvoiceHandoffServiceImplTest {
         org.mockito.Mockito.verify(approvalEventPublisher).publish(org.mockito.ArgumentMatchers.eq("EXPENSE_BILLABLE_HANDED_OFF"),
                 org.mockito.ArgumentMatchers.eq(eligibleLineItem.getReport().getReportId()),
                 org.mockito.ArgumentMatchers.contains("lineItemId=" + lineItemId));
+    }
+
+    @Test
+    void markHandedOff_recordsTheHandoffAsPendingDelivery_andAsksForItToBeSentToAr() {
+        stubHandoffable(eligibleLineItem);
+        when(invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(lineItemId, "HANDED_OFF")).thenReturn(false);
+        UUID syncId = UUID.randomUUID();
+        when(invoiceSyncRepository.save(any(InvoiceSync.class))).thenAnswer(inv -> {
+            InvoiceSync saved = inv.getArgument(0);
+            saved.setSyncId(syncId);
+            return saved;
+        });
+
+        var response = service.markHandedOff(lineItemId, new InvoiceHandoffRequest("INV-100", null, null));
+
+        assertThat(response.arDeliveryStatus()).isEqualTo("PENDING");
+        assertThat(response.arDeliveryAttempts()).isZero();
+        verify(applicationEventPublisher).publishEvent(new com.expense_management_service.event.InvoiceHandoffRecordedEvent(syncId));
+    }
+
+    @Test
+    void getSummary_countsHandoffsWhoseDeliveryToArFailed() {
+        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), any()))
+                .thenReturn(new PageImpl<>(List.of()));
+        when(invoiceSyncRepository.countBySyncStatusAndArDeliveryStatus("HANDED_OFF",
+                com.expense_management_service.enums.ArDeliveryStatus.FAILED)).thenReturn(3L);
+
+        assertThat(service.getSummary().arDeliveryFailedCount()).isEqualTo(3);
+    }
+
+    @Test
+    void markHandedOff_ofAnIneligibleLine_neverAsksForASend() {
+        eligibleLineItem.setClientBillable(false);
+        when(expenseLineItemRepository.findWithLockByLineItemId(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+
+        assertThatThrownBy(() -> service.markHandedOff(lineItemId, new InvoiceHandoffRequest("INV-1", null, null)))
+                .isInstanceOf(BusinessRuleViolationException.class);
+        verify(applicationEventPublisher, never()).publishEvent(any(Object.class));
+    }
+
+    // ---------------------------------------------------------------------
+    // markHandedOff - eligibility gate (same rule as the queue)
+    // ---------------------------------------------------------------------
+
+    private void assertHandoffRejected(String messagePart) {
+        assertThatThrownBy(() -> service.markHandedOff(lineItemId, new InvoiceHandoffRequest("INV-1", null, null)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining(messagePart);
+        verify(invoiceSyncRepository, never()).save(any());
+    }
+
+    @Test
+    void markHandedOff_rejectsALineThatIsNotClientBillable() {
+        eligibleLineItem.setClientBillable(false);
+        when(expenseLineItemRepository.findWithLockByLineItemId(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+
+        assertHandoffRejected("not client-billable");
+    }
+
+    @Test
+    void markHandedOff_rejectsALineWithNoClientToBill() {
+        eligibleLineItem.setResolvedClientId(null);
+        when(expenseLineItemRepository.findWithLockByLineItemId(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+
+        assertHandoffRejected("no client to bill");
+    }
+
+    @Test
+    void markHandedOff_rejectsALineOnAReportThatIsNotApproved() {
+        eligibleLineItem.getReport().setReportStatus(ReportStatus.PENDING_FINANCE_VERIFICATION);
+        when(expenseLineItemRepository.findWithLockByLineItemId(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+
+        assertHandoffRejected("until its report is approved");
+    }
+
+    @Test
+    void markHandedOff_rejectsALineOnAReportNotRoutedToInvoicing() {
+        eligibleLineItem.getReport().setInvoiceHandoffStatus(InvoiceHandoffStatus.NOT_APPLICABLE);
+        when(expenseLineItemRepository.findWithLockByLineItemId(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+
+        assertHandoffRejected("not routed to invoicing");
+    }
+
+    @Test
+    void markHandedOff_rejectsALineFinanceHasNotVerifiedInTheCurrentCycle() {
+        eligibleLineItem.getReport().setInvoiceHandoffStatus(InvoiceHandoffStatus.PENDING);
+        when(expenseLineItemRepository.findWithLockByLineItemId(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        when(approvalWorkflowService.getCurrentSubmissionCycle(eligibleLineItem.getReport().getReportId())).thenReturn(2);
+        when(financeVerificationReviewRepository.existsByLineItem_LineItemIdAndStatusAndLevelInstance_SubmissionCycle(
+                lineItemId, FinanceVerificationStatus.VERIFIED, 2)).thenReturn(false);
+
+        assertHandoffRejected("hasn't been verified by Finance");
+    }
+
+    @Test
+    void markHandedOff_throwsNotFound_forAnUnknownLine() {
+        when(expenseLineItemRepository.findWithLockByLineItemId(lineItemId)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.markHandedOff(lineItemId, new InvoiceHandoffRequest(null, null, null)))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    // ---------------------------------------------------------------------
+    // markHandedOff - project re-checked against PMS at handoff time
+    // ---------------------------------------------------------------------
+
+    private ProjectCache project(Long pmsProjectId) {
+        ProjectCache project = ProjectCache.builder().projectId(UUID.randomUUID()).pmsProjectId(pmsProjectId)
+                .projectCode("AP-297").projectName("Aurora rollout").build();
+        eligibleLineItem.setProject(project);
+        return project;
+    }
+
+    private static PmsProjectDetailResponse pmsProject(Long id, String key, String name, UUID clientId) {
+        return new PmsProjectDetailResponse(id, key, name, null, "ACTIVE", clientId, null, null, null, null);
+    }
+
+    @Test
+    void markHandedOff_refreshesTheProjectFromPms_andHandsOffWithItsCurrentCode() {
+        ProjectCache project = project(37L);
+        stubHandoffable(eligibleLineItem);
+        when(pmsClient.getProject(37L)).thenReturn(Optional.of(
+                pmsProject(37L, "AP-298", "Aurora rollout phase 2", eligibleLineItem.getResolvedClientId())));
+        when(invoiceSyncRepository.save(any(InvoiceSync.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.markHandedOff(lineItemId, new InvoiceHandoffRequest("INV-7", null, null));
+
+        assertThat(project.getProjectCode()).isEqualTo("AP-298");
+        assertThat(project.getProjectName()).isEqualTo("Aurora rollout phase 2");
+        verify(projectCacheRepository).save(project);
+        verify(invoiceSyncRepository).save(any(InvoiceSync.class));
+    }
+
+    @Test
+    void markHandedOff_rejectsAProjectThatNoLongerExistsInPms() {
+        project(37L);
+        stubHandoffable(eligibleLineItem);
+        when(pmsClient.getProject(37L)).thenReturn(Optional.empty());
+
+        assertHandoffRejected("no longer exists in PMS");
+    }
+
+    @Test
+    void markHandedOff_rejectsAProjectThatNowBelongsToAnotherClientInPms() {
+        project(37L);
+        stubHandoffable(eligibleLineItem);
+        when(pmsClient.getProject(37L)).thenReturn(Optional.of(pmsProject(37L, "AP-297", "Aurora rollout", UUID.randomUUID())));
+
+        assertHandoffRejected("no longer belongs to Aurora Health");
+    }
+
+    @Test
+    void markHandedOff_rejectsAProjectWithNoPmsReference() {
+        project(null);
+        stubHandoffable(eligibleLineItem);
+
+        assertHandoffRejected("no PMS reference");
+        verify(pmsClient, never()).getProject(any());
+    }
+
+    @Test
+    void markHandedOff_ofALineBilledToAClientWithoutAProject_doesNotCallPms() {
+        stubHandoffable(eligibleLineItem);
+        when(invoiceSyncRepository.save(any(InvoiceSync.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.markHandedOff(lineItemId, new InvoiceHandoffRequest("INV-8", null, null));
+
+        verify(pmsClient, never()).getProject(any());
+    }
+
+    @Test
+    void getBillingPayload_carriesThePmsProjectId_besideTheInternalOne() {
+        ProjectCache project = project(37L);
+        eligibleLineItem.getReport().setInvoiceHandoffStatus(InvoiceHandoffStatus.PENDING);
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
+        when(invoiceSyncRepository.findByLineItem_LineItemIdOrderBySyncDateDesc(lineItemId)).thenReturn(List.of());
+
+        var payload = service.getBillingPayload(lineItemId);
+
+        assertThat(payload.pmsProjectId()).isEqualTo(37L);
+        assertThat(payload.projectId()).isEqualTo(project.getProjectId());
+        assertThat(payload.projectCode()).isEqualTo("AP-297");
     }
 }

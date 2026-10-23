@@ -1,5 +1,6 @@
 package com.expense_management_service.entity;
 
+import com.expense_management_service.enums.ArDeliveryStatus;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -43,4 +44,27 @@ public class InvoiceSync {
     @Lob
     @Column(name = "remarks")
     private String remarks;
+
+    /**
+     * Delivery of this handoff to AR over RabbitMQ (see {@code ArBillingDeliveryServiceImpl}). Null for a
+     * handoff recorded before delivery existed - AR pulled those. varchar, not a MySQL ENUM, so a new status
+     * never needs DDL.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "ar_delivery_status", columnDefinition = "varchar(16)")
+    private ArDeliveryStatus arDeliveryStatus;
+
+    @Column(name = "ar_delivery_attempts")
+    private Integer arDeliveryAttempts;
+
+    @Column(name = "ar_last_attempt_at")
+    private LocalDateTime arLastAttemptAt;
+
+    /** When the broker confirmed the message onto AR's queue. */
+    @Column(name = "ar_delivered_at")
+    private LocalDateTime arDeliveredAt;
+
+    /** Why the last attempt failed; cleared once delivered. */
+    @Column(name = "ar_delivery_error", length = 500)
+    private String arDeliveryError;
 }

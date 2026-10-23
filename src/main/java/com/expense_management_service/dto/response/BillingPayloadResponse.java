@@ -10,6 +10,9 @@ import java.util.UUID;
  * signal that it is ready. Amounts are in the organization base currency ({@code currency}).
  * AR bills {@code costBasis} and calculates its own output tax on it; the input tax fields are
  * informational, for reconciliation.
+ * <p>
+ * v2 adds {@code pmsProjectId}, PMS's own project id - the key AR and PMS identify the project by.
+ * {@code projectId} is XMS's internal project reference, kept for v1 readers.
  */
 public record BillingPayloadResponse(
         int payloadVersion,
@@ -21,7 +24,10 @@ public record BillingPayloadResponse(
         String category,
         String description,
         String merchantName,
+        /** XMS's internal project reference - not an id PMS or AR know. */
         UUID projectId,
+        /** PMS's project id: match the project in PMS/AR by this. */
+        Long pmsProjectId,
         String projectCode,
         String projectName,
         UUID clientId,

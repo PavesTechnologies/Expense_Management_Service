@@ -12,14 +12,25 @@ import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.InvoiceSync;
+import com.expense_management_service.entity.ProjectCache;
+import com.expense_management_service.enums.ArDeliveryStatus;
+import com.expense_management_service.enums.FinanceVerificationStatus;
+import com.expense_management_service.event.InvoiceHandoffRecordedEvent;
 import com.expense_management_service.enums.InvoiceHandoffStatus;
+import com.expense_management_service.enums.ReportStatus;
+import com.expense_management_service.integration.pms.PmsClient;
+import com.expense_management_service.integration.pms.dto.PmsProjectDetailResponse;
 import com.expense_management_service.mapper.InvoiceSyncMapper;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.FinanceVerificationReviewRepository;
 import com.expense_management_service.repository.InvoiceSyncRepository;
+import com.expense_management_service.repository.ProjectCacheRepository;
+import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.InvoiceHandoffService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -40,13 +51,21 @@ import java.util.UUID;
 public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
 
     /** {@code InvoiceSync.syncStatus} value this feature writes — a free-text column, so the value is owned here, not an enum. */
-    private static final String STATUS_HANDED_OFF = "HANDED_OFF";
+    static final String STATUS_HANDED_OFF = "HANDED_OFF";
+
+    /** Start of a re-handoff's remarks, followed by the reason - AR's message carries both. */
+    static final String REPROCESS_REMARK_PREFIX = "Reprocessed: ";
 
     private final ExpenseLineItemRepository expenseLineItemRepository;
     private final ExpenseReportRepository expenseReportRepository;
     private final InvoiceSyncRepository invoiceSyncRepository;
     private final InvoiceSyncMapper invoiceSyncMapper;
     private final com.expense_management_service.service.ApprovalEventPublisher approvalEventPublisher;
+    private final ApprovalWorkflowService approvalWorkflowService;
+    private final FinanceVerificationReviewRepository financeVerificationReviewRepository;
+    private final PmsClient pmsClient;
+    private final ProjectCacheRepository projectCacheRepository;
+    private final ApplicationEventPublisher applicationEventPublisher;
 
     /** Same organization base-currency property {@code ExpenseLineItemServiceImpl} uses — {@code baseAmount} is always denominated in it. */
     @Value("${exchange.rate.base-currency}")
@@ -86,7 +105,11 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
 
     @Override
     public InvoiceSyncResponse markHandedOff(UUID lineItemId, InvoiceHandoffRequest request) {
-        ExpenseLineItem lineItem = findLineItem(lineItemId);
+        // Locked: a second, concurrent handoff of this line waits here and then sees this one's record.
+        ExpenseLineItem lineItem = expenseLineItemRepository.findWithLockByLineItemId(lineItemId)
+                .orElseThrow(() -> new ResourceNotFoundException("ExpenseLineItem not found with id: " + lineItemId));
+        assertEligibleForHandoff(lineItem);
+        verifyProjectAgainstPms(lineItem);
 
         boolean alreadyHandedOff = invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(lineItemId, STATUS_HANDED_OFF);
         boolean reprocess = Boolean.TRUE.equals(request.allowReprocess());
@@ -106,14 +129,85 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 .syncStatus(STATUS_HANDED_OFF)
                 .syncDate(LocalDateTime.now())
                 .retryCount(0)
-                .remarks(alreadyHandedOff ? "Reprocessed: " + request.reason() : null)
+                .remarks(alreadyHandedOff ? REPROCESS_REMARK_PREFIX + request.reason() : null)
+                .arDeliveryStatus(ArDeliveryStatus.PENDING)
+                .arDeliveryAttempts(0)
                 .build();
 
-        InvoiceSyncResponse response = invoiceSyncMapper.toResponse(invoiceSyncRepository.save(sync));
+        InvoiceSync saved = invoiceSyncRepository.save(sync);
+        InvoiceSyncResponse response = invoiceSyncMapper.toResponse(saved);
         completeReportHandoffIfAllLinesHandedOff(lineItem.getReport());
         approvalEventPublisher.publish("EXPENSE_BILLABLE_HANDED_OFF", lineItem.getReport().getReportId(),
                 "lineItemId=" + lineItemId + " payloadVersion=" + BillingPayloadFactory.PAYLOAD_VERSION);
+        // Sent to AR once this transaction commits (ArBillingDeliveryListener) - never for a handoff that rolled back.
+        applicationEventPublisher.publishEvent(new InvoiceHandoffRecordedEvent(saved.getSyncId()));
         return response;
+    }
+
+    /**
+     * The same rule the handoff queue lists by ({@code ExpenseLineItemRepository.findEligibleForInvoiceHandoff}),
+     * applied to the one line being handed off, so a direct call can't hand off what the queue would never show:
+     * client-billable with a client to bill, on an APPROVED report routed to invoicing, and verified by Finance in
+     * the report's current submission cycle. Only the "not yet handed off" part is left to the reprocess rules.
+     */
+    private void assertEligibleForHandoff(ExpenseLineItem lineItem) {
+        ExpenseReport report = lineItem.getReport();
+        String line = "Line item " + lineItem.getLineItemId();
+        if (!Boolean.TRUE.equals(lineItem.getClientBillable())) {
+            throw new BusinessRuleViolationException(line + " is not client-billable, so it can't be handed off to invoicing");
+        }
+        if (lineItem.getResolvedClientId() == null) {
+            throw new BusinessRuleViolationException(line + " has no client to bill. Correct the expense before handing it off.");
+        }
+        if (report == null || report.getReportStatus() != ReportStatus.APPROVED) {
+            throw new BusinessRuleViolationException(line + " can't be handed off until its report is approved"
+                    + (report != null ? " (report " + report.getReportNumber() + " is " + report.getReportStatus() + ")" : ""));
+        }
+        if (report.getInvoiceHandoffStatus() != InvoiceHandoffStatus.PENDING
+                && report.getInvoiceHandoffStatus() != InvoiceHandoffStatus.COMPLETED) {
+            throw new BusinessRuleViolationException("Report " + report.getReportNumber() + " was not routed to invoicing");
+        }
+        int cycle = approvalWorkflowService.getCurrentSubmissionCycle(report.getReportId());
+        if (!financeVerificationReviewRepository.existsByLineItem_LineItemIdAndStatusAndLevelInstance_SubmissionCycle(
+                lineItem.getLineItemId(), FinanceVerificationStatus.VERIFIED, cycle)) {
+            throw new BusinessRuleViolationException(line + " hasn't been verified by Finance on report "
+                    + report.getReportNumber() + "'s current submission, so it can't be handed off yet");
+        }
+    }
+
+    /**
+     * Confirms the line's project against PMS at the moment it goes to AR, not only when the employee saved it:
+     * the project must still exist in PMS and still belong to the client being billed. PMS is the source of
+     * truth for the project code and name, so the cached copy is refreshed from it before the handoff is
+     * recorded and AR reads them. A line billed to a client without a project has nothing to check.
+     */
+    private void verifyProjectAgainstPms(ExpenseLineItem lineItem) {
+        ProjectCache project = lineItem.getProject();
+        if (project == null) {
+            return;
+        }
+        Long pmsProjectId = project.getPmsProjectId();
+        if (pmsProjectId == null) {
+            throw new BusinessRuleViolationException("Project " + project.getProjectCode()
+                    + " has no PMS reference, so its expenses can't be handed off to invoicing");
+        }
+        PmsProjectDetailResponse pmsProject = pmsClient.getProject(pmsProjectId)
+                .orElseThrow(() -> new BusinessRuleViolationException("Project " + project.getProjectCode()
+                        + " (PMS id " + pmsProjectId + ") no longer exists in PMS. Correct the expense's project before handing it off."));
+        if (pmsProject.clientId() == null || !pmsProject.clientId().equals(lineItem.getResolvedClientId())) {
+            throw new BusinessRuleViolationException("In PMS, project " + project.getProjectCode()
+                    + " no longer belongs to " + (lineItem.getResolvedClientName() != null ? lineItem.getResolvedClientName() : "the client")
+                    + " this expense bills. Correct the expense before handing it off.");
+        }
+        if (pmsProject.projectKey() != null) {
+            project.setProjectCode(pmsProject.projectKey());
+        }
+        if (pmsProject.name() != null) {
+            project.setProjectName(pmsProject.name());
+        }
+        project.setStatus(pmsProject.status());
+        project.setSyncedAt(LocalDateTime.now());
+        projectCacheRepository.save(project);
     }
 
     /**
@@ -208,7 +302,8 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 .distinct()
                 .count();
         return new InvoiceHandoffSummaryResponse(ready.size(), readyAmount, readyProjects,
-                invoiceSyncRepository.countBySyncStatus(STATUS_HANDED_OFF), baseCurrencyCode, readyClients);
+                invoiceSyncRepository.countBySyncStatus(STATUS_HANDED_OFF), baseCurrencyCode, readyClients,
+                invoiceSyncRepository.countBySyncStatusAndArDeliveryStatus(STATUS_HANDED_OFF, ArDeliveryStatus.FAILED));
     }
 
     private InvoiceHandoffRecordResponse toRecordResponse(InvoiceSync sync) {
@@ -236,7 +331,11 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 l.getResolvedClientName(),
                 sync.getInvoiceReference(),
                 sync.getSyncDate(),
-                sync.getRemarks()
+                sync.getRemarks(),
+                sync.getArDeliveryStatus() != null ? sync.getArDeliveryStatus().name() : null,
+                sync.getArDeliveryAttempts(),
+                sync.getArDeliveredAt(),
+                sync.getArDeliveryError()
         );
     }
 

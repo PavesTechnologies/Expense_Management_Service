@@ -106,7 +106,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
             throw new IllegalArgumentException(
                     "Expense category " + category.getCategoryName() + " is not Active and cannot be assigned to a new line item");
         }
-        assertExpenseDateValid(request.expenseDate());
+        assertExpenseDateWithinReport(report, request.expenseDate());
         assertTaxAmountValid(request.amount(), request.taxAmount());
 
         ExpenseLineItem entity = expenseLineItemMapper.toEntity(request);
@@ -138,7 +138,7 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
             throw new IllegalArgumentException(
                     "Expense category " + category.getCategoryName() + " is not Active and cannot be assigned");
         }
-        assertExpenseDateValid(request.expenseDate());
+        assertExpenseDateWithinReport(report, request.expenseDate());
         assertTaxAmountValid(request.amount(), request.taxAmount());
 
         var previousTax = taxSnapshotService.describe(entity);
@@ -201,6 +201,23 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         expenseLineItemRepository.delete(entity);
         recalculateReportTotal(report);
         log.info("Deleted line item {} from expense report {}", lineItemId, reportId);
+    }
+
+    /**
+     * An item must be dated inside the report's trip dates, and not in the future. Reports without trip dates
+     * have no range to check against.
+     */
+    private void assertExpenseDateWithinReport(ExpenseReport report, LocalDate expenseDate) {
+        assertExpenseDateValid(expenseDate);
+        LocalDate start = report.getTripStartDate();
+        LocalDate end = report.getTripEndDate();
+        if (start == null || end == null) {
+            return;
+        }
+        if (expenseDate.isBefore(start) || expenseDate.isAfter(end)) {
+            throw new IllegalArgumentException("Expense date " + expenseDate + " must fall within the report's trip dates ("
+                    + start + " to " + end + ").");
+        }
     }
 
     private void assertExpenseDateValid(LocalDate expenseDate) {

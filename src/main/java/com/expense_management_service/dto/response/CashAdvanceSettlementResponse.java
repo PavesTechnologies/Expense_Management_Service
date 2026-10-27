@@ -19,7 +19,8 @@ public record CashAdvanceSettlementResponse(
         BigDecimal reimbursementAmount,
         String settlementStatus,
         List<CashAdvanceAdjustmentResponse> adjustments,
-        List<CashAdvanceRepaymentResponse> repayments
+        List<CashAdvanceRepaymentResponse> repayments,
+        CashAdvanceDisbursementSummary disbursement
 ) {
     public CashAdvanceSettlementResponse(
             UUID advanceId,
@@ -48,7 +49,8 @@ public record CashAdvanceSettlementResponse(
                 outstandingBalance != null && outstandingBalance.compareTo(BigDecimal.ZERO) < 0 ? outstandingBalance.abs() : BigDecimal.ZERO,
                 outstandingBalance == null || outstandingBalance.compareTo(BigDecimal.ZERO) == 0 ? "FULLY_SETTLED" : (outstandingBalance.compareTo(BigDecimal.ZERO) > 0 ? "REPAYMENT_DUE" : "REIMBURSEMENT_DUE"),
                 adjustments,
-                repayments
+                repayments,
+                null
         );
     }
 }

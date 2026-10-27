@@ -116,11 +116,11 @@ public class ExpenseReportMapper {
     private LocalDate displayedDeadline(ExpenseReport entity) {
         CashAdvance advance = entity.getCashAdvance();
         boolean linked = advance != null;
-        if (linked && advance.isExpenseDeadlineReopened()) {
+        if (entity.isExpenseDeadlineReopened()) {
             return null;
         }
         LocalDate disbursedOn = linked && advance.getDisbursedAt() != null ? advance.getDisbursedAt().toLocalDate() : null;
-        LocalDate extendedUntil = linked ? advance.getExpenseDeadlineExtendedUntil() : null;
+        LocalDate extendedUntil = entity.getExpenseDeadlineExtendedUntil();
         return SubmissionDeadlinePolicy.effectiveDeadline(entity.getTripEndDate(), linked, disbursedOn, extendedUntil,
                 submissionDeadlineDays);
     }

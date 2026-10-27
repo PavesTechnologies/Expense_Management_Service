@@ -62,6 +62,26 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         if (!isFinanceCaller() && !isAdminCaller()) {
             throw new BusinessRuleViolationException("Only Finance Executives can process cash advance settlements");
         }
+        String idempotencyKey = request.idempotencyKey() == null || request.idempotencyKey().isBlank()
+                ? null
+                : request.idempotencyKey().trim();
+        if (idempotencyKey != null) {
+            // A retry returns the adjustment the first call created. It must not apply the offset a second time.
+            java.util.Optional<CashAdvanceAdjustment> earlier = cashAdvanceAdjustmentRepository.findByIdempotencyKey(idempotencyKey);
+            if (earlier.isPresent()) {
+                CashAdvanceAdjustment prior = earlier.get();
+                boolean sameRequest = prior.getCashAdvance() != null
+                        && prior.getCashAdvance().getAdvanceId().equals(request.advanceId())
+                        && prior.getReport() != null
+                        && prior.getReport().getReportId().equals(request.reportId())
+                        && prior.getAdjustedAmount().compareTo(request.adjustedAmount()) == 0;
+                if (!sameRequest) {
+                    throw new BusinessRuleViolationException("This idempotency key was already used for a different adjustment.");
+                }
+                return cashAdvanceAdjustmentMapper.toResponse(prior);
+            }
+        }
+
         CashAdvance advance = findCashAdvance(request.advanceId());
 
         List<String> allowedStatuses = List.of(
@@ -118,6 +138,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         entity.setReport(report);
         entity.setAdjustedAmount(adjustedAmount);
         entity.setAdjustedAt(LocalDateTime.now());
+        entity.setIdempotencyKey(idempotencyKey);
         String actingUser = currentUserService.getEmployeeId();
         if (entity.getAdjustedBy() == null || entity.getAdjustedBy().isBlank()) {
             entity.setAdjustedBy(actingUser);

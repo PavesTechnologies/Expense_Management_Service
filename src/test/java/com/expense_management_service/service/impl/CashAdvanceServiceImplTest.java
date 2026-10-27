@@ -60,6 +60,7 @@ import static org.mockito.Mockito.*;
 @ExtendWith(MockitoExtension.class)
 class CashAdvanceServiceImplTest {
     @org.mockito.Mock private CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
+    @org.mockito.Mock private CashAdvanceRecoveryService cashAdvanceRecoveryService;
 
     @Mock
     private CashAdvanceRepository cashAdvanceRepository;
@@ -121,6 +122,9 @@ class CashAdvanceServiceImplTest {
                 "FINANCE001", null, List.of(new SimpleGrantedAuthority("ROLE_FINANCE_EXECUTIVE"))
         );
         SecurityContextHolder.getContext().setAuthentication(auth);
+        // repay reads the advance with a row lock; the lookup stubbed for findById serves that call too.
+        org.mockito.Mockito.lenient().when(cashAdvanceRepository.findByIdForUpdate(org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(inv -> cashAdvanceRepository.findById(inv.getArgument(0)));
         currencyId = UUID.randomUUID();
         advanceId = UUID.randomUUID();
         testCurrency = Currency.builder()
@@ -383,6 +387,18 @@ class CashAdvanceServiceImplTest {
         verify(cashAdvanceRepository, never()).save(any());
     }
 
+    @Test
+    void disburse_includesTheCarriedInBalanceInTheObligation() {
+        CashAdvance advance = approvedAdvance();
+        advance.setCarriedInAmount(new BigDecimal("300.00"));
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepository.save(any(CashAdvance.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        cashAdvanceService.disburse(advanceId, "FIN001", bankTransfer());
+
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1300.00")));
+    }
+
     private CashAdvance approvedAdvance() {
         return CashAdvance.builder()
                 .advanceId(advanceId)
@@ -428,10 +444,8 @@ class CashAdvanceServiceImplTest {
         CashAdvanceRepaymentRequest request = new CashAdvanceRepaymentRequest(
                 advanceId,
                 new BigDecimal("400.00"),
-                "BANK_TRANSFER",
-                "TXN12345",
-                "Full balance repayment"
-        );
+                "Full balance repayment",
+                bankRepayment("TXN12345", LocalDate.of(2026, 10, 2)));
 
         when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
         when(currentUserService.getEmployeeId()).thenReturn("EMP001");
@@ -447,6 +461,184 @@ class CashAdvanceServiceImplTest {
         assertEquals(0, advance.getOutstandingBalance().compareTo(BigDecimal.ZERO));
         assertEquals("CLOSED", advance.getStatus());
         verify(cashAdvanceRepository).save(advance);
+    }
+
+    @Test
+    void repay_bankTransfer_recordsPaymentDetailsWithoutAnyFile() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepaymentRepository.save(any(CashAdvanceRepayment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, new BigDecimal("300.00"), null,
+                bankRepayment("UTR-900", LocalDate.of(2026, 10, 2))));
+
+        ArgumentCaptor<CashAdvanceRepayment> captor = ArgumentCaptor.forClass(CashAdvanceRepayment.class);
+        verify(cashAdvanceRepaymentRepository).save(captor.capture());
+        CashAdvanceRepayment saved = captor.getValue();
+        assertEquals("BANK_TRANSFER", saved.getPaymentMode());
+        assertEquals("UTR-900", saved.getPaymentReference());
+        assertEquals(LocalDate.of(2026, 10, 2), saved.getTransferDate());
+        assertEquals("HDFC A/C 1234", saved.getTransferDetails());
+        assertNull(saved.getProofReference());
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("700.00")));
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void repay_cash_storesAcknowledgmentAndRecordsReceiver() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        MockMultipartFile ack = new MockMultipartFile("signedAcknowledgment", "ack.pdf", "application/pdf", new byte[]{7, 7});
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepaymentRepository.save(any(CashAdvanceRepayment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, new BigDecimal("100.00"), null,
+                new CashAdvanceDisbursement("CASH", "Ravi Kumar", ack, null, null, null, null, null, null, null)));
+
+        ArgumentCaptor<CashAdvanceRepayment> captor = ArgumentCaptor.forClass(CashAdvanceRepayment.class);
+        verify(cashAdvanceRepaymentRepository).save(captor.capture());
+        CashAdvanceRepayment saved = captor.getValue();
+        assertEquals("CASH", saved.getPaymentMode());
+        assertEquals("Ravi Kumar", saved.getReceivedByName());
+        assertTrue(saved.getPaymentReference().startsWith("CASH-"));
+        assertTrue(saved.getProofReference().startsWith("repayments/" + advanceId + "/cash-"));
+        assertTrue(saved.getProofReference().endsWith(".pdf"));
+        verify(storageService).upload(eq(saved.getProofReference()), eq(ack));
+    }
+
+    @Test
+    void repay_upi_storesScreenshotAndRecordsUpiDetails() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        MockMultipartFile shot = new MockMultipartFile("paymentProof", "shot.png", "image/png", new byte[]{9});
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepaymentRepository.save(any(CashAdvanceRepayment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, new BigDecimal("50.00"), null,
+                new CashAdvanceDisbursement("UPI", null, null, null, LocalDate.of(2026, 10, 2), null,
+                        "UPI-778", "asha@hdfcbank", shot, null)));
+
+        ArgumentCaptor<CashAdvanceRepayment> captor = ArgumentCaptor.forClass(CashAdvanceRepayment.class);
+        verify(cashAdvanceRepaymentRepository).save(captor.capture());
+        CashAdvanceRepayment saved = captor.getValue();
+        assertEquals("UPI-778", saved.getPaymentReference());
+        assertEquals("asha@hdfcbank", saved.getPayeeUpiId());
+        assertTrue(saved.getProofReference().endsWith(".png"));
+        verify(storageService).upload(eq(saved.getProofReference()), eq(shot));
+    }
+
+    @Test
+    void repay_rejectsMissingPaymentMode_andChangesNothing() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, new BigDecimal("100.00"), null,
+                        new CashAdvanceDisbursement(null, null, null, null, null, null, null, null, null, null))));
+
+        assertEquals("Select how the payment was made.", ex.getMessage());
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1000.00")));
+        verify(cashAdvanceRepaymentRepository, never()).save(any());
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void repay_rejectsMissingPaymentBlock_andChangesNothing() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, new BigDecimal("100.00"), null, null)));
+
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1000.00")));
+        verify(cashAdvanceRepaymentRepository, never()).save(any());
+    }
+
+    @Test
+    void repay_rejectsUpiWithoutScreenshot_andChangesNothing() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, new BigDecimal("50.00"), null,
+                        new CashAdvanceDisbursement("UPI", null, null, null, LocalDate.of(2026, 10, 2), null,
+                                "UPI-778", "asha@hdfcbank", null, null))));
+
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1000.00")));
+        verify(cashAdvanceRepaymentRepository, never()).save(any());
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void repay_rejectsFutureTransferDate_andChangesNothing() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class, () ->
+                cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, new BigDecimal("100.00"), null,
+                        bankRepayment("UTR-901", LocalDate.now().plusDays(3)))));
+
+        assertEquals("Transfer date cannot be in the future.", ex.getMessage());
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1000.00")));
+        verify(cashAdvanceRepaymentRepository, never()).save(any());
+    }
+
+    @Test
+    void repay_rejectsZeroAmount_andChangesNothing() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+
+        assertThrows(IllegalArgumentException.class, () ->
+                cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, BigDecimal.ZERO, null,
+                        bankRepayment("UTR-902", LocalDate.of(2026, 10, 2)))));
+
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1000.00")));
+        verify(cashAdvanceRepaymentRepository, never()).save(any());
+    }
+
+    @Test
+    void repay_rejectsDuplicateTransactionReference_andChangesNothing() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepaymentRepository.existsByCashAdvance_AdvanceIdAndPaymentReference(advanceId, "UTR-903"))
+                .thenReturn(true);
+
+        assertThrows(BusinessRuleViolationException.class, () ->
+                cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, new BigDecimal("100.00"), null,
+                        bankRepayment("UTR-903", LocalDate.of(2026, 10, 2)))));
+
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1000.00")));
+        verify(cashAdvanceRepaymentRepository, never()).save(any());
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void repay_rejectsSameCashAcknowledgmentTwice() {
+        CashAdvance advance = repayableAdvance(new BigDecimal("1000.00"));
+        MockMultipartFile ack = new MockMultipartFile("signedAcknowledgment", "ack.pdf", "application/pdf", new byte[]{7, 7});
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepaymentRepository.existsByCashAdvance_AdvanceIdAndPaymentReference(eq(advanceId), startsWith("CASH-")))
+                .thenReturn(true);
+
+        assertThrows(BusinessRuleViolationException.class, () ->
+                cashAdvanceService.repay(new CashAdvanceRepaymentRequest(advanceId, new BigDecimal("100.00"), null,
+                        new CashAdvanceDisbursement("CASH", "Ravi Kumar", ack, null, null, null, null, null, null, null))));
+
+        verify(cashAdvanceRepaymentRepository, never()).save(any());
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    private CashAdvance repayableAdvance(BigDecimal outstanding) {
+        return CashAdvance.builder()
+                .advanceId(advanceId)
+                .employeeId("EMP001")
+                .amount(new BigDecimal("1000.00"))
+                .outstandingBalance(outstanding)
+                .status("PARTIALLY_SETTLED")
+                .build();
+    }
+
+    private static CashAdvanceDisbursement bankRepayment(String reference, LocalDate date) {
+        return new CashAdvanceDisbursement("BANK_TRANSFER", null, null, reference, date, "HDFC A/C 1234",
+                null, null, null, null);
     }
 
     @Test

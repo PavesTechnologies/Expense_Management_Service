@@ -1,9 +1,14 @@
 package com.expense_management_service.service.impl;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.math.BigDecimal;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.HashSet;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
@@ -23,6 +28,8 @@ import com.expense_management_service.dto.response.CashAdvanceAdjustmentResponse
 import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.dto.response.CashAdvanceSettlementResponse;
+import com.expense_management_service.dto.response.StoredProof;
+import com.expense_management_service.dto.response.CashAdvanceDisbursementSummary;
 import com.expense_management_service.dto.response.CashAdvanceUtilizationResponse;
 import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.storage.StorageService;
@@ -66,6 +73,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class CashAdvanceServiceImpl implements CashAdvanceService {
 
     private final CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
+    private final CashAdvanceRecoveryService cashAdvanceRecoveryService;
 
     private static final String MAX_ADVANCE_AMOUNT_CONFIG_KEY =
             "cash_advance.max_amount";
@@ -906,9 +914,9 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
         String proofKey = null;
         if (CashAdvanceDisbursementRules.CASH.equals(mode)) {
-            proofKey = storeProof(advanceId, mode, disbursement.signedAcknowledgment());
+            proofKey = storeProof("disbursements", advanceId, mode, disbursement.signedAcknowledgment());
         } else if (CashAdvanceDisbursementRules.UPI.equals(mode)) {
-            proofKey = storeProof(advanceId, mode, disbursement.paymentProof());
+            proofKey = storeProof("disbursements", advanceId, mode, disbursement.paymentProof());
         }
 
         String oldStatus = entity.getStatus();
@@ -919,7 +927,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         applyDisbursementDetails(entity, disbursement, mode, proofKey);
 
         if (entity.getOutstandingBalance() == null) {
-            entity.setOutstandingBalance(entity.getAmount());
+            // The obligation is the advance plus any balance carried in from earlier advances (carry-forward).
+            entity.setOutstandingBalance(entity.getAmount().add(CashAdvanceBalanceRules.carriedIn(entity)));
         }
 
         CashAdvance saved =
@@ -952,8 +961,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     }
 
     /** Stores an uploaded proof under a unique key and returns that key. Callers only pass validated files. */
-    private String storeProof(UUID advanceId, String mode, MultipartFile file) {
-        String objectKey = "disbursements/" + advanceId + "/"
+    private String storeProof(String folder, UUID advanceId, String mode, MultipartFile file) {
+        String objectKey = folder + "/" + advanceId + "/"
                 + mode.toLowerCase(Locale.ROOT) + "-" + UUID.randomUUID() + "."
                 + CashAdvanceDisbursementRules.proofExtension(file);
         storageService.upload(objectKey, file);
@@ -1009,11 +1018,20 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
+        // Row lock: two repayments on the same advance run one after another, so each sees the balance the other left.
         CashAdvance advance =
-                findEntity(request.advanceId());
+                cashAdvanceRepository.findByIdForUpdate(request.advanceId())
+                        .orElseThrow(() -> new ResourceNotFoundException("Cash advance not found: " + request.advanceId()));
 
-        String reference = request.paymentReference() != null ? request.paymentReference().trim() : null;
-        if (reference != null && !reference.isEmpty()
+        // Everything is checked before anything is stored or changed, so a rejected request leaves no trace.
+        if (request.amount() == null || request.amount().signum() <= 0) {
+            throw new IllegalArgumentException("Enter a repayment amount greater than zero.");
+        }
+        CashAdvanceDisbursementRules.validate(request.payment(), LocalDate.now());
+        String mode = CashAdvanceDisbursementRules.normalizedMode(request.payment().disbursementMode());
+        String reference = repaymentReference(mode, request.payment());
+
+        if (reference != null
                 && cashAdvanceRepaymentRepository.existsByCashAdvance_AdvanceIdAndPaymentReference(request.advanceId(), reference)) {
             throw new BusinessRuleViolationException("A repayment with reference " + reference + " is already recorded for this advance.");
         }
@@ -1077,6 +1095,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         BigDecimal newBalance =
                 CashAdvanceBalanceRules.requireNonNegative(currentBalance.subtract(request.amount()), decimals);
 
+        String proofKey = storeRepaymentProof(request.advanceId(), mode, request.payment());
+
         advance.setOutstandingBalance(newBalance);
 
         String previousStatus =
@@ -1086,9 +1106,11 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         cashAdvanceBudgetMovements.releaseAllocation(advance, request.amount());
 
         cashAdvanceRepository.save(advance);
+        // Repaid in full: any open refund notice for this advance is closed now, not at the next scheduled run.
+        cashAdvanceRecoveryService.resolveNoticesIfSettled(advance.getAdvanceId(), newBalance, LocalDateTime.now());
 
         CashAdvanceRepayment repayment =
-                cashAdvanceRepaymentMapper.toEntity(request);
+                cashAdvanceRepaymentMapper.toEntity(request, mode, reference, proofKey);
 
         repayment.setCashAdvance(advance);
 
@@ -1144,10 +1166,80 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         return cashAdvanceRepaymentMapper.toResponse(saved);
     }
 
+    /**
+     * The reference used for the duplicate check. Bank transfers and UPI use the transaction reference. Cash has no
+     * bank reference, so it uses a fingerprint of the signed acknowledgment: the same document cannot be recorded
+     * twice against one advance.
+     */
+    private static String repaymentReference(String mode, CashAdvanceDisbursement payment) {
+        return switch (mode) {
+            case CashAdvanceDisbursementRules.BANK_TRANSFER -> payment.transactionReference().trim();
+            case CashAdvanceDisbursementRules.UPI -> payment.upiTransactionId().trim();
+            case CashAdvanceDisbursementRules.CASH -> "CASH-" + sha256Prefix(payment.signedAcknowledgment());
+            default -> throw new IllegalStateException("Unhandled repayment mode: " + mode);
+        };
+    }
+
+    /** Stores the proof for a cash or UPI repayment. Bank transfers have no file, so they return null. */
+    private String storeRepaymentProof(UUID advanceId, String mode, CashAdvanceDisbursement payment) {
+        if (CashAdvanceDisbursementRules.CASH.equals(mode)) {
+            return storeProof("repayments", advanceId, mode, payment.signedAcknowledgment());
+        }
+        if (CashAdvanceDisbursementRules.UPI.equals(mode)) {
+            return storeProof("repayments", advanceId, mode, payment.paymentProof());
+        }
+        return null;
+    }
+
+    private static String sha256Prefix(MultipartFile file) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256").digest(file.getBytes());
+            return HexFormat.of().formatHex(digest).substring(0, 32);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Could not read the uploaded file", e);
+        }
+    }
+
 
     // ============================================================
     // SETTLEMENT
     // ============================================================
+
+    @Override
+    @Transactional(readOnly = true)
+    public StoredProof disbursementProof(UUID advanceId) {
+        CashAdvance advance = findEntity(advanceId);
+        assertCanView(advance);
+        return openProof(advance.getDisbursementProofReference(), "payment proof for the disbursement");
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public StoredProof repaymentProof(UUID advanceId, UUID repaymentId) {
+        CashAdvance advance = findEntity(advanceId);
+        assertCanView(advance);
+        CashAdvanceRepayment repayment = cashAdvanceRepaymentRepository.findById(repaymentId)
+                .filter(r -> r.getCashAdvance() != null && advanceId.equals(r.getCashAdvance().getAdvanceId()))
+                .orElseThrow(() -> new ResourceNotFoundException("Repayment not found on this cash advance: " + repaymentId));
+        return openProof(repayment.getProofReference(), "payment proof for this repayment");
+    }
+
+    private StoredProof openProof(String objectKey, String label) {
+        if (objectKey == null || objectKey.isBlank()) {
+            throw new ResourceNotFoundException("No " + label + " is on file.");
+        }
+        String extension = objectKey.substring(objectKey.lastIndexOf('.') + 1).toLowerCase(Locale.ROOT);
+        String contentType = switch (extension) {
+            case "pdf" -> "application/pdf";
+            case "png" -> "image/png";
+            case "jpg", "jpeg" -> "image/jpeg";
+            default -> "application/octet-stream";
+        };
+        String fileName = objectKey.substring(objectKey.lastIndexOf('/') + 1);
+        return new StoredProof(fileName, contentType, storageService.download(objectKey));
+    }
 
     @Override
     @Transactional(readOnly = true)
@@ -1244,7 +1336,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                 reimbursementAmount,
                 settlementStatus,
                 adjResponses,
-                repResponses
+                repResponses,
+                CashAdvanceDisbursementSummary.from(advance)
         );
     }
 

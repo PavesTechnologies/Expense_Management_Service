@@ -162,6 +162,93 @@ class ExpenseReportServiceImplTest {
         assertThat(response.deletable()).isTrue();
     }
 
+    // ---------------------------------------------------------------------
+    // Reporting period and trip dates - the same rules on create, update and submit
+    // ---------------------------------------------------------------------
+
+    private ExpenseReportRequest requestWithDates(LocalDate tripStart, LocalDate tripEnd,
+                                                  LocalDate periodStart, LocalDate periodEnd) {
+        return new ExpenseReportRequest("Client visit - Q1", "Client visit to discuss renewal terms",
+                costCenterId, currencyId, null, tripStart, tripEnd, periodStart, periodEnd);
+    }
+
+    @Test
+    void create_rejectsReportingPeriodEndingInTheFuture() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        lenient().when(umsClient.getAllUsers()).thenReturn(List.of(
+                new UmsUserResponse(employeeUuid, 5100014L, "Jordan", "Smith", "jordan@example.com", true)));
+
+        LocalDate tomorrow = LocalDate.now().plusDays(1);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        expenseReportService.create(requestWithDates(null, null, null, tomorrow)))
+                .isInstanceOf(com.expense_management_service.common.exception.BusinessRuleViolationException.class)
+                .hasMessage("The reporting period cannot end in the future.");
+        verify(expenseReportRepository, never()).save(any());
+    }
+
+    @Test
+    void create_rejectsReportingPeriodEndingBeforeItStarts() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        lenient().when(umsClient.getAllUsers()).thenReturn(List.of(
+                new UmsUserResponse(employeeUuid, 5100014L, "Jordan", "Smith", "jordan@example.com", true)));
+
+        LocalDate today = LocalDate.now();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        expenseReportService.create(requestWithDates(null, null, today.minusDays(5), today.minusDays(9))))
+                .isInstanceOf(com.expense_management_service.common.exception.BusinessRuleViolationException.class)
+                .hasMessage("The reporting period end date cannot be before its start date.");
+        verify(expenseReportRepository, never()).save(any());
+    }
+
+    @Test
+    void create_rejectsTripEndBeforeTripStart() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        lenient().when(umsClient.getAllUsers()).thenReturn(List.of(
+                new UmsUserResponse(employeeUuid, 5100014L, "Jordan", "Smith", "jordan@example.com", true)));
+
+        LocalDate today = LocalDate.now();
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        expenseReportService.create(requestWithDates(today, today.minusDays(1), null, null)))
+                .isInstanceOf(com.expense_management_service.common.exception.BusinessRuleViolationException.class)
+                .hasMessage("The trip end date cannot be before the start date.");
+        verify(expenseReportRepository, never()).save(any());
+    }
+
+    @Test
+    void create_acceptsReportingPeriodEndingToday() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        stubActiveEmployee(true);
+        stubActiveCostCenterAndCurrency();
+        when(expenseReportRepository.findByEmployeeIdAndFiscalYearAndTitleIgnoreCase(employeeId, fiscalYear, "Client visit - Q1"))
+                .thenReturn(Optional.empty());
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> {
+            ExpenseReport saved = inv.getArgument(0);
+            saved.setReportId(UUID.randomUUID());
+            return saved;
+        });
+
+        LocalDate today = LocalDate.now();
+        ExpenseReportResponse response = expenseReportService.create(requestWithDates(today.minusDays(3), today, today.minusDays(3), today));
+
+        assertThat(response.reportStatus()).isEqualTo("DRAFT");
+    }
+
+    @Test
+    void update_rejectsReportingPeriodEndingInTheFuture_andChangesNothing() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).title("Old title").build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(adminCaller());
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+                        expenseReportService.update(reportId, requestWithDates(null, null, null, LocalDate.now().plusDays(2))))
+                .isInstanceOf(com.expense_management_service.common.exception.BusinessRuleViolationException.class)
+                .hasMessage("The reporting period cannot end in the future.");
+        assertThat(existing.getTitle()).isEqualTo("Old title");
+        verify(expenseReportRepository, never()).save(any());
+    }
+
     @Test
     void create_throwsEmployeeInactiveException_whenEmployeeInactiveInUms() {
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
@@ -419,5 +506,45 @@ class ExpenseReportServiceImplTest {
                 .isInstanceOf(AccessDeniedException.class);
 
         verify(expenseReportRepository, never()).delete(any());
+    }
+
+    // ---------------------------------------------------------------- trip inside one month of the advance request
+
+    private static com.expense_management_service.dto.request.ExpenseReportRequest tripRequest(LocalDate start, LocalDate end) {
+        return new com.expense_management_service.dto.request.ExpenseReportRequest(null, null, null, null, null, start, end,
+                null, null);
+    }
+
+    private static com.expense_management_service.entity.CashAdvance advanceRequestedOn(LocalDate requested) {
+        return com.expense_management_service.entity.CashAdvance.builder()
+                .createdAt(requested.atTime(10, 0)).build();
+    }
+
+    @Test
+    void advanceWindow_allowsATripInsideOneMonthOfTheRequest() {
+        LocalDate requested = LocalDate.of(2026, 10, 27);
+        ExpenseReportServiceImpl.assertTripWithinAdvanceWindow(tripRequest(requested, LocalDate.of(2026, 11, 20)),
+                advanceRequestedOn(requested));
+    }
+
+    @Test
+    void advanceWindow_rejectsATripThatStartsBeforeTheRequest() {
+        LocalDate requested = LocalDate.of(2026, 10, 27);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> ExpenseReportServiceImpl.assertTripWithinAdvanceWindow(
+                        tripRequest(LocalDate.of(2026, 10, 20), LocalDate.of(2026, 10, 25)), advanceRequestedOn(requested)))
+                .hasMessageContaining("within one month of the cash advance request");
+    }
+
+    @Test
+    void advanceWindow_rejectsATripEndingMoreThanOneMonthAfterTheRequest() {
+        LocalDate requested = LocalDate.of(2026, 10, 27);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> ExpenseReportServiceImpl.assertTripWithinAdvanceWindow(
+                        tripRequest(requested, LocalDate.of(2026, 11, 28)), advanceRequestedOn(requested)))
+                .hasMessageContaining("within one month of the cash advance request");
+    }
+
+    @Test
+    void advanceWindow_doesNothingWithoutAnAdvance() {
+        ExpenseReportServiceImpl.assertTripWithinAdvanceWindow(tripRequest(LocalDate.of(2020, 1, 1), LocalDate.of(2020, 1, 2)), null);
     }
 }

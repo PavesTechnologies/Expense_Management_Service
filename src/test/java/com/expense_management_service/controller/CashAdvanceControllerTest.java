@@ -2,6 +2,8 @@ package com.expense_management_service.controller;
 
 import com.expense_management_service.config.SecurityConfig;
 import com.expense_management_service.dto.request.CashAdvanceDisbursement;
+import com.expense_management_service.dto.request.CashAdvanceRepaymentRequest;
+import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.JwtAuthConverter;
@@ -12,6 +14,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.http.MediaType;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.test.context.TestPropertySource;
@@ -20,6 +23,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -35,6 +39,7 @@ import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
@@ -214,6 +219,70 @@ class CashAdvanceControllerTest {
         mockMvc.perform(post("/xms/employee/cash-advances/{advanceId}/disburse", advanceId)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
                 .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void repay_passesMultipartPaymentFieldsToService() throws Exception {
+        CashAdvanceRepaymentResponse response = new CashAdvanceRepaymentResponse(
+                UUID.randomUUID(), advanceId, new BigDecimal("400.00"), "BANK_TRANSFER", "UTR123",
+                "FIN001", LocalDateTime.now(), "Full balance", LocalDate.of(2026, 10, 1), "BANK_TRANSFER", true);
+        when(currentUserService.getEmployeeId()).thenReturn("FIN001");
+        when(cashAdvanceService.repay(any(CashAdvanceRepaymentRequest.class))).thenReturn(response);
+
+        mockMvc.perform(multipart("/xms/employee/cash-advances/{advanceId}/repayments", advanceId)
+                        .param("amount", "400.00")
+                        .param("notes", "Full balance")
+                        .param("disbursementMode", "BANK_TRANSFER")
+                        .param("transactionReference", "UTR123")
+                        .param("transferDate", "2026-10-01")
+                        .param("transferDetails", "HDFC A/C 1234")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.paymentMethod").value("BANK_TRANSFER"));
+
+        ArgumentCaptor<CashAdvanceRepaymentRequest> captor = ArgumentCaptor.forClass(CashAdvanceRepaymentRequest.class);
+        verify(cashAdvanceService).repay(captor.capture());
+        CashAdvanceRepaymentRequest sent = captor.getValue();
+        assertEquals(advanceId, sent.advanceId());
+        assertEquals(0, sent.amount().compareTo(new BigDecimal("400.00")));
+        assertEquals("Full balance", sent.notes());
+        assertEquals("BANK_TRANSFER", sent.payment().disbursementMode());
+        assertEquals("UTR123", sent.payment().transactionReference());
+        assertEquals(LocalDate.of(2026, 10, 1), sent.payment().transferDate());
+    }
+
+    @Test
+    void repay_returns400_whenPaymentConfirmationIsInvalid() throws Exception {
+        when(currentUserService.getEmployeeId()).thenReturn("FIN001");
+        when(cashAdvanceService.repay(any(CashAdvanceRepaymentRequest.class)))
+                .thenThrow(new IllegalArgumentException("Enter the transaction reference."));
+
+        mockMvc.perform(multipart("/xms/employee/cash-advances/{advanceId}/repayments", advanceId)
+                        .param("amount", "400.00")
+                        .param("disbursementMode", "BANK_TRANSFER")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.message").value("Enter the transaction reference."));
+        verify(cashAdvanceService).repay(any(CashAdvanceRepaymentRequest.class));
+    }
+
+    @Test
+    void repay_rejectsJsonBody_becauseTheContractIsMultipartOnly() throws Exception {
+        mockMvc.perform(post("/xms/employee/cash-advances/{advanceId}/repayments", advanceId)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"amount\":400.00,\"paymentMethod\":\"BANK_TRANSFER\"}")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE))))
+                .andExpect(status().isUnsupportedMediaType());
+        verifyNoInteractions(cashAdvanceService);
+    }
+
+    @Test
+    void repay_returns403_forGeneralUser() throws Exception {
+        mockMvc.perform(multipart("/xms/employee/cash-advances/{advanceId}/repayments", advanceId)
+                        .param("amount", "400.00")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(cashAdvanceService);
     }
 
     @Test

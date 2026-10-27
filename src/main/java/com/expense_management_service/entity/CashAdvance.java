@@ -84,6 +84,13 @@ public class CashAdvance {
     @Column(name = "outstanding_balance", precision = 19, scale = 4)
     private BigDecimal outstandingBalance;
 
+    /**
+     * Balance carried into this advance from earlier advances (carry-forward). Added to the obligation at disbursement.
+     * Changed only by an APPLIED carry-forward or its reversal. Null on older rows, which means zero.
+     */
+    @Column(name = "carried_in_amount", precision = 19, scale = 4)
+    private BigDecimal carriedInAmount;
+
     @Column(name = "approved_amount", precision = 19, scale = 4)
     private BigDecimal approvedAmount;
 

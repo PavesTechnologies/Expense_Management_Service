@@ -1,5 +1,8 @@
 package com.expense_management_service.controller;
 
+import com.expense_management_service.dto.response.StoredProof;
+import org.springframework.core.io.Resource;
+import org.springframework.core.io.InputStreamResource;
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.CashAdvanceDisbursement;
 import com.expense_management_service.dto.request.CashAdvanceRepaymentRequest;
@@ -17,10 +20,15 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ContentDisposition;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.util.UUID;
 
@@ -129,16 +137,53 @@ public class CashAdvanceController {
                 cashAdvanceService.disburse(advanceId, currentUserService.getEmployeeId(), disbursement));
     }
 
-    @Operation(summary = "Record employee cash advance repayment")
-    @PostMapping("/{advanceId}/repayments")
+    /**
+     * Canonical repayment contract: multipart/form-data only. The payment fields use the same names as disburse
+     * ({@code disbursementMode} plus the fields for that mode). A JSON body is rejected with 415.
+     */
+    @Operation(summary = "Record employee cash advance repayment with payment confirmation")
+    @PostMapping(value = "/{advanceId}/repayments", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE')")
     public ApiResponse<CashAdvanceRepaymentResponse> repay(
             @PathVariable UUID advanceId,
-            @Valid @RequestBody CashAdvanceRepaymentRequest request) {
-        if (!advanceId.equals(request.advanceId())) {
-            request = new CashAdvanceRepaymentRequest(advanceId, request.amount(), request.paymentMethod(), request.paymentReference(), request.notes());
-        }
+            @RequestParam BigDecimal amount,
+            @RequestParam(required = false) String notes,
+            @RequestParam(required = false) String disbursementMode,
+            @RequestParam(required = false) String receivedByName,
+            @RequestParam(required = false) MultipartFile signedAcknowledgment,
+            @RequestParam(required = false) String transactionReference,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate transferDate,
+            @RequestParam(required = false) String transferDetails,
+            @RequestParam(required = false) String upiTransactionId,
+            @RequestParam(required = false) String payeeUpiId,
+            @RequestParam(required = false) MultipartFile paymentProof,
+            @RequestParam(required = false) String confirmationNote) {
+        CashAdvanceDisbursement payment = new CashAdvanceDisbursement(
+                disbursementMode, receivedByName, signedAcknowledgment, transactionReference, transferDate,
+                transferDetails, upiTransactionId, payeeUpiId, paymentProof, confirmationNote);
+        CashAdvanceRepaymentRequest request = new CashAdvanceRepaymentRequest(advanceId, amount, notes, payment);
         return ApiResponse.success("Cash advance repayment recorded", cashAdvanceService.repay(request));
+    }
+
+    @Operation(summary = "Payment proof for how Finance paid out the advance")
+    @GetMapping("/{advanceId}/disbursement/proof")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
+    public ResponseEntity<Resource> disbursementProof(@PathVariable UUID advanceId) {
+        return proofResponse(cashAdvanceService.disbursementProof(advanceId));
+    }
+
+    @Operation(summary = "Payment proof for one employee repayment on this advance")
+    @GetMapping("/{advanceId}/repayments/{repaymentId}/proof")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
+    public ResponseEntity<Resource> repaymentProof(@PathVariable UUID advanceId, @PathVariable UUID repaymentId) {
+        return proofResponse(cashAdvanceService.repaymentProof(advanceId, repaymentId));
+    }
+
+    private static ResponseEntity<Resource> proofResponse(StoredProof proof) {
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(proof.contentType()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, ContentDisposition.inline().filename(proof.fileName()).build().toString())
+                .body(new InputStreamResource(proof.content()));
     }
 
     @Operation(summary = "Get cash advance settlement details")

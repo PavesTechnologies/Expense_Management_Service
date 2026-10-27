@@ -8,6 +8,7 @@ import com.expense_management_service.dto.request.CashAdvanceRequest;
 import com.expense_management_service.dto.response.CashAdvanceRepaymentResponse;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.dto.response.CashAdvanceSettlementResponse;
+import com.expense_management_service.dto.response.StoredProof;
 import com.expense_management_service.dto.response.CashAdvanceUtilizationResponse;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
@@ -41,6 +42,12 @@ public interface CashAdvanceService {
     CashAdvanceRepaymentResponse repay(CashAdvanceRepaymentRequest request);
 
     CashAdvanceSettlementResponse getSettlement(UUID advanceId);
+
+    /** The proof Finance uploaded when it paid the advance out. Throws when none is on file. */
+    StoredProof disbursementProof(UUID advanceId);
+
+    /** The proof uploaded for one employee payment on this advance. Throws when it does not belong to the advance. */
+    StoredProof repaymentProof(UUID advanceId, UUID repaymentId);
 
     CashAdvanceUtilizationResponse getUtilization(UUID advanceId);
 

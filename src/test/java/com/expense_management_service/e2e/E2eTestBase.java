@@ -291,7 +291,10 @@ abstract class E2eTestBase {
     // Expense report workflow steps
     // ---------------------------------------------------------------------
 
-    /** Creates a draft report for a trip that ended yesterday; {@code cashAdvanceId} may be null. */
+    /**
+     * Creates a draft report for a trip that is today. A report linked to a cash advance must fall inside one month of
+     * the advance request, and the advance is requested today, so the trip cannot start earlier. {@code cashAdvanceId} may be null.
+     */
     protected String createReport(Persona employee, CostCenter costCenter, UUID cashAdvanceId) throws Exception {
         LocalDate today = LocalDate.now();
         String body = postJson("/xms/employee/expense-reports", employee, """
@@ -300,7 +303,7 @@ abstract class E2eTestBase {
                  "tripStartDate":"%s","tripEndDate":"%s","reportingPeriodStart":"%s","reportingPeriodEnd":"%s"}
                 """.formatted(suffix(), costCenter.getCostCenterId(), inr.getCurrencyId(),
                 cashAdvanceId != null ? "\"cashAdvanceId\":\"" + cashAdvanceId + "\"," : "",
-                today.minusDays(5), today.minusDays(1), today.minusDays(5), today.minusDays(1)), 201);
+                today, today, today.minusDays(5), today.minusDays(1)), 201);
         return read(body, "$.data.reportId");
     }
 
@@ -314,7 +317,7 @@ abstract class E2eTestBase {
         return """
                 {"categoryId":"%s","expenseDate":"%s","merchantName":"City Cabs","description":"%s",
                  "amount":%s,"currencyId":"%s","taxAmount":0%s}
-                """.formatted(category.getCategoryId(), LocalDate.now().minusDays(2), description, amount,
+                """.formatted(category.getCategoryId(), LocalDate.now(), description, amount,
                 inr.getCurrencyId(), extraJson == null ? "" : "," + extraJson);
     }
 

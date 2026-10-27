@@ -50,6 +50,17 @@ public class CurrentUserService {
     }
 
     /**
+     * Who to record as the actor in audit and NOT NULL columns. Some accounts' tokens carry no employee_id claim,
+     * so this falls back to the email, then the user UUID, rather than storing null.
+     */
+    public String getActorId() {
+        CurrentUser user = getCurrentUser();
+        if (user.employeeId() != null && !user.employeeId().isBlank()) return user.employeeId();
+        if (user.email() != null && !user.email().isBlank()) return user.email();
+        return user.uuid().toString();
+    }
+
+    /**
      * The caller's numeric UMS user id, required by {@code PmsClient.getMyActiveProjects}.
      * Throws rather than returning null if the JWT doesn't carry the {@code user_id} claim —
      * this is a reserved-but-previously-unwired claim (see {@code SecurityConstants}), so a

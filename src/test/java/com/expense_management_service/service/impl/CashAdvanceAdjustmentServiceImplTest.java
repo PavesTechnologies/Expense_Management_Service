@@ -23,6 +23,7 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
@@ -143,6 +144,58 @@ class CashAdvanceAdjustmentServiceImplTest {
 
         assertEquals(0, testAdvance.getOutstandingBalance().compareTo(BigDecimal.ZERO));
         assertEquals("CLOSED", testAdvance.getStatus());
+    }
+
+    @Test
+    void create_withAKeyUsedBefore_returnsTheFirstAdjustment_andAppliesNothingAgain() {
+        CashAdvanceAdjustment earlier = new CashAdvanceAdjustment();
+        earlier.setAdjustmentId(adjustmentId);
+        earlier.setCashAdvance(testAdvance);
+        earlier.setReport(testReport);
+        earlier.setAdjustedAmount(new BigDecimal("400.00"));
+        earlier.setIdempotencyKey("K-1");
+        when(cashAdvanceAdjustmentRepository.findByIdempotencyKey("K-1")).thenReturn(Optional.of(earlier));
+
+        CashAdvanceAdjustmentResponse response = adjustmentService.create(new CashAdvanceAdjustmentRequest(
+                advanceId, reportId, new BigDecimal("400.00"), "EMP001", "K-1"));
+
+        assertEquals(adjustmentId, response.adjustmentId());
+        assertEquals(new BigDecimal("1000.00"), testAdvance.getOutstandingBalance());
+        verify(cashAdvanceRepository, never()).save(any());
+        verify(cashAdvanceAdjustmentRepository, never()).save(any());
+    }
+
+    @Test
+    void create_withAKeyUsedForADifferentAmount_isRejected_andAppliesNothing() {
+        CashAdvanceAdjustment earlier = new CashAdvanceAdjustment();
+        earlier.setCashAdvance(testAdvance);
+        earlier.setReport(testReport);
+        earlier.setAdjustedAmount(new BigDecimal("400.00"));
+        when(cashAdvanceAdjustmentRepository.findByIdempotencyKey("K-2")).thenReturn(Optional.of(earlier));
+
+        assertThrows(BusinessRuleViolationException.class, () -> adjustmentService.create(
+                new CashAdvanceAdjustmentRequest(advanceId, reportId, new BigDecimal("500.00"), "EMP001", "K-2")));
+
+        assertEquals(new BigDecimal("1000.00"), testAdvance.getOutstandingBalance());
+        verify(cashAdvanceRepository, never()).save(any());
+    }
+
+    @Test
+    void create_storesTheIdempotencyKeyOnTheNewAdjustment() {
+        when(cashAdvanceAdjustmentRepository.findByIdempotencyKey("K-3")).thenReturn(Optional.empty());
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(testAdvance));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(testReport));
+        when(cashAdvanceAdjustmentRepository.save(any(CashAdvanceAdjustment.class))).thenAnswer(inv -> {
+            CashAdvanceAdjustment saved = inv.getArgument(0);
+            saved.setAdjustmentId(adjustmentId);
+            return saved;
+        });
+
+        adjustmentService.create(new CashAdvanceAdjustmentRequest(advanceId, reportId, new BigDecimal("400.00"), "EMP001", "K-3"));
+
+        ArgumentCaptor<CashAdvanceAdjustment> captor = ArgumentCaptor.forClass(CashAdvanceAdjustment.class);
+        verify(cashAdvanceAdjustmentRepository).save(captor.capture());
+        assertEquals("K-3", captor.getValue().getIdempotencyKey());
     }
 
     @Test

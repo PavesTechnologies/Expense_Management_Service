@@ -23,6 +23,11 @@ public final class CashAdvanceBalanceRules {
     private CashAdvanceBalanceRules() {
     }
 
+    /** Balance carried into the advance by carry-forward. Null on older rows means zero. */
+    public static BigDecimal carriedIn(com.expense_management_service.entity.CashAdvance advance) {
+        return advance.getCarriedInAmount() == null ? BigDecimal.ZERO : advance.getCarriedInAmount();
+    }
+
     public static BigDecimal roundToCurrency(BigDecimal value, int decimals) {
         return value.setScale(decimals, RoundingMode.HALF_UP);
     }

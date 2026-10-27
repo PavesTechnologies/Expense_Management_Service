@@ -293,6 +293,83 @@ class ApprovalWorkflowServiceImplTest {
     }
 
     @Test
+    void submit_linkedAdvanceNotYetDisbursed_hasNoClock() {
+        ExpenseReport report = draftReport();
+        report.setTripEndDate(java.time.LocalDate.now().minusDays(90));
+        report.setCashAdvance(com.expense_management_service.entity.CashAdvance.builder()
+                .advanceId(UUID.randomUUID())
+                .build());
+        stubSuccessfulSubmitFlow(report);
+
+        assertThat(service.submit(reportId).reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
+    }
+
+    @Test
+    void submit_linkedAdvanceDeadlineRunsFromDisbursementNotTripEnd() {
+        ExpenseReport report = draftReport();
+        report.setTripEndDate(java.time.LocalDate.now().minusDays(100));
+        report.setCashAdvance(com.expense_management_service.entity.CashAdvance.builder()
+                .advanceId(UUID.randomUUID())
+                .disbursedAt(java.time.LocalDateTime.now().minusDays(10))
+                .build());
+        stubSuccessfulSubmitFlow(report);
+
+        assertThat(service.submit(reportId).reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
+    }
+
+    @Test
+    void submit_linkedAdvanceRejectedWhenDisbursementPlus30IsPast_evenIfTripEndIsRecent() {
+        ExpenseReport report = draftReport();
+        java.time.LocalDate disbursed = java.time.LocalDate.now().minusDays(31);
+        report.setTripEndDate(java.time.LocalDate.now());
+        report.setCashAdvance(com.expense_management_service.entity.CashAdvance.builder()
+                .advanceId(UUID.randomUUID())
+                .disbursedAt(disbursed.atStartOfDay())
+                .build());
+        stubSuccessfulSubmitFlow(report);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.submit(reportId))
+                .isInstanceOf(com.expense_management_service.common.exception.BusinessRuleViolationException.class)
+                .hasMessageContaining(disbursed.plusDays(30).toString());
+        verify(expenseReportRepository, never()).save(any());
+    }
+
+    @Test
+    void aReportOverride_doesNotExtendAnotherReportLinkedToTheSameAdvance() {
+        // One advance disbursed 40 days ago. Report A has a Finance extension; report B has none.
+        com.expense_management_service.entity.CashAdvance advance = com.expense_management_service.entity.CashAdvance.builder()
+                .advanceId(UUID.randomUUID())
+                .disbursedAt(java.time.LocalDateTime.now().minusDays(40))
+                .build();
+
+        ExpenseReport reportA = draftReport();
+        reportA.setCashAdvance(advance);
+        reportA.setTripEndDate(java.time.LocalDate.now().minusDays(40));
+        reportA.setExpenseDeadlineExtendedUntil(java.time.LocalDate.now().plusDays(60));
+
+        UUID reportBId = UUID.randomUUID();
+        ExpenseReport reportB = draftReport();
+        reportB.setReportId(reportBId);
+        reportB.setCashAdvance(advance);
+        reportB.setTripEndDate(java.time.LocalDate.now().minusDays(40));
+
+        // The extension on A does not change B: B is still past disbursement + 30 days and is refused.
+        when(expenseReportRepository.findById(reportBId)).thenReturn(Optional.of(reportB));
+        when(approvalFlowResolutionService.resolveMatchingFlow(reportB)).thenReturn(singleLevelFlow());
+        when(approverSourceResolver.resolve(any(), any())).thenReturn(Optional.of(approverId));
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.submit(reportBId))
+                .isInstanceOf(com.expense_management_service.common.exception.BusinessRuleViolationException.class)
+                .hasMessageContaining("The submission deadline for this report was");
+        verify(expenseReportRepository, never()).save(any());
+
+        // The override is stored on A alone, and the shared advance is not changed.
+        assertThat(reportA.getExpenseDeadlineExtendedUntil()).isEqualTo(java.time.LocalDate.now().plusDays(60));
+        assertThat(reportB.getExpenseDeadlineExtendedUntil()).isNull();
+        assertThat(reportB.isExpenseDeadlineReopened()).isFalse();
+    }
+
+    @Test
     void submit_rejectsAReportWithoutATripEndDate() {
         ExpenseReport report = draftReport();
         report.setTripEndDate(null);
@@ -304,26 +381,20 @@ class ApprovalWorkflowServiceImplTest {
     }
 
     @Test
-    void submit_allowsAnOverdueReportWhenFinanceExtendedTheLinkedAdvance() {
+    void submit_allowsAnOverdueReportWhenFinanceExtendedThatReport() {
         ExpenseReport report = draftReport();
         report.setTripEndDate(java.time.LocalDate.now().minusDays(60));
-        report.setCashAdvance(com.expense_management_service.entity.CashAdvance.builder()
-                .advanceId(UUID.randomUUID())
-                .expenseDeadlineExtendedUntil(java.time.LocalDate.now().plusDays(1))
-                .build());
+        report.setExpenseDeadlineExtendedUntil(java.time.LocalDate.now().plusDays(1));
         stubSuccessfulSubmitFlow(report);
 
         assertThat(service.submit(reportId).reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
     }
 
     @Test
-    void submit_allowsAnOverdueReportWhenFinanceReopenedTheLinkedAdvance() {
+    void submit_allowsAnOverdueReportWhenFinanceReopenedThatReport() {
         ExpenseReport report = draftReport();
         report.setTripEndDate(java.time.LocalDate.now().minusDays(60));
-        report.setCashAdvance(com.expense_management_service.entity.CashAdvance.builder()
-                .advanceId(UUID.randomUUID())
-                .expenseDeadlineReopened(true)
-                .build());
+        report.setExpenseDeadlineReopened(true);
         stubSuccessfulSubmitFlow(report);
 
         assertThat(service.submit(reportId).reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());

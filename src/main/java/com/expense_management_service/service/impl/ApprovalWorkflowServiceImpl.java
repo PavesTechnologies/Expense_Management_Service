@@ -223,8 +223,9 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             throw new BusinessRuleViolationException("Enter the estimated trip end date before submitting this report.");
         }
         LocalDate disbursedOn = linked && advance.getDisbursedAt() != null ? advance.getDisbursedAt().toLocalDate() : null;
-        LocalDate extendedUntil = linked ? advance.getExpenseDeadlineExtendedUntil() : null;
-        boolean reopened = linked && advance.isExpenseDeadlineReopened();
+        // Finance overrides live on the report, so they apply to this report only (an advance can have several reports).
+        LocalDate extendedUntil = report.getExpenseDeadlineExtendedUntil();
+        boolean reopened = report.isExpenseDeadlineReopened();
 
         if (linked && disbursedOn == null && extendedUntil == null) {
             // Advance not yet disbursed: the expense clock has not started, so there is no deadline to miss.

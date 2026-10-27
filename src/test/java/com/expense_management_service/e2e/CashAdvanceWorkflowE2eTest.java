@@ -46,6 +46,18 @@ class CashAdvanceWorkflowE2eTest extends E2eTestBase {
         return read(advance(advanceId), "$.data.status");
     }
 
+    /** Canonical repayment contract: multipart form with the bank-transfer confirmation (a fresh builder per call). */
+    private static org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder repaymentForm(
+            String advanceId, String reference) {
+        return multipart("/xms/employee/cash-advances/" + advanceId + "/repayments")
+                .param("amount", "4000.00")
+                .param("notes", "Unused balance returned")
+                .param("disbursementMode", "BANK_TRANSFER")
+                .param("transactionReference", reference)
+                .param("transferDate", LocalDate.now().toString())
+                .param("transferDetails", "HDFC A/C 1234");
+    }
+
     /** Requests, submits and takes the advance through manager, cost center owner and Finance approval, then disburses it. */
     private String approvedAndDisbursedAdvance(Setup s, String amount) throws Exception {
         String created = postJson("/xms/employee/cash-advances", s.employee(), """
@@ -183,11 +195,9 @@ class CashAdvanceWorkflowE2eTest extends E2eTestBase {
         assertThat(budget(s.costCenter()).getCashAdvanceAllocated()).isEqualByComparingTo("7000.00");
 
         // Finance settles the first advance's unused balance; only Finance can record it.
-        String repayment = """
-                {"advanceId":"%s","amount":4000.00,"paymentMethod":"BANK_TRANSFER","paymentReference":"RPY-%s","notes":"Unused balance returned"}
-                """.formatted(firstAdvanceId, suffix());
-        postJson("/xms/employee/cash-advances/" + firstAdvanceId + "/repayments", s.employee(), repayment, 403);
-        postJson("/xms/employee/cash-advances/" + firstAdvanceId + "/repayments", FINANCE, repayment, 200);
+        String repaymentReference = "RPY-" + suffix();
+        call(repaymentForm(firstAdvanceId, repaymentReference), s.employee(), 403);
+        call(repaymentForm(firstAdvanceId, repaymentReference), FINANCE, 200);
 
         String settled = advance(firstAdvanceId);
         assertThat(amount(settled, "$.data.outstandingBalance")).isEqualByComparingTo("0");

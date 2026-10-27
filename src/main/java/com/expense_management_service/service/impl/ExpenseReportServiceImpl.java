@@ -81,6 +81,8 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
                         ? findLinkableAdvance(request.cashAdvanceId(), caller.employeeId())
                         : null;
 
+        assertTripWithinAdvanceWindow(request, linkedAdvance);
+
         ExpenseReport entity = expenseReportMapper.toEntity(request);
         entity.setEmployeeId(caller.employeeId());
         entity.setFiscalYear(fiscalYear);
@@ -222,6 +224,28 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         if (!umsUser.isActive()) {
             throw new EmployeeInactiveException(
                     "Your account is marked Inactive in UMS. Expense reports cannot be created while inactive — please contact HR Support to reactivate your account.");
+        }
+    }
+
+    /** Months after the cash advance request during which its trip may fall. */
+    static final int ADVANCE_TRIP_WINDOW_MONTHS = 1;
+
+    /**
+     * A report linked to a cash advance must have its trip inside one month of the day the advance was requested.
+     * Without a link there is no advance date to check against.
+     */
+    static void assertTripWithinAdvanceWindow(ExpenseReportRequest request,
+                                              com.expense_management_service.entity.CashAdvance advance) {
+        if (advance == null || advance.getCreatedAt() == null) {
+            return;
+        }
+        LocalDate requested = advance.getCreatedAt().toLocalDate();
+        LocalDate windowEnd = requested.plusMonths(ADVANCE_TRIP_WINDOW_MONTHS);
+        for (LocalDate tripDate : java.util.Arrays.asList(request.tripStartDate(), request.tripEndDate())) {
+            if (tripDate != null && (tripDate.isBefore(requested) || tripDate.isAfter(windowEnd))) {
+                throw new BusinessRuleViolationException("The trip dates must fall within one month of the cash advance request ("
+                        + requested + " to " + windowEnd + ").");
+            }
         }
     }
 

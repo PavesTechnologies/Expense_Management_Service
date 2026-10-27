@@ -112,6 +112,17 @@ public class ExpenseReport {
     private LocalDate reportingPeriodEnd;
 
     /**
+     * Finance extension of this report's submission deadline (set by a deadline override, with a reason in the audit log).
+     * Replaces the computed deadline. Reporting-period validation still applies.
+     */
+    @Column(name = "expense_deadline_extended_until")
+    private LocalDate expenseDeadlineExtendedUntil;
+
+    /** Finance reopen: the submission deadline check is lifted for this report. Set by a deadline override. */
+    @Column(name = "expense_deadline_reopened", nullable = false)
+    private boolean expenseDeadlineReopened;
+
+    /**
      * Optimistic-locking column. The {@code version} column already exists in the database
      * (NOT NULL, no default) but was unmapped, so every INSERT omitted it and MySQL rejected
      * the row with "Field 'version' doesn't have a default value" — surfaced to callers as a

@@ -9,5 +9,8 @@ import java.util.UUID;
 public interface CashAdvanceAdjustmentRepository extends JpaRepository<CashAdvanceAdjustment, UUID> {
     List<CashAdvanceAdjustment> findByCashAdvance_AdvanceId(UUID advanceId);
     List<CashAdvanceAdjustment> findByReport_ReportId(UUID reportId);
+
+    /** The adjustment created by an earlier call with the same idempotency key, if any. */
+    java.util.Optional<CashAdvanceAdjustment> findByIdempotencyKey(String idempotencyKey);
 }
 

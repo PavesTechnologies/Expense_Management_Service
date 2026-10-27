@@ -456,6 +456,40 @@ class ExpenseLineItemServiceImplTest {
     }
 
     @Test
+    void create_throwsIllegalArgumentException_whenExpenseDateIsOutsideTheTripDates() {
+        stubOwnerAndReport();
+        draftReport.setTripStartDate(LocalDate.now().minusDays(3));
+        draftReport.setTripEndDate(LocalDate.now().minusDays(1));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest outside = new ExpenseLineItemRequest(categoryId, LocalDate.now(), "Uber",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, outside))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within the report's trip dates");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_savesLineItem_whenExpenseDateIsInsideTheTripDates() {
+        stubOwnerAndReport();
+        draftReport.setTripStartDate(LocalDate.now().minusDays(3));
+        draftReport.setTripEndDate(LocalDate.now().minusDays(1));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemRequest inside = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(2), "Uber",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        expenseLineItemService.create(reportId, inside);
+
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
     void create_throwsIllegalArgumentException_whenExpenseDateInFuture() {
         stubOwnerAndReport();
         when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));

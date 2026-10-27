@@ -79,8 +79,6 @@ class InvoiceHandoffServiceImplTest {
     private PmsClient pmsClient;
     @Mock
     private ProjectCacheRepository projectCacheRepository;
-    @Mock
-    private org.springframework.context.ApplicationEventPublisher applicationEventPublisher;
 
     private InvoiceHandoffServiceImpl service;
 
@@ -104,8 +102,7 @@ class InvoiceHandoffServiceImplTest {
     @BeforeEach
     void setUp() {
         service = new InvoiceHandoffServiceImpl(expenseLineItemRepository, expenseReportRepository, invoiceSyncRepository, new InvoiceSyncMapper(),
-                approvalEventPublisher, approvalWorkflowService, financeVerificationReviewRepository, pmsClient, projectCacheRepository,
-                applicationEventPublisher);
+                approvalEventPublisher, approvalWorkflowService, financeVerificationReviewRepository, pmsClient, projectCacheRepository);
         ReflectionTestUtils.setField(service, "baseCurrencyCode", "INR");
 
         lineItemId = UUID.randomUUID();
@@ -447,41 +444,13 @@ class InvoiceHandoffServiceImplTest {
     }
 
     @Test
-    void markHandedOff_recordsTheHandoffAsPendingDelivery_andAsksForItToBeSentToAr() {
-        stubHandoffable(eligibleLineItem);
-        when(invoiceSyncRepository.existsByLineItem_LineItemIdAndSyncStatus(lineItemId, "HANDED_OFF")).thenReturn(false);
-        UUID syncId = UUID.randomUUID();
-        when(invoiceSyncRepository.save(any(InvoiceSync.class))).thenAnswer(inv -> {
-            InvoiceSync saved = inv.getArgument(0);
-            saved.setSyncId(syncId);
-            return saved;
-        });
-
-        var response = service.markHandedOff(lineItemId, new InvoiceHandoffRequest("INV-100", null, null));
-
-        assertThat(response.arDeliveryStatus()).isEqualTo("PENDING");
-        assertThat(response.arDeliveryAttempts()).isZero();
-        verify(applicationEventPublisher).publishEvent(new com.expense_management_service.event.InvoiceHandoffRecordedEvent(syncId));
-    }
-
-    @Test
-    void getSummary_countsHandoffsWhoseDeliveryToArFailed() {
-        when(expenseLineItemRepository.findEligibleForInvoiceHandoff(isNull(), isNull(), isNull(), isNull(), isNull(), isNull(), any()))
-                .thenReturn(new PageImpl<>(List.of()));
-        when(invoiceSyncRepository.countBySyncStatusAndArDeliveryStatus("HANDED_OFF",
-                com.expense_management_service.enums.ArDeliveryStatus.FAILED)).thenReturn(3L);
-
-        assertThat(service.getSummary().arDeliveryFailedCount()).isEqualTo(3);
-    }
-
-    @Test
-    void markHandedOff_ofAnIneligibleLine_neverAsksForASend() {
+    void markHandedOff_ofAnIneligibleLine_recordsNothing() {
         eligibleLineItem.setClientBillable(false);
         when(expenseLineItemRepository.findWithLockByLineItemId(lineItemId)).thenReturn(Optional.of(eligibleLineItem));
 
         assertThatThrownBy(() -> service.markHandedOff(lineItemId, new InvoiceHandoffRequest("INV-1", null, null)))
                 .isInstanceOf(BusinessRuleViolationException.class);
-        verify(applicationEventPublisher, never()).publishEvent(any(Object.class));
+        verify(invoiceSyncRepository, never()).save(any(InvoiceSync.class));
     }
 
     // ---------------------------------------------------------------------

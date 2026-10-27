@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Production-readiness audit (independent re-verification): a minimal, non-destructive smoke test
- * proving a {@code @DataJpaTest} slice (JPA layer only - no web/security/Kafka/RabbitMQ auto-
+ * proving a {@code @DataJpaTest} slice (JPA layer only - no web/security/Kafka auto-
  * configuration, so none of contextLoads' UMS_ISSUER_URI problem applies here) can actually reach
  * the real database this project's own application.properties already points at via
  * {@code ${DB_URL}}/{@code ${DB_USERNAME}}/{@code ${DB_PASSWORD}} (resolved from the project's own

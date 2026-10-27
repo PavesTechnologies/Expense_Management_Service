@@ -58,9 +58,6 @@ class InvoiceHandoffQueueControllerTest {
     private InvoiceHandoffService invoiceHandoffService;
 
     @MockitoBean
-    private com.expense_management_service.service.ArBillingDeliveryService arBillingDeliveryService;
-
-    @MockitoBean
     private JwtDecoder jwtDecoder;
 
     private static InvoiceHandoffEligibleExpenseResponse sampleEligible(UUID lineItemId) {
@@ -257,25 +254,5 @@ class InvoiceHandoffQueueControllerTest {
                         .contentType("application/json")
                         .content(objectMapper.writeValueAsString(new InvoiceHandoffRequest("INV-1", null, null))))
                 .andExpect(status().isUnauthorized());
-    }
-
-    @Test
-    void redeliverToAr_returns200_withTheAttemptsOutcome_forFinanceExecutive() throws Exception {
-        UUID syncId = UUID.randomUUID();
-        when(arBillingDeliveryService.redeliver(syncId)).thenReturn(new InvoiceSyncResponse(syncId, UUID.randomUUID(), "INV-1",
-                "HANDED_OFF", LocalDateTime.now(), 0, null, "SENT", 2, LocalDateTime.now(), null));
-
-        mockMvc.perform(post("/xms/finance/invoice-handoff-queue/handoffs/{syncId}/redeliver", syncId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE_EXECUTIVE))))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.arDeliveryStatus").value("SENT"))
-                .andExpect(jsonPath("$.data.arDeliveryAttempts").value(2));
-    }
-
-    @Test
-    void redeliverToAr_returns403_forArServiceAccount() throws Exception {
-        mockMvc.perform(post("/xms/finance/invoice-handoff-queue/handoffs/{syncId}/redeliver", UUID.randomUUID())
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AR_SERVICE))))
-                .andExpect(status().isForbidden());
     }
 }

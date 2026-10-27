@@ -9,7 +9,7 @@ Guidance for Claude Code when working in this repository.
 - Java 21, Spring Boot 4.x, Maven wrapper (`./mvnw`)
 - MySQL via Spring Data JPA, Lombok, MapStruct, springdoc-openapi
 - Auth: OAuth2 resource server — validates JWTs issued by **UMS**; XMS never issues tokens
-- Messaging: Kafka (employee CDC from EOS via Debezium), RabbitMQ (approval events), Spring events (OCR)
+- Messaging: Kafka (employee CDC from EOS via Debezium), Spring events (approval workflow, OCR). No RabbitMQ.
 - Storage: AWS S3 for receipts
 
 ## Commands
@@ -60,7 +60,7 @@ The frontend (`Intranet_Frontend`) calls XMS as `${EXPENSE_MANAGEMENT_URL}/xms/.
 | `security` | `CurrentUserService`, `JwtAuthConverter`, `RoleConstants`, `PermissionConstants` |
 | `integration/*` | Clients for UMS, PMS, RMS, Employee Onboarding |
 | `consumer`, `event`, `scheduler` | Kafka CDC consumer, Spring events, scheduled jobs |
-| `config` | Security, CORS, Kafka, RabbitMQ, S3, OpenAPI, WebSocket |
+| `config` | Security, CORS, Kafka, S3, OpenAPI, WebSocket |
 
 ## Conventions
 

@@ -34,7 +34,6 @@ import com.expense_management_service.repository.PolicyRepository;
 import com.expense_management_service.scheduler.ExchangeRateRefreshScheduler;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -70,7 +69,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
  * <p>
  * The datasource is set explicitly to H2 here, so the {@code .env} file (loaded by spring-dotenv) can never point
  * these tests at the shared dev MySQL. Every system outside XMS is replaced with a mock: UMS, PMS, RMS, the
- * departments API, S3/Textract, RabbitMQ, and the Kafka CDC consumer (not started). The JWT decoder is mocked;
+ * departments API, S3/Textract, and the Kafka CDC consumer (not started). The JWT decoder is mocked;
  * callers are authenticated per request with {@code jwt()} carrying the claims {@code CurrentUserService} reads.
  * <p>
  * Tests are deliberately not {@code @Transactional}: each HTTP call commits like it does in production (and the
@@ -89,7 +88,6 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
         "spring.flyway.enabled=false",
         "spring.kafka.listener.auto-startup=false",
         "spring.kafka.bootstrap-servers=localhost:1",
-        "spring.rabbitmq.listener.simple.auto-startup=false",
         "spring.security.oauth2.resourceserver.jwt.issuer-uri=https://test-issuer.invalid",
         "ums.base-url=http://ums.invalid",
         "ums.jwks-uri=http://ums.invalid/jwks",
@@ -150,7 +148,6 @@ abstract class E2eTestBase {
     @MockitoBean protected S3Client s3Client;
     @MockitoBean protected S3Presigner s3Presigner;
     @MockitoBean protected TextractClient textractClient;
-    @MockitoBean protected RabbitTemplate rabbitTemplate;
     @MockitoBean protected ExchangeRateRefreshScheduler exchangeRateRefreshScheduler;
 
     /** Active users UMS reports; report creation requires the caller to be one. */

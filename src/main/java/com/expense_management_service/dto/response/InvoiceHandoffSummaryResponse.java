@@ -10,13 +10,6 @@ public record InvoiceHandoffSummaryResponse(
         long handedOffCount,
         String baseCurrencyCode,
         /** Distinct clients among the ready line items — the unit AR invoices by. */
-        long readyClientCount,
-        /** Handoffs whose last delivery to AR failed - retried automatically, or resent by Finance. */
-        long arDeliveryFailedCount
+        long readyClientCount
 ) {
-    /** Shape before delivery to AR was tracked. */
-    public InvoiceHandoffSummaryResponse(long readyCount, BigDecimal readyBaseAmount, long readyProjectCount,
-                                         long handedOffCount, String baseCurrencyCode, long readyClientCount) {
-        this(readyCount, readyBaseAmount, readyProjectCount, handedOffCount, baseCurrencyCode, readyClientCount, 0);
-    }
 }

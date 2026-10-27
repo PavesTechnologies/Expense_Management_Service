@@ -14,11 +14,9 @@ import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
 
 /**
- * Pushes {@link ApprovalDomainEvent}s to the browser over WebSocket (§14) - a sibling to
- * {@link RabbitApprovalEventListener}, not a replacement: same AFTER_COMMIT, fire-and-forget shape,
- * because nobody being connected (or the push itself failing) must never affect the engine's own
- * transaction, which has already committed by the time this runs. The RabbitMQ path stays the
- * durable/audit delivery mechanism; this is a second, independent consumer of the same event.
+ * Pushes {@link ApprovalDomainEvent}s to the browser over WebSocket (§14). AFTER_COMMIT and
+ * fire-and-forget, because nobody being connected (or the push itself failing) must never affect the
+ * engine's own transaction, which has already committed by the time this runs.
  * <p>
  * Notifies the report owner (drives the status pill / correction-visibility refresh) and every
  * currently-ACTIVE assignment's resolved approverId (drives the queue refresh) - not their

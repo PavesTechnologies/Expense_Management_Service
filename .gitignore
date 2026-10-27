@@ -37,3 +37,6 @@ build/
 app-run*.log
 app-run.pid
 
+
+# Dev DB reset backups (contain real data)
+scripts/dev-db-reset/backups/

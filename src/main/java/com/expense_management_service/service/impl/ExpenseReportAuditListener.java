@@ -23,7 +23,7 @@ import java.util.regex.Pattern;
  * <p>
  * Runs BEFORE_COMMIT, inside the transaction that made the change: the audit row commits or rolls
  * back together with it, so a transition can never happen without its audit entry (the
- * notification and RabbitMQ listeners run AFTER_COMMIT, where a failure loses nothing that matters).
+ * notification and WebSocket listeners run AFTER_COMMIT, where a failure loses nothing that matters).
  * The actor is the signed-in user when there is one, which is the delegate rather than the
  * original approver when a delegate acts; scheduler-driven events fall back to the event's
  * {@code by=} and otherwise count as SYSTEM.

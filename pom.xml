@@ -134,15 +134,6 @@
         </dependency>
 
         <!-- ========================= -->
-        <!-- RabbitMQ -->
-        <!-- ========================= -->
-
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-amqp</artifactId>
-        </dependency>
-
-        <!-- ========================= -->
         <!-- Kafka (Employee CDC pipeline - EP06 Phase 0) -->
         <!-- ========================= -->
 

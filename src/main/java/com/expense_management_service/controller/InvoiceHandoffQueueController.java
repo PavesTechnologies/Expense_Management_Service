@@ -7,7 +7,6 @@ import com.expense_management_service.dto.response.InvoiceHandoffRecordResponse;
 import com.expense_management_service.dto.response.InvoiceHandoffSummaryResponse;
 import com.expense_management_service.dto.response.InvoiceSyncResponse;
 import com.expense_management_service.dto.response.PageResponse;
-import com.expense_management_service.service.ArBillingDeliveryService;
 import com.expense_management_service.service.InvoiceHandoffService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -36,7 +35,6 @@ import java.util.UUID;
 public class InvoiceHandoffQueueController {
 
     private final InvoiceHandoffService invoiceHandoffService;
-    private final ArBillingDeliveryService arBillingDeliveryService;
 
     /**
      * Also callable by the AR service account, which filters by {@code clientId} (RMS's client
@@ -63,16 +61,6 @@ public class InvoiceHandoffQueueController {
     public ApiResponse<InvoiceSyncResponse> markHandedOff(@PathVariable UUID lineItemId,
                                                            @Valid @RequestBody InvoiceHandoffRequest request) {
         return ApiResponse.success("Expense handed off to invoicing", invoiceHandoffService.markHandedOff(lineItemId, request));
-    }
-
-    /**
-     * Resends a handoff that hasn't reached AR's queue - FAILED after its retries, still PENDING, or recorded
-     * before delivery to AR existed. 422 once it has reached AR; to bill it again, hand the line off again.
-     * The response carries the attempt's outcome: SENT, or FAILED with the error.
-     */
-    @PostMapping("/handoffs/{syncId}/redeliver")
-    public ApiResponse<InvoiceSyncResponse> redeliverToAr(@PathVariable UUID syncId) {
-        return ApiResponse.success("Handoff resent to AR", arBillingDeliveryService.redeliver(syncId));
     }
 
     @GetMapping("/summary")
@@ -131,7 +119,7 @@ public class InvoiceHandoffQueueController {
         return ApiResponse.success(invoiceHandoffService.getHandedOffByPmsProject(pmsProjectId, page, Math.min(size, 100)));
     }
 
-    /** AR's authoritative billing payload (v2), the same one AR's queue message carries. Also callable by the AR service account. */
+    /** AR's authoritative billing payload (v2). Also callable by the AR service account. */
     @GetMapping("/{lineItemId}/billing-payload")
     @PreAuthorize("hasAnyRole('FINANCE_EXECUTIVE','AR_SERVICE')")
     public ApiResponse<com.expense_management_service.dto.response.BillingPayloadResponse> getBillingPayload(@PathVariable UUID lineItemId) {

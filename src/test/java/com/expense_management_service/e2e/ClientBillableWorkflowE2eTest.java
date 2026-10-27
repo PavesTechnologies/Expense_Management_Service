@@ -1,7 +1,5 @@
 package com.expense_management_service.e2e;
 
-import com.expense_management_service.config.ArBillingMessagingConfig;
-import com.expense_management_service.dto.external.ArBillingMessage;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.ExpenseCategory;
 import com.expense_management_service.entity.ProjectCache;
@@ -20,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Scenario: a client-billable expense - approved, verified by Finance, listed for invoicing, handed off with the
- * PMS project and delivered to AR's queue, and reimbursed by AP independently of the handoff.
+ * PMS project for AR to read, and reimbursed by AP independently of the handoff.
  * <p>
  * The rest of the requested path (customer payment received, then reconciled) isn't built yet - the statuses
  * and the AR-to-XMS update are pending items 13 and 14 - so the scenario stops at the handoff.
@@ -33,23 +31,6 @@ class ClientBillableWorkflowE2eTest extends E2eTestBase {
 
     private final UUID clientId = UUID.randomUUID();
     private final long pmsProjectId = ThreadLocalRandom.current().nextLong(100_000, 1_000_000_000);
-
-    /** The broker: the scoped send inside {@code rabbitTemplate.invoke} runs against the mock, which confirms everything. */
-    @org.junit.jupiter.api.BeforeEach
-    void brokerAcceptsMessages() {
-        org.mockito.Mockito.when(rabbitTemplate.invoke(org.mockito.ArgumentMatchers.any())).thenAnswer(inv ->
-                inv.<org.springframework.amqp.rabbit.core.RabbitOperations.OperationsCallback<Object>>getArgument(0)
-                        .doInRabbit(rabbitTemplate));
-    }
-
-    /** The messages AR's queue received. */
-    private List<ArBillingMessage> messagesToAr() {
-        org.mockito.ArgumentCaptor<Object> sent = org.mockito.ArgumentCaptor.forClass(Object.class);
-        org.mockito.Mockito.verify(rabbitTemplate, org.mockito.Mockito.atLeast(0)).convertAndSend(
-                org.mockito.ArgumentMatchers.eq(ArBillingMessagingConfig.EXCHANGE_NAME),
-                org.mockito.ArgumentMatchers.eq(ArBillingMessagingConfig.ROUTING_KEY), sent.capture());
-        return sent.getAllValues().stream().map(ArBillingMessage.class::cast).toList();
-    }
 
     private String handedOff() throws Exception {
         return getJson("/xms/finance/invoice-handoff-queue/handed-off?pmsProjectId=" + pmsProjectId, FINANCE);
@@ -114,17 +95,13 @@ class ClientBillableWorkflowE2eTest extends E2eTestBase {
         assertThat((String) read(handoff, "$.data.syncStatus")).isEqualTo("HANDED_OFF");
         String handoffId = read(handoff, "$.data.syncId");
 
-        // Once the handoff commits, AR's queue gets the billing payload, and the broker's confirm marks it sent.
-        assertThat(messagesToAr()).singleElement().satisfies(message -> {
-            assertThat(message.handoffId()).isEqualTo(UUID.fromString(handoffId));
-            assertThat(message.reprocess()).isFalse();
-            assertThat(message.billing().lineItemId()).isEqualTo(UUID.fromString(lineItemId));
-            assertThat(message.billing().pmsProjectId()).isEqualTo(pmsProjectId);
-            assertThat(message.billing().clientId()).isEqualTo(clientId);
-            assertThat(message.billing().costBasis()).isEqualByComparingTo("2500.00");
-            assertThat(message.billing().invoiceReference()).isEqualTo("INV-2026-001");
-        });
-        assertThat((String) read(handedOff(), "$.data.content[0].arDeliveryStatus")).isEqualTo("SENT");
+        // The handoff is recorded, and AR can read it back with what it needs to bill.
+        String recorded = getJson("/xms/finance/invoice-handoff-queue/handed-off?pmsProjectId=" + pmsProjectId, AR);
+        assertThat((String) read(recorded, "$.data.content[0].syncId")).isEqualTo(handoffId);
+        assertThat((String) read(recorded, "$.data.content[0].lineItemId")).isEqualTo(lineItemId);
+        assertThat((String) read(recorded, "$.data.content[0].resolvedClientId")).isEqualTo(clientId.toString());
+        assertThat(new java.math.BigDecimal(read(recorded, "$.data.content[0].costBasis").toString())).isEqualByComparingTo("2500.00");
+        assertThat((String) read(recorded, "$.data.content[0].invoiceReference")).isEqualTo("INV-2026-001");
 
         assertThat((String) read(report(reportId, employee), "$.data.invoiceHandoffStatus")).isEqualTo("COMPLETED");
         String handedOffPayload = getJson("/xms/finance/invoice-handoff-queue/" + lineItemId + "/billing-payload", AR);
@@ -137,56 +114,15 @@ class ClientBillableWorkflowE2eTest extends E2eTestBase {
         postJson("/xms/finance/invoice-handoff-queue/" + lineItemId + "/handoff", FINANCE, "{\"invoiceReference\":\"INV-DUP\"}", 409);
         postJson("/xms/finance/invoice-handoff-queue/" + lineItemId + "/handoff", FINANCE,
                 "{\"invoiceReference\":\"INV-2026-001R\",\"allowReprocess\":true,\"reason\":\"Invoice voided and reissued\"}", 200);
-        // AR is told it's a re-handoff, and why, under a new handoff id.
-        assertThat(messagesToAr()).hasSize(2).last().satisfies(message -> {
-            assertThat(message.reprocess()).isTrue();
-            assertThat(message.reprocessReason()).isEqualTo("Invoice voided and reissued");
-            assertThat(message.handoffId()).isNotEqualTo(UUID.fromString(handoffId));
-        });
+        // The re-handoff is a new record that carries the reason.
+        assertThat((List<String>) read(handedOff(), "$.data.content[*].remarks"))
+                .contains("Reprocessed: Invoice voided and reissued");
 
         // Reimbursing the employee is a separate track: AP pays, and the invoicing state is untouched.
         apCompletesPayment(reportId, "2500.00", "UTR-BILLABLE");
         String paid = report(reportId, employee);
         assertThat((String) read(paid, "$.data.paymentRoutingStatus")).isEqualTo("PAYMENT_COMPLETED");
         assertThat((String) read(paid, "$.data.invoiceHandoffStatus")).isEqualTo("COMPLETED");
-    }
-
-    @Test
-    void whenTheBrokerIsDown_theHandoffStillStands_isMarkedFailed_andFinanceResendsItOnceItIsBack() throws Exception {
-        CostCenter costCenter = costCenter(null, null);
-        ExpenseCategory category = category();
-        Persona employee = employee(costCenter);
-        ProjectCache project = project();
-        String reportId = createReport(employee, costCenter, null);
-        String lineItemId = addLine(employee, reportId, category, "1200.00",
-                "\"clientBillable\":true,\"projectId\":\"" + project.getProjectId() + "\"");
-        submitReport(employee, reportId);
-        approveAndVerify(reportId, lineItemId);
-
-        org.mockito.Mockito.doThrow(new org.springframework.amqp.AmqpConnectException(new java.net.ConnectException("Connection refused")))
-                .when(rabbitTemplate).waitForConfirmsOrDie(org.mockito.ArgumentMatchers.anyLong());
-        String handoff = postJson("/xms/finance/invoice-handoff-queue/" + lineItemId + "/handoff", FINANCE,
-                "{\"invoiceReference\":\"INV-DOWN\"}", 200);
-        String handoffId = read(handoff, "$.data.syncId");
-
-        // The handoff itself succeeded; only its delivery failed, with the reason recorded.
-        assertThat((String) read(report(reportId, employee), "$.data.invoiceHandoffStatus")).isEqualTo("COMPLETED");
-        String failed = handedOff();
-        assertThat((String) read(failed, "$.data.content[0].arDeliveryStatus")).isEqualTo("FAILED");
-        assertThat((String) read(failed, "$.data.content[0].arDeliveryError")).contains("Connection refused");
-        assertThat((Integer) read(failed, "$.data.content[0].arDeliveryAttempts")).isEqualTo(1);
-        assertThat(((Number) read(getJson("/xms/finance/invoice-handoff-queue/summary", FINANCE), "$.data.arDeliveryFailedCount"))
-                .longValue()).isPositive();
-
-        // The broker is back: Finance resends, and it lands.
-        org.mockito.Mockito.doNothing().when(rabbitTemplate).waitForConfirmsOrDie(org.mockito.ArgumentMatchers.anyLong());
-        String resent = postJson("/xms/finance/invoice-handoff-queue/handoffs/" + handoffId + "/redeliver", FINANCE, "{}", 200);
-        assertThat((String) read(resent, "$.data.arDeliveryStatus")).isEqualTo("SENT");
-        assertThat((Integer) read(resent, "$.data.arDeliveryAttempts")).isEqualTo(2);
-        assertThat((Object) read(resent, "$.data.arDeliveryError")).isNull();
-
-        // Delivered once is enough: resending a delivered handoff is refused.
-        postJson("/xms/finance/invoice-handoff-queue/handoffs/" + handoffId + "/redeliver", FINANCE, "{}", 422);
     }
 
     @Test

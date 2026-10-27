@@ -11,8 +11,7 @@ import java.util.UUID;
 
 /**
  * The orchestrator-facing side of event emission: raises a plain in-process Spring event, inside
- * the same transaction as the state change that caused it. See {@link RabbitApprovalEventListener}
- * for the after-commit hop onto the real RabbitMQ transport.
+ * the same transaction as the state change that caused it. Listeners pick it up from there.
  */
 @Component
 @RequiredArgsConstructor

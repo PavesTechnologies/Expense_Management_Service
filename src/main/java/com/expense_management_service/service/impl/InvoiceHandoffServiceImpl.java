@@ -13,9 +13,7 @@ import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.InvoiceSync;
 import com.expense_management_service.entity.ProjectCache;
-import com.expense_management_service.enums.ArDeliveryStatus;
 import com.expense_management_service.enums.FinanceVerificationStatus;
-import com.expense_management_service.event.InvoiceHandoffRecordedEvent;
 import com.expense_management_service.enums.InvoiceHandoffStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.integration.pms.PmsClient;
@@ -30,7 +28,6 @@ import com.expense_management_service.service.ApprovalWorkflowService;
 import com.expense_management_service.service.InvoiceHandoffService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -65,7 +62,6 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
     private final FinanceVerificationReviewRepository financeVerificationReviewRepository;
     private final PmsClient pmsClient;
     private final ProjectCacheRepository projectCacheRepository;
-    private final ApplicationEventPublisher applicationEventPublisher;
 
     /** Same organization base-currency property {@code ExpenseLineItemServiceImpl} uses — {@code baseAmount} is always denominated in it. */
     @Value("${exchange.rate.base-currency}")
@@ -130,17 +126,14 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 .syncDate(LocalDateTime.now())
                 .retryCount(0)
                 .remarks(alreadyHandedOff ? REPROCESS_REMARK_PREFIX + request.reason() : null)
-                .arDeliveryStatus(ArDeliveryStatus.PENDING)
-                .arDeliveryAttempts(0)
                 .build();
 
+        // Recorded only - nothing is pushed to AR yet; AR reads handoffs from /handed-off until the AR integration is built.
         InvoiceSync saved = invoiceSyncRepository.save(sync);
         InvoiceSyncResponse response = invoiceSyncMapper.toResponse(saved);
         completeReportHandoffIfAllLinesHandedOff(lineItem.getReport());
         approvalEventPublisher.publish("EXPENSE_BILLABLE_HANDED_OFF", lineItem.getReport().getReportId(),
                 "lineItemId=" + lineItemId + " payloadVersion=" + BillingPayloadFactory.PAYLOAD_VERSION);
-        // Sent to AR once this transaction commits (ArBillingDeliveryListener) - never for a handoff that rolled back.
-        applicationEventPublisher.publishEvent(new InvoiceHandoffRecordedEvent(saved.getSyncId()));
         return response;
     }
 
@@ -302,8 +295,7 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 .distinct()
                 .count();
         return new InvoiceHandoffSummaryResponse(ready.size(), readyAmount, readyProjects,
-                invoiceSyncRepository.countBySyncStatus(STATUS_HANDED_OFF), baseCurrencyCode, readyClients,
-                invoiceSyncRepository.countBySyncStatusAndArDeliveryStatus(STATUS_HANDED_OFF, ArDeliveryStatus.FAILED));
+                invoiceSyncRepository.countBySyncStatus(STATUS_HANDED_OFF), baseCurrencyCode, readyClients);
     }
 
     private InvoiceHandoffRecordResponse toRecordResponse(InvoiceSync sync) {
@@ -331,11 +323,7 @@ public class InvoiceHandoffServiceImpl implements InvoiceHandoffService {
                 l.getResolvedClientName(),
                 sync.getInvoiceReference(),
                 sync.getSyncDate(),
-                sync.getRemarks(),
-                sync.getArDeliveryStatus() != null ? sync.getArDeliveryStatus().name() : null,
-                sync.getArDeliveryAttempts(),
-                sync.getArDeliveredAt(),
-                sync.getArDeliveryError()
+                sync.getRemarks()
         );
     }
 

@@ -35,7 +35,7 @@ import static com.expense_management_service.service.NotificationService.ROLE_FI
 
 /**
  * Turns workflow events ({@link ApprovalDomainEvent}) into notifications for whoever owns the next
- * step - the third consumer of the same events, alongside the RabbitMQ and WebSocket listeners.
+ * step - alongside the WebSocket and audit listeners.
  * <p>
  * Runs after the workflow's transaction commits, in its own transaction, and swallows every
  * failure: a notification problem must never undo or block an approval, verification or payment.

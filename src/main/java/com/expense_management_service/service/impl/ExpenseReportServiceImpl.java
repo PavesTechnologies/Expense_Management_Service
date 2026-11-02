@@ -36,6 +36,11 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.expense_management_service.dto.response.ExpenseDateRangeResponse;
+import com.expense_management_service.entity.ExpenseLineItem;
+import java.util.Objects;
+import java.time.Clock;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 @RequiredArgsConstructor
@@ -63,6 +68,14 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     @Value("${expense-report.business-purpose.min-length:10}")
     private int businessPurposeMinLength;
 
+    /** The business clock: real time in the business zone, or the development override. Tests replace it. */
+    @Autowired
+    private Clock clock = Clock.systemDefaultZone();
+
+    /** Length of a cash advance's spending window. Same setting the line-item service reads. */
+    @Value("${expense.submission.deadline-days:30}")
+    private int submissionDeadlineDays = SubmissionDeadlinePolicy.DEFAULT_DEADLINE_DAYS;
+
     @Override
     public ExpenseReportResponse create(ExpenseReportRequest request) {
         CurrentUser caller = currentUserService.getCurrentUser();
@@ -80,8 +93,6 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
                 request.cashAdvanceId() != null
                         ? findLinkableAdvance(request.cashAdvanceId(), caller.employeeId())
                         : null;
-
-        assertTripWithinAdvanceWindow(request, linkedAdvance);
 
         ExpenseReport entity = expenseReportMapper.toEntity(request);
         entity.setEmployeeId(caller.employeeId());
@@ -130,9 +141,14 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         assertTripRange(request);
         assertTitleNotDuplicate(entity.getEmployeeId(), entity.getFiscalYear(), request.title(), reportId);
 
+        boolean tripDatesChanged = !Objects.equals(entity.getTripStartDate(), request.tripStartDate())
+                || !Objects.equals(entity.getTripEndDate(), request.tripEndDate());
         expenseReportMapper.updateEntity(entity, request);
         entity.setCostCenter(findActiveCostCenter(request.costCenterId()));
         entity.setCurrency(findActiveCurrency(request.currencyId()));
+        if (tripDatesChanged) {
+            assertLineItemsWithinRange(entity);
+        }
 
         ExpenseReport saved = expenseReportRepository.save(entity);
         log.info("Updated expense report {}", reportId);
@@ -227,41 +243,42 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         }
     }
 
-    /** Months after the cash advance request during which its trip may fall. */
-    static final int ADVANCE_TRIP_WINDOW_MONTHS = 1;
-
-    /**
-     * A report linked to a cash advance must have its trip inside one month of the day the advance was requested.
-     * Without a link there is no advance date to check against.
-     */
-    static void assertTripWithinAdvanceWindow(ExpenseReportRequest request,
-                                              com.expense_management_service.entity.CashAdvance advance) {
-        if (advance == null || advance.getCreatedAt() == null) {
-            return;
-        }
-        LocalDate requested = advance.getCreatedAt().toLocalDate();
-        LocalDate windowEnd = requested.plusMonths(ADVANCE_TRIP_WINDOW_MONTHS);
-        for (LocalDate tripDate : java.util.Arrays.asList(request.tripStartDate(), request.tripEndDate())) {
-            if (tripDate != null && (tripDate.isBefore(requested) || tripDate.isAfter(windowEnd))) {
-                throw new BusinessRuleViolationException("The trip dates must fall within one month of the cash advance request ("
-                        + requested + " to " + windowEnd + ").");
-            }
-        }
-    }
-
     private void assertTripRange(ExpenseReportRequest request) {
         if (!SubmissionDeadlinePolicy.isValidTripRange(request.tripStartDate(), request.tripEndDate())) {
             throw new BusinessRuleViolationException("The trip end date cannot be before the start date.");
         }
-        assertReportingPeriod(request.reportingPeriodStart(), request.reportingPeriodEnd());
+        assertReportingPeriod(request.reportingPeriodStart(), request.reportingPeriodEnd(), businessToday());
+    }
+
+    /**
+     * Lines already on the report must still fit the permitted dates once the trip dates change. Otherwise the
+     * report would hold lines the employee can no longer date.
+     */
+    private void assertLineItemsWithinRange(ExpenseReport report) {
+        if (report.getExpenseLineItems() == null) {
+            return;
+        }
+        ExpenseDateRangeResponse range = ExpenseDatePolicy.range(report, businessToday(), submissionDeadlineDays);
+        for (ExpenseLineItem line : report.getExpenseLineItems()) {
+            try {
+                ExpenseDatePolicy.assertAllowed(range, line.getExpenseDate());
+            } catch (IllegalArgumentException ex) {
+                throw new BusinessRuleViolationException(
+                        "These trip dates would leave an expense line outside the permitted dates. " + ex.getMessage());
+            }
+        }
+    }
+
+    private LocalDate businessToday() {
+        return LocalDate.now(clock);
     }
 
     /** Shared by create, update and submit so the same rule applies on every path. */
-    static void assertReportingPeriod(LocalDate reportingPeriodStart, LocalDate reportingPeriodEnd) {
-        if (reportingPeriodEnd != null && reportingPeriodEnd.isAfter(LocalDate.now())) {
+    static void assertReportingPeriod(LocalDate reportingPeriodStart, LocalDate reportingPeriodEnd, LocalDate today) {
+        if (reportingPeriodEnd != null && reportingPeriodEnd.isAfter(today)) {
             throw new BusinessRuleViolationException("The reporting period cannot end in the future.");
         }
-        if (!SubmissionDeadlinePolicy.isValidReportingPeriod(reportingPeriodStart, reportingPeriodEnd, LocalDate.now())) {
+        if (!SubmissionDeadlinePolicy.isValidReportingPeriod(reportingPeriodStart, reportingPeriodEnd, today)) {
             throw new BusinessRuleViolationException("The reporting period end date cannot be before its start date.");
         }
     }

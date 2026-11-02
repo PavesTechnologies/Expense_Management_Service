@@ -10,7 +10,17 @@ import java.time.LocalDate;
 @Component
 public class CashAdvanceMapper {
 
+    /** The expected trip dates are optional, but when both are given the end cannot be before the start. */
+    static void assertExpectedTripDates(CashAdvanceRequest request) {
+        LocalDate start = request.expectedTripStartDate();
+        LocalDate end = request.expectedTripEndDate();
+        if (start != null && end != null && end.isBefore(start)) {
+            throw new IllegalArgumentException("Expected trip end date cannot be before the expected trip start date.");
+        }
+    }
+
     public CashAdvance toEntity(CashAdvanceRequest request) {
+        assertExpectedTripDates(request);
         String purpose = request.purpose();
         if ((purpose == null || purpose.isBlank()) && request.title() != null && !request.title().isBlank()) {
             purpose = request.title();
@@ -31,10 +41,13 @@ public class CashAdvanceMapper {
                 .notes(request.notes())
                 .neededByDate(request.neededByDate())
                 .settlementDueDate(dueDate)
+                .expectedTripStartDate(request.expectedTripStartDate())
+                .expectedTripEndDate(request.expectedTripEndDate())
                 .build();
     }
 
     public void updateEntity(CashAdvance entity, CashAdvanceRequest request) {
+        assertExpectedTripDates(request);
         entity.setAmount(request.amount());
         entity.setBaseAmount(request.baseAmount());
 
@@ -59,6 +72,12 @@ public class CashAdvanceMapper {
         }
         if (request.neededByDate() != null) {
             entity.setNeededByDate(request.neededByDate());
+        }
+        if (request.expectedTripStartDate() != null) {
+            entity.setExpectedTripStartDate(request.expectedTripStartDate());
+        }
+        if (request.expectedTripEndDate() != null) {
+            entity.setExpectedTripEndDate(request.expectedTripEndDate());
         }
 
         LocalDate dueDate = request.settlementDueDate() != null ? request.settlementDueDate() : request.neededByDate();
@@ -91,7 +110,11 @@ public class CashAdvanceMapper {
                 entity.getCreatedAt(),
                 entity.getUpdatedAt(),
                 entity.getTitle(),
-                entity.getNotes()
+                entity.getNotes(),
+                entity.getCarriedInAmount(),
+                entity.getCarriedOutAmount(),
+                entity.getExpectedTripStartDate(),
+                entity.getExpectedTripEndDate()
         );
     }
 }

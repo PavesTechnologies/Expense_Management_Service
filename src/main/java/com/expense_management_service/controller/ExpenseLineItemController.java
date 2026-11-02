@@ -4,6 +4,7 @@ import java.util.List;
 
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
+import com.expense_management_service.dto.response.ExpenseDateRangeResponse;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
 import com.expense_management_service.service.ExpenseLineItemService;
 import jakarta.validation.Valid;
@@ -48,6 +49,12 @@ public class ExpenseLineItemController {
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','MANAGER','FINANCE_EXECUTIVE')")
     public ApiResponse<ExpenseLineItemResponse> getById(@PathVariable UUID reportId, @PathVariable UUID lineItemId) {
         return ApiResponse.success(expenseLineItemService.getById(reportId, lineItemId));
+    }
+
+    @GetMapping("/expense-date-range")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
+    public ApiResponse<ExpenseDateRangeResponse> expenseDateRange(@PathVariable UUID reportId) {
+        return ApiResponse.success(expenseLineItemService.expenseDateRange(reportId));
     }
 
     @GetMapping

@@ -140,7 +140,6 @@ public final class CashAdvanceReconciliationCalculator {
             }
 
             BigDecimal expected = advance.getAmount()
-                    .add(carriedIn)
                     .subtract(carriedOut)
                     .subtract(repaid)
                     .subtract(adjusted);

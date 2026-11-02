@@ -1,7 +1,6 @@
 package com.expense_management_service.dto.request;
 
 import jakarta.validation.constraints.DecimalMin;
-import jakarta.validation.constraints.PastOrPresent;
 import jakarta.validation.constraints.PositiveOrZero;
 import jakarta.validation.constraints.Size;
 
@@ -22,7 +21,9 @@ import java.util.UUID;
 public record ReceiptConfirmRequest(
         UUID lineItemId,
         UUID categoryId,
-        @PastOrPresent LocalDate expenseDate,
+        // No @PastOrPresent here: the expense date is checked by ExpenseDatePolicy when the line is created,
+        // the same check a manually entered line gets, so both paths give the same answer and message.
+        LocalDate expenseDate,
         String merchantName,
         String description,
         @DecimalMin(value = "0.01") BigDecimal amount,

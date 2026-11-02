@@ -28,6 +28,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import com.expense_management_service.dto.response.CarryForwardReadyResponse;
 
 /**
  * Carry-forward: an unspent balance on a source advance is allocated to a destination advance.
@@ -49,6 +50,10 @@ import java.util.UUID;
 public class CashAdvanceCarryForwardService {
 
     static final int MIN_REASON_LENGTH = 10;
+
+    /** The actor and reason recorded when a ready carry-forward is applied automatically. */
+    static final String AUTO_ACTOR = "SYSTEM";
+    static final String AUTO_REASON = "Applied automatically when the receiving advance was approved";
 
     /** Source statuses that can give up balance. OVERDUE is excluded so a carry-forward cannot clear it. */
     static final Set<String> SOURCE_ALLOWED_STATUSES = Set.of(
@@ -160,17 +165,7 @@ public class CashAdvanceCarryForwardService {
                     + outstanding + ".");
         }
 
-        int decimals = source.getCurrency() != null ? source.getCurrency().getDecimalPlaces() : 2;
-        BigDecimal newSourceBalance = CashAdvanceBalanceRules.requireNonNegative(outstanding.subtract(allocation.getAmount()), decimals);
-        balanceLedger.applyBalance(source, newSourceBalance, "CASH_ADVANCE_CARRIED_FORWARD_OUT", approver, reason);
-        cashAdvanceRepository.save(source);
-
-        BigDecimal oldCarried = CashAdvanceBalanceRules.carriedIn(destination);
-        BigDecimal newCarried = oldCarried.add(allocation.getAmount());
-        destination.setCarriedInAmount(newCarried);
-        cashAdvanceRepository.save(destination);
-        balanceLedger.recordChange("CashAdvance", destination.getAdvanceId(), "CASH_ADVANCE_CARRIED_FORWARD_IN",
-                "CarriedIn: " + oldCarried, "CarriedIn: " + newCarried, approver, reason);
+        applyBalances(source, destination, allocation.getAmount(), approver, reason);
 
         LocalDateTime now = LocalDateTime.now();
         allocation.setStatus(CashAdvanceCarryForward.APPLIED);
@@ -181,6 +176,122 @@ public class CashAdvanceCarryForwardService {
         balanceLedger.recordChange("CashAdvanceCarryForward", saved.getCarryForwardId(), "CARRY_FORWARD_APPLIED",
                 "Status: PROPOSED", "Status: APPLIED, Amount: " + saved.getAmount(), approver, reason);
         return toResponse(saved);
+    }
+
+    // ---------------------------------------------------------------- ready (applied when the next advance is approved)
+
+    /**
+     * Marks the unused balance of a source advance as ready to carry forward. It is applied automatically to the
+     * employee's next INR advance when that advance is approved. Replaces any amount already ready on this source.
+     */
+    @Transactional
+    public CarryForwardReadyResponse markReady(UUID sourceAdvanceId, BigDecimal amount, String reason) {
+        requireEnabled();
+        String actor = currentUserService.getEmployeeId();
+        String why = requireReason(reason);
+        BigDecimal requested = requirePositive(amount);
+        CashAdvance source = lockAdvance(sourceAdvanceId);
+        if (!isFinanceCaller() && !sameEmployee(actor, source.getEmployeeId())) {
+            throw new BusinessRuleViolationException("Only the employee who owns the advance or Finance can mark a carry-forward ready.");
+        }
+        assertSourceCanGiveBalance(source);
+        BigDecimal available = outstanding(source).subtract(allocatedFrom(source.getAdvanceId()));
+        if (requested.compareTo(available) > 0) {
+            throw new BusinessRuleViolationException("Carry-forward of " + requested + " exceeds the unallocated balance of "
+                    + available + " on this advance.");
+        }
+        source.setCarryForwardReadyAmount(requested);
+        cashAdvanceRepository.save(source);
+        balanceLedger.recordChange("CashAdvance", source.getAdvanceId(), "CARRY_FORWARD_READY", null,
+                "Ready: " + requested, actor, why);
+        return readyResponse(source);
+    }
+
+    /** The carry-forward ready on this advance, or a response with a null amount when none is ready. */
+    @Transactional(readOnly = true)
+    public CarryForwardReadyResponse readyFor(UUID advanceId) {
+        return readyResponse(findAdvance(advanceId));
+    }
+
+    /** Withdraws a ready carry-forward before it has been applied. */
+    @Transactional
+    public CarryForwardReadyResponse cancelReady(UUID sourceAdvanceId, String reason) {
+        requireEnabled();
+        String actor = currentUserService.getEmployeeId();
+        String why = requireReason(reason);
+        CashAdvance source = lockAdvance(sourceAdvanceId);
+        if (!isFinanceCaller() && !sameEmployee(actor, source.getEmployeeId())) {
+            throw new BusinessRuleViolationException("Only the employee who owns the advance or Finance can cancel a ready carry-forward.");
+        }
+        BigDecimal previous = source.getCarryForwardReadyAmount();
+        if (previous != null) {
+            source.setCarryForwardReadyAmount(null);
+            cashAdvanceRepository.save(source);
+            balanceLedger.recordChange("CashAdvance", source.getAdvanceId(), "CARRY_FORWARD_READY_CANCELLED",
+                    "Ready: " + previous, null, actor, why);
+        }
+        return readyResponse(source);
+    }
+
+    /**
+     * Applies the carry-forwards that are ready for this employee and currency to a destination advance that has just
+     * been approved, oldest ready source first. Each amount is capped at the source's outstanding balance and at what the
+     * destination can still carry (its carried-in balance never exceeds its amount). Anything not applied stays ready on
+     * its source. Does nothing while the feature is disabled.
+     */
+    public void applyReadyForDestination(CashAdvance destination) {
+        if (!enabled || destination.getEmployeeId() == null) {
+            return;
+        }
+        String currency = currencyCode(destination);
+        for (CashAdvance source : cashAdvanceRepository
+                .findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(destination.getEmployeeId())) {
+            if (source.getAdvanceId().equals(destination.getAdvanceId()) || !currency.equals(currencyCode(source))) {
+                continue;
+            }
+            BigDecimal readyAmount = source.getCarryForwardReadyAmount();
+            BigDecimal canCarry = destination.getAmount().subtract(CashAdvanceBalanceRules.carriedIn(destination));
+            BigDecimal amount = readyAmount.min(outstanding(source)).min(canCarry);
+            if (amount.signum() <= 0 || !canApply(source, destination)) {
+                continue;
+            }
+            applyBalances(source, destination, amount, AUTO_ACTOR, AUTO_REASON);
+            LocalDateTime now = LocalDateTime.now();
+            CashAdvanceCarryForward row = carryForwardRepository.save(CashAdvanceCarryForward.builder()
+                    .sourceAdvance(source)
+                    .destinationAdvance(destination)
+                    .employeeId(source.getEmployeeId())
+                    .currencyCode(currency)
+                    .amount(amount)
+                    .status(CashAdvanceCarryForward.APPLIED)
+                    .reason(AUTO_REASON)
+                    .requestedBy(AUTO_ACTOR)
+                    .requestedAt(now)
+                    .approvedBy(AUTO_ACTOR)
+                    .approvedAt(now)
+                    .appliedAt(now)
+                    .build());
+            BigDecimal left = readyAmount.subtract(amount);
+            source.setCarryForwardReadyAmount(left.signum() > 0 ? left : null);
+            cashAdvanceRepository.save(source);
+            balanceLedger.recordChange("CashAdvanceCarryForward", row.getCarryForwardId(), "CARRY_FORWARD_APPLIED",
+                    "Status: READY", "Status: APPLIED, Amount: " + amount, AUTO_ACTOR, AUTO_REASON);
+        }
+    }
+
+    private boolean canApply(CashAdvance source, CashAdvance destination) {
+        try {
+            assertSourceCanGiveBalance(source);
+            assertNoCycle(source.getAdvanceId(), destination.getAdvanceId());
+            return true;
+        } catch (BusinessRuleViolationException e) {
+            return false;
+        }
+    }
+
+    private CarryForwardReadyResponse readyResponse(CashAdvance advance) {
+        return new CarryForwardReadyResponse(advance.getAdvanceId(), currencyCode(advance),
+                advance.getCarryForwardReadyAmount(), outstanding(advance));
     }
 
     // ---------------------------------------------------------------- reject
@@ -238,6 +349,7 @@ public class CashAdvanceCarryForwardService {
         }
         balanceLedger.applyBalance(source, CashAdvanceBalanceRules.requireNonNegative(restored, decimals),
                 "CASH_ADVANCE_CARRY_FORWARD_REVERSED", actor, reason);
+        source.setCarriedOutAmount(CashAdvanceBalanceRules.carriedOut(source).subtract(allocation.getAmount()));
         cashAdvanceRepository.save(source);
 
         BigDecimal oldCarried = CashAdvanceBalanceRules.carriedIn(destination);
@@ -261,6 +373,29 @@ public class CashAdvanceCarryForwardService {
         return carryForwardRepository.findById(carryForwardId)
                 .map(this::toResponse)
                 .orElseThrow(() -> new ResourceNotFoundException("Carry-forward not found: " + carryForwardId));
+    }
+
+    /**
+     * Moves {@code amount} from the source's balance to the destination's carried-in balance. The destination's carried-in
+     * balance cannot exceed its amount, because the carried-in part is what the employee already holds.
+     */
+    private void applyBalances(CashAdvance source, CashAdvance destination, BigDecimal amount, String actor, String reason) {
+        if (CashAdvanceBalanceRules.carriedIn(destination).add(amount).compareTo(destination.getAmount()) > 0) {
+            throw new BusinessRuleViolationException("Carried-in balance would exceed the receiving advance's amount of "
+                    + destination.getAmount() + ".");
+        }
+        int decimals = source.getCurrency() != null ? source.getCurrency().getDecimalPlaces() : 2;
+        BigDecimal newSourceBalance = CashAdvanceBalanceRules.requireNonNegative(outstanding(source).subtract(amount), decimals);
+        balanceLedger.applyBalance(source, newSourceBalance, "CASH_ADVANCE_CARRIED_FORWARD_OUT", actor, reason);
+        source.setCarriedOutAmount(CashAdvanceBalanceRules.carriedOut(source).add(amount));
+        cashAdvanceRepository.save(source);
+
+        BigDecimal oldCarried = CashAdvanceBalanceRules.carriedIn(destination);
+        BigDecimal newCarried = oldCarried.add(amount);
+        destination.setCarriedInAmount(newCarried);
+        cashAdvanceRepository.save(destination);
+        balanceLedger.recordChange("CashAdvance", destination.getAdvanceId(), "CASH_ADVANCE_CARRIED_FORWARD_IN",
+                "CarriedIn: " + oldCarried, "CarriedIn: " + newCarried, actor, reason);
     }
 
     // ---------------------------------------------------------------- rules

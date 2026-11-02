@@ -76,6 +76,15 @@ class CashAdvanceAdjustmentServiceImplTest {
         SecurityContextHolder.clearContext();
     }
 
+    @Mock private CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
+
+    @BeforeEach
+    void stubLedgerStatus() {
+        // The real status rule, so the advance's status is still derived from its balance here
+        lenient().when(cashAdvanceBalanceLedger.statusFor(any(), any(), anyInt()))
+                .thenAnswer(inv -> CashAdvanceBalanceRules.statusAfterBalance(inv.<BigDecimal>getArgument(1), inv.<Integer>getArgument(2)));
+    }
+
     @BeforeEach
     void setUp() {
         UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(

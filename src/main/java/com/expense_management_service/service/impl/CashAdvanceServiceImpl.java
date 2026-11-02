@@ -65,6 +65,8 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import java.time.Clock;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Slf4j
 @Service
@@ -72,9 +74,15 @@ import org.springframework.transaction.annotation.Transactional;
 @Transactional
 public class CashAdvanceServiceImpl implements CashAdvanceService {
 
+    /** The business clock: real time in the business zone, or the development override. Tests replace it. */
+    @Autowired
+    private Clock clock = Clock.systemDefaultZone();
+
     private final CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
     private final CashAdvanceRecoveryService cashAdvanceRecoveryService;
 
+    /** The disbursement mode recorded when carried-in balance covers the whole advance and no cash is paid. */
+    private static final String CARRIED_FORWARD_MODE = "CARRIED_FORWARD";
     private static final String MAX_ADVANCE_AMOUNT_CONFIG_KEY =
             "cash_advance.max_amount";
 
@@ -87,6 +95,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     private final DelegationService delegationService;
     private final CashAdvanceMapper cashAdvanceMapper;
     private final CurrentUserService currentUserService;
+    private final CashAdvanceCarryForwardService carryForwardService;
     private final AuditLogRepository auditLogRepository;
     private final ApprovalEventPublisher approvalEventPublisher;
     private final CashAdvanceBudgetAllocator cashAdvanceBudgetAllocator;
@@ -96,6 +105,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     private final CashAdvanceAdjustmentMapper cashAdvanceAdjustmentMapper;
     private final CashAdvanceUtilizationCalculator cashAdvanceUtilizationCalculator;
     private final StorageService storageService;
+    private final CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
+    private final CashAdvanceEmailService cashAdvanceEmailService;
 
 
     // ============================================================
@@ -204,6 +215,10 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         validateAndExtractFutureDate(request);
 
         cashAdvanceMapper.updateEntity(entity, request);
+        // Nothing has been paid out yet, so the balance is still the full requested amount. Keep it in step with the edit.
+        if (entity.getDisbursedAt() == null) {
+            entity.setOutstandingBalance(entity.getAmount());
+        }
 
         if (request.currencyId() != null) {
 
@@ -574,10 +589,10 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
         if (entity.getSettlementDueDate() == null
                 || !entity.getSettlementDueDate()
-                        .isAfter(LocalDate.now())) {
+                        .isAfter(LocalDate.now(clock))) {
 
             throw new BusinessRuleViolationException(
-                    "Needed by date must be a future date."
+                    "Settlement due date must be a future date."
             );
         }
 
@@ -619,6 +634,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                         + saved.getManagerId()
         );
 
+        notifyByEmail(() -> cashAdvanceEmailService.onSubmitted(saved));
+
         return cashAdvanceMapper.toResponse(saved);
     }
 
@@ -626,6 +643,15 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     // ============================================================
     // APPROVE
     // ============================================================
+
+    /** Queues a cash advance email. A failure is logged and never undoes the submission or approval. */
+    private void notifyByEmail(Runnable queueEmail) {
+        try {
+            queueEmail.run();
+        } catch (RuntimeException ex) {
+            log.warn("Cash advance email could not be queued: {}", ex.getMessage(), ex);
+        }
+    }
 
     @Override
     public CashAdvanceResponse approve(
@@ -750,6 +776,11 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         CashAdvance saved =
                 cashAdvanceRepository.save(entity);
 
+        if ("APPROVED".equals(nextStatus)) {
+            // Ready carry-forwards are detected and added here, once this advance is approved.
+            carryForwardService.applyReadyForDestination(saved);
+        }
+
         auditLogRepository.save(
                 AuditLog.builder()
                         .entityName("CashAdvance")
@@ -770,6 +801,12 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                         + ", nextStatus="
                         + nextStatus
         );
+
+        if ("PENDING_COST_CENTER_APPROVAL".equals(nextStatus)) {
+            notifyByEmail(() -> cashAdvanceEmailService.onCostCenterStage(saved));
+        } else if ("PENDING_FINANCE_APPROVAL".equals(nextStatus)) {
+            notifyByEmail(() -> cashAdvanceEmailService.onFinanceStage(saved));
+        }
 
         return cashAdvanceMapper.toResponse(saved);
     }
@@ -908,8 +945,14 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
+        BigDecimal carriedIn = CashAdvanceBalanceRules.carriedIn(entity);
+        if (carriedIn.signum() > 0 && entity.getAmount().subtract(carriedIn).signum() <= 0) {
+            // The carried-in balance covers the whole advance, so nothing is paid in cash. Record it as a carry-forward.
+            return disburseCarriedForward(entity, financeUserId);
+        }
+
         // Validate the confirmation before anything is stored or changed, so a rejected request leaves no trace.
-        CashAdvanceDisbursementRules.validate(disbursement, LocalDate.now());
+        CashAdvanceDisbursementRules.validate(disbursement, LocalDate.now(clock));
         String mode = CashAdvanceDisbursementRules.normalizedMode(disbursement.disbursementMode());
 
         String proofKey = null;
@@ -927,8 +970,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         applyDisbursementDetails(entity, disbursement, mode, proofKey);
 
         if (entity.getOutstandingBalance() == null) {
-            // The obligation is the advance plus any balance carried in from earlier advances (carry-forward).
-            entity.setOutstandingBalance(entity.getAmount().add(CashAdvanceBalanceRules.carriedIn(entity)));
+            // The obligation is the advance amount. Any carried-in balance is already part of it (carry-forward).
+            entity.setOutstandingBalance(entity.getAmount());
         }
 
         CashAdvance saved =
@@ -957,6 +1000,33 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                 "disbursedBy=" + actingUser + ",mode=" + mode
         );
 
+        return cashAdvanceMapper.toResponse(saved);
+    }
+
+    /** Disbursement of an advance fully covered by carried-in balance: no cash, no payment details. */
+    private CashAdvanceResponse disburseCarriedForward(CashAdvance entity, String financeUserId) {
+        String oldStatus = entity.getStatus();
+        entity.setStatus("IN_PROGRESS");
+        entity.setDisbursedAt(LocalDateTime.now());
+        entity.setDisbursementMode(CARRIED_FORWARD_MODE);
+        entity.setDisbursementPaymentDate(LocalDate.now(clock));
+        if (entity.getOutstandingBalance() == null) {
+            entity.setOutstandingBalance(entity.getAmount());
+        }
+        CashAdvance saved = cashAdvanceRepository.save(entity);
+        String actingUser = (financeUserId != null && !financeUserId.isBlank())
+                ? financeUserId
+                : currentUserService.getEmployeeId();
+        auditLogRepository.save(
+                AuditLog.builder()
+                        .entityName("CashAdvance")
+                        .entityId(saved.getAdvanceId())
+                        .action("CASH_ADVANCE_DISBURSED")
+                        .oldValue(oldStatus)
+                        .newValue("IN_PROGRESS, carried forward, no cash paid")
+                        .performedBy(actingUser)
+                        .performedAt(LocalDateTime.now())
+                        .build());
         return cashAdvanceMapper.toResponse(saved);
     }
 
@@ -1027,7 +1097,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         if (request.amount() == null || request.amount().signum() <= 0) {
             throw new IllegalArgumentException("Enter a repayment amount greater than zero.");
         }
-        CashAdvanceDisbursementRules.validate(request.payment(), LocalDate.now());
+        CashAdvanceDisbursementRules.validate(request.payment(), LocalDate.now(clock));
         String mode = CashAdvanceDisbursementRules.normalizedMode(request.payment().disbursementMode());
         String reference = repaymentReference(mode, request.payment());
 
@@ -1102,7 +1172,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         String previousStatus =
                 advance.getStatus();
 
-        advance.setStatus(CashAdvanceBalanceRules.statusAfterBalance(newBalance, decimals));
+        advance.setStatus(cashAdvanceBalanceLedger.statusFor(advance, newBalance, decimals));
         cashAdvanceBudgetMovements.releaseAllocation(advance, request.amount());
 
         cashAdvanceRepository.save(advance);
@@ -1278,10 +1348,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                                 BigDecimal::add
                         );
 
-        BigDecimal calculatedBalance =
-                advance.getAmount()
-                        .subtract(totalAdjusted)
-                        .subtract(totalRepaid);
+        // Same formula as the ledger: the amount, less what was carried forward, adjusted and repaid (salary deduction included).
+        BigDecimal calculatedBalance = CashAdvanceBalanceRules.ledgerBalance(advance, totalAdjusted, totalRepaid);
 
         BigDecimal repaymentAmount =
                 calculatedBalance.compareTo(BigDecimal.ZERO) > 0
@@ -1483,7 +1551,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
-        if (!dueDate.isAfter(LocalDate.now())) {
+        if (!dueDate.isAfter(LocalDate.now(clock))) {
 
             throw new BusinessRuleViolationException(
                     "Needed by date must be a future date."

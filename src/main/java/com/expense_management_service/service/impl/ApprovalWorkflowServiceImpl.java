@@ -91,6 +91,9 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.time.Clock;
+import org.springframework.beans.factory.annotation.Autowired;
+import com.expense_management_service.entity.CashAdvanceRepayment;
 
 /**
  * The new Approval Flow Engine orchestrator. Replaces EP06's {@code ApprovalWorkflowServiceImpl}
@@ -111,6 +114,10 @@ import java.util.UUID;
 @Transactional
 @Slf4j
 public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
+
+    /** The business clock: real time in the business zone, or the development override. Tests replace it. */
+    @Autowired
+    private Clock clock = Clock.systemDefaultZone();
 
     private static final String MATRIX_STATUS_ACTIVE = "ACTIVE";
     /** Mirrors {@code ExpenseLineItemServiceImpl}'s line-item status constants — see {@link #refreshPolicyViolationsForReport}. */
@@ -216,7 +223,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private void assertWithinSubmissionDeadline(ExpenseReport report) {
         // Re-checked at submit: the period end may have been saved on an earlier day. Finance extensions and reopens
         // only move the submission deadline, so they never allow a future reporting period.
-        ExpenseReportServiceImpl.assertReportingPeriod(report.getReportingPeriodStart(), report.getReportingPeriodEnd());
+        ExpenseReportServiceImpl.assertReportingPeriod(report.getReportingPeriodStart(), report.getReportingPeriodEnd(),
+                LocalDate.now(clock));
         CashAdvance advance = report.getCashAdvance();
         boolean linked = advance != null;
         if (!linked && report.getTripEndDate() == null) {
@@ -232,7 +240,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             return;
         }
 
-        LocalDate today = LocalDate.now();
+        LocalDate today = LocalDate.now(clock);
         if (SubmissionDeadlinePolicy.isOverdue(report.getTripEndDate(), linked, disbursedOn, extendedUntil, reopened,
                 submissionDeadlineDays, today)) {
             LocalDate deadline = SubmissionDeadlinePolicy.effectiveDeadline(report.getTripEndDate(), linked, disbursedOn,
@@ -1445,11 +1453,15 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     private void completeReport(ExpenseReport report) {
         report.setReportStatus(ReportStatus.APPROVED);
         report.setApprovedAt(LocalDateTime.now());
-        // Cash-advance offsets first: they settle reimbursableAmount, which decides whether there is
+        // Reconcile against the cash advance first: it settles reimbursableAmount, which decides whether there is
         // anything for AP to pay at all.
+        autoOffsetCashAdvance(report);
         processCashAdvanceAdjustmentsForReport(report);
         applyPaymentRouting(report);
         expenseReportRepository.save(report);
+        // Last, so the status sees this report's final reimbursable amount: an offset that covers the advance
+        // leaves it open while the employee is still owed the rest.
+        recheckLinkedCashAdvanceStatus(report);
         approvalEventPublisher.publish("REPORT_APPROVED", report.getReportId(), "handoff=reimbursement-tracking");
         log.info("Report {} fully approved - handed off to Reimbursement Tracking", report.getReportId());
     }
@@ -1484,6 +1496,62 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 }
             }
         }
+    }
+
+    /**
+     * Approval reconciles the report against its cash advance without a separate Finance step: the approved total, up to
+     * the advance's outstanding balance, is recorded as an adjustment and the balance is updated. It runs once per report
+     * (an existing adjustment means it has already been reconciled) and does nothing when the advance has no balance left.
+     */
+    /** Re-derives the linked advance's status, so an advance is open while any linked reimbursement is unpaid. */
+    private void recheckLinkedCashAdvanceStatus(ExpenseReport report) {
+        CashAdvance advance = report.getCashAdvance();
+        if (advance == null || advance.getDisbursedAt() == null || cashAdvanceBalanceLedger == null) {
+            return;
+        }
+        cashAdvanceBalanceLedger.refreshStatus(advance, "SYSTEM",
+                "Status rechecked on approval of report " + report.getReportNumber());
+        cashAdvanceRepository.save(advance);
+    }
+
+    private void autoOffsetCashAdvance(ExpenseReport report) {
+        CashAdvance advance = report.getCashAdvance();
+        if (advance == null || advance.getDisbursedAt() == null || cashAdvanceAdjustmentRepository == null) {
+            return;
+        }
+        if (!cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).isEmpty()) {
+            return;
+        }
+        BigDecimal approved = report.getTotalAmount() != null ? report.getTotalAmount() : BigDecimal.ZERO;
+        BigDecimal offsetsSoFar = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId()).stream()
+                .map(CashAdvanceAdjustment::getAdjustedAmount)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal repaidSoFar = advance.getRepayments() == null ? BigDecimal.ZERO : advance.getRepayments().stream()
+                .map(CashAdvanceRepayment::getAmount)
+                .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal balance = CashAdvanceBalanceRules.ledgerBalance(advance, offsetsSoFar, repaidSoFar);
+        BigDecimal amount = approved.min(balance);
+        if (amount.signum() <= 0) {
+            return;
+        }
+
+        CashAdvanceAdjustment adjustment = CashAdvanceAdjustment.builder()
+                .cashAdvance(advance)
+                .report(report)
+                .adjustedAmount(amount)
+                .adjustedBy("SYSTEM")
+                .adjustedAt(LocalDateTime.now())
+                .idempotencyKey("auto-offset-" + report.getReportId())
+                .build();
+        cashAdvanceAdjustmentRepository.save(adjustment);
+
+        cashAdvanceBalanceLedger.applyBalance(advance, CashAdvanceBalanceRules.ledgerBalance(advance, offsetsSoFar.add(amount), repaidSoFar),
+                "AUTO_RECONCILED_ON_APPROVAL", "SYSTEM",
+                "Approved report " + report.getReportNumber() + " reconciled automatically for " + amount);
+        cashAdvanceRepository.save(advance);
+        log.info("Report {} reconciled automatically against advance {} for {}", report.getReportId(), advance.getAdvanceId(), amount);
     }
 
     /**
@@ -1535,7 +1603,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                     ? advance.getRepayments().stream().map(r -> r.getAmount() != null ? r.getAmount() : java.math.BigDecimal.ZERO).reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add)
                     : java.math.BigDecimal.ZERO;
 
-            BigDecimal newBalance = advance.getAmount().subtract(totalAdjusted).subtract(totalRepaid);
+            BigDecimal newBalance = CashAdvanceBalanceRules.ledgerBalance(advance, totalAdjusted, totalRepaid);
             cashAdvanceBalanceLedger.applyBalance(advance, newBalance, "CASH_ADVANCE_BALANCE_RECALCULATED", "SYSTEM",
                     "Recalculated on approval of report " + report.getReportNumber());
             cashAdvanceRepository.save(advance);

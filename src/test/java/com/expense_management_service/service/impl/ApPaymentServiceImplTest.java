@@ -15,6 +15,7 @@ import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.repository.AuditLogRepository;
+import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.ApprovalWorkflowService;
@@ -45,6 +46,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -59,6 +61,8 @@ class ApPaymentServiceImplTest {
     @Mock private PolicyViolationRepository policyViolationRepository;
     @Mock private CostCenterBudgetService costCenterBudgetService;
     @Mock private BudgetEncumbranceService budgetEncumbranceService;
+    @Mock private CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
+    @Mock private CashAdvanceRepository cashAdvanceRepository;
 
     private ApPaymentServiceImpl service;
 
@@ -68,7 +72,8 @@ class ApPaymentServiceImplTest {
     void setUp() {
         var factory = new ExpenseReportResponseFactory(new com.expense_management_service.mapper.ExpenseReportMapper(), policyViolationRepository);
         service = new ApPaymentServiceImpl(expenseReportRepository, expenseLineItemService, approvalWorkflowService,
-                approvalEventPublisher, auditLogRepository, factory, costCenterBudgetService, budgetEncumbranceService);
+                approvalEventPublisher, auditLogRepository, factory, costCenterBudgetService, budgetEncumbranceService,
+                cashAdvanceBalanceLedger, cashAdvanceRepository);
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
     }
 
@@ -118,6 +123,31 @@ class ApPaymentServiceImplTest {
         assertThat(response.paymentConfirmation()).isNotNull();
         assertThat(response.paymentConfirmation().paymentReference()).isEqualTo("UTR123456789");
         verify(approvalEventPublisher).publish(eq("PAYMENT_COMPLETED"), eq(reportId), any());
+    }
+
+    @Test
+    void markPaymentCompleted_rechecksTheLinkedCashAdvance_soItCanCloseOnceThisPaymentIsRecorded() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        CashAdvance advance = CashAdvance.builder().advanceId(UUID.randomUUID()).outstandingBalance(BigDecimal.ZERO).build();
+        report.setCashAdvance(advance);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.markPaymentCompleted(reportId, payment(), "5100099");
+
+        verify(cashAdvanceBalanceLedger).refreshStatus(eq(advance), eq("5100099"), any());
+        verify(cashAdvanceRepository).save(advance);
+    }
+
+    @Test
+    void markPaymentCompleted_leavesTheCashAdvanceAloneWhenTheReportHasNone() {
+        ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        service.markPaymentCompleted(reportId, payment(), "5100099");
+
+        verifyNoInteractions(cashAdvanceBalanceLedger, cashAdvanceRepository);
     }
 
     // ---------------------------------------------------------------------

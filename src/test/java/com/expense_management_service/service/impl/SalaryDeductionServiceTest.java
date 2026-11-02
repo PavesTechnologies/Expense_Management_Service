@@ -42,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -73,6 +74,13 @@ class SalaryDeductionServiceTest {
     private CashAdvance advance;
     private UUID advanceId;
     private String payrollMonth;
+
+    @BeforeEach
+    void stubLedgerStatus() {
+        // The real status rule, so the advance's status is still derived from its balance here
+        lenient().when(balanceLedger.statusFor(any(), any(), anyInt()))
+                .thenAnswer(inv -> CashAdvanceBalanceRules.statusAfterBalance(inv.<BigDecimal>getArgument(1), inv.<Integer>getArgument(2)));
+    }
 
     @BeforeEach
     void setUp() {
@@ -174,7 +182,8 @@ class SalaryDeductionServiceTest {
         assertThat(sent.getToAddress()).isEqualTo(PAYROLL_EMAIL);
         assertThat(sent.getEmailType()).isEqualTo("SALARY_DEDUCTION_REQUEST");
         assertThat(sent.getReferenceId()).isEqualTo(response.payrollRequestId());
-        assertThat(sent.getBody()).contains("Employee ID: " + EMPLOYEE)
+        assertThat(sent.getBody()).contains("| Employee ID")
+                .contains("| " + EMPLOYEE)
                 .contains("Cash Advance ID: " + advanceId)
                 .contains("Requested Deduction Amount: 4163.00 INR")
                 .contains("Payroll Month: " + payrollMonth)

@@ -35,6 +35,8 @@ public record CashAdvanceUtilizationResponse(
         /** CLOSED, REPAYMENT_DUE, REIMBURSEMENT_DUE or PENDING_CLOSURE (zero balance, not yet closed). */
         String closureStatus,
         boolean closed,
+        /** Unpaid part of the linked reports' reimbursable amounts. The advance stays open until this is paid. */
+        BigDecimal reimbursementOwedAmount,
         List<LinkedReport> linkedReports,
         List<CategoryUtilization> categories
 ) {

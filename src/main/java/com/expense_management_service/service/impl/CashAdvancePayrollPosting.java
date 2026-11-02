@@ -63,7 +63,9 @@ public class CashAdvancePayrollPosting {
         }
         BigDecimal newBalance = CashAdvanceBalanceRules.requireNonNegative(balance.subtract(actual), decimals);
         advance.setOutstandingBalance(newBalance);
-        advance.setStatus(CashAdvanceBalanceRules.statusAfterBalance(newBalance, decimals));
+        String newStatus = balanceLedger.statusFor(advance, newBalance, decimals);
+        advance.setStatus(newStatus);
+        CashAdvanceBalanceRules.stampSettlement(advance, newStatus, actor);
         budgetMovements.releaseAllocation(advance, actual);
         cashAdvanceRepository.save(advance);
 

@@ -61,6 +61,10 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import com.expense_management_service.entity.CashAdvance;
+import java.time.Clock;
+import java.time.ZoneId;
+import static org.mockito.Mockito.times;
 
 @ExtendWith(MockitoExtension.class)
 class ExpenseLineItemServiceImplTest {
@@ -129,6 +133,8 @@ class ExpenseLineItemServiceImplTest {
                         expenseLineItemRepository, taxAuditService, new TaxValidationServiceImpl(systemConfigurationRepository), currencyRepository),
                 submittedLineItemRemover);
         ReflectionTestUtils.setField(expenseLineItemService, "baseCurrencyCode", "INR");
+        ReflectionTestUtils.setField(expenseLineItemService, "clock", Clock.system(ZoneId.of("Asia/Kolkata")));
+        ReflectionTestUtils.setField(expenseLineItemService, "submissionDeadlineDays", 30);
 
         reportId = UUID.randomUUID();
         categoryId = UUID.randomUUID();
@@ -470,6 +476,217 @@ class ExpenseLineItemServiceImplTest {
                 .hasMessageContaining("must fall within the report's trip dates");
 
         verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenLinkedAndTheTripHasNotStarted() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID())
+                .disbursedAt(LocalDateTime.now().minusDays(10)).build());
+        draftReport.setTripStartDate(LocalDate.now().plusDays(5));
+        draftReport.setTripEndDate(LocalDate.now().plusDays(10));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest preTrip = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(5), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, preTrip))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("The trip starts on");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenLinkedAndDateIsBeforeDisbursement() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID())
+                .disbursedAt(LocalDateTime.now().minusDays(10)).build());
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest early = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(12), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, early))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within the cash advance spending window");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenLinkedAndWindowHasEnded() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID())
+                .disbursedAt(LocalDateTime.now().minusDays(40)).build());
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest late = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(5), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, late))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within the cash advance spending window");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenLinkedAdvanceIsNotDisbursed() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).build());
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest any = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, any))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not disbursed yet");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenExpenseDateIsInTheFutureOnAStandaloneReport() {
+        stubOwnerAndReport();
+        draftReport.setTripStartDate(LocalDate.now().minusDays(3));
+        draftReport.setTripEndDate(LocalDate.now().plusDays(3));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest future = new ExpenseLineItemRequest(categoryId, LocalDate.now().plusDays(1), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, future))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot be in the future");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void expenseDateRange_returnsTheSpendingWindowForALinkedReport() {
+        stubOwnerAndReport();
+        LocalDateTime disbursed = LocalDateTime.now().minusDays(10);
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).disbursedAt(disbursed).build());
+
+        var range = expenseLineItemService.expenseDateRange(reportId);
+
+        assertThat(range.minDate()).isEqualTo(disbursed.toLocalDate());
+        assertThat(range.maxDate()).isEqualTo(range.today());
+        assertThat(range.blockedReason()).isNull();
+        assertThat(range.basis()).isEqualTo("the cash advance spending window");
+    }
+
+    // ---- The November scenario: a cash-advance trip that starts after today, tested on a fixed clock ----
+
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Kolkata");
+
+    private void clockOn(LocalDate day) {
+        ReflectionTestUtils.setField(expenseLineItemService, "clock",
+                Clock.fixed(day.atTime(12, 0).atZone(BUSINESS_ZONE).toInstant(), BUSINESS_ZONE));
+    }
+
+    /** Linked to an advance disbursed 28 Oct; trip 31 Oct to 25 Nov. */
+    private void linkedOctToNovTrip() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID())
+                .disbursedAt(LocalDateTime.of(2026, 10, 28, 10, 0)).build());
+        draftReport.setTripStartDate(LocalDate.of(2026, 10, 31));
+        draftReport.setTripEndDate(LocalDate.of(2026, 11, 25));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+    }
+
+    private ExpenseLineItemRequest lineOn(LocalDate date) {
+        return new ExpenseLineItemRequest(categoryId, date, "Green Leaf Restaurant", "desc",
+                new BigDecimal("1645.00"), currencyId, null, null, null, false);
+    }
+
+    private void stubSaveOfLine() {
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    @Test
+    void november_acceptsTheCompletedTripDate_whenTheClockIsAfterTheTrip() {
+        clockOn(LocalDate.of(2026, 11, 5));
+        linkedOctToNovTrip();
+        stubSaveOfLine();
+
+        expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 2)));
+
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
+    void november_rejectsTheSameDate_whenTheClockIsBeforeTheTrip() {
+        clockOn(LocalDate.of(2026, 10, 28));
+        linkedOctToNovTrip();
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 2))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("The trip starts on 2026-10-31");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void november_rejectsAFutureDate_whenTheTripHasStarted() {
+        clockOn(LocalDate.of(2026, 11, 5));
+        linkedOctToNovTrip();
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 6))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot be in the future");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void november_rejectsADateAfterTheTripEnd() {
+        clockOn(LocalDate.of(2026, 11, 26));
+        linkedOctToNovTrip();
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 26))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within the report's trip dates and the cash advance spending window");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void november_acceptsTheTripStartAndEndDays_inclusively() {
+        clockOn(LocalDate.of(2026, 11, 26));
+        linkedOctToNovTrip();
+        stubSaveOfLine();
+
+        expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 10, 31)));
+        expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 25)));
+
+        verify(expenseLineItemRepository, times(2)).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
+    void november_rejectsTheDayBeforeTheTripStart() {
+        clockOn(LocalDate.of(2026, 11, 26));
+        linkedOctToNovTrip();
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 10, 30))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void november_acceptsToday_whenTodayIsInsideTheTrip() {
+        clockOn(LocalDate.of(2026, 11, 5));
+        linkedOctToNovTrip();
+        stubSaveOfLine();
+
+        expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 5)));
+
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
     }
 
     @Test

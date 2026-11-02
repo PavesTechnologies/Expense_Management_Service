@@ -177,6 +177,27 @@ class ReceiptConfirmationServiceImplTest {
     }
 
     @Test
+    void confirm_sendsTheScannedDateThroughTheSameLineItemRuleAsManualEntry() {
+        LocalDate scanned = LocalDate.of(2026, 11, 2);
+        UUID categoryId = UUID.randomUUID();
+        when(receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receiptId))
+                .thenReturn(Optional.of(completedOcr()));
+        when(currencyRepository.findByCurrencyCodeIgnoreCase("USD"))
+                .thenReturn(Optional.of(Currency.builder().currencyId(UUID.randomUUID()).currencyCode("USD").build()));
+        when(expenseLineItemService.create(eq(reportId), any(ExpenseLineItemRequest.class)))
+                .thenThrow(new IllegalArgumentException("The trip starts on 2026-10-31, so no expense can be dated yet."));
+        ReceiptConfirmRequest request = new ReceiptConfirmRequest(null, categoryId, scanned, null, null, null, null, null, null, null, null);
+
+        assertThatThrownBy(() -> confirmationService.confirm(receiptId, request))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("The trip starts on 2026-10-31");
+
+        ArgumentCaptor<ExpenseLineItemRequest> captor = ArgumentCaptor.forClass(ExpenseLineItemRequest.class);
+        verify(expenseLineItemService).create(eq(reportId), captor.capture());
+        assertThat(captor.getValue().expenseDate()).isEqualTo(scanned);
+    }
+
+    @Test
     void confirm_throwsIllegalArgument_whenCurrencyCannotBeResolved() {
         ReceiptOcr ocrWithUnknownCurrency = ReceiptOcr.builder().receipt(receipt).processingStatus(OcrStatus.OCR_COMPLETED)
                 .amount(new BigDecimal("50.00")).receiptDate(LocalDate.of(2026, 1, 1)).currencyCode("XYZ").build();

@@ -50,6 +50,7 @@ public class SalaryDeductionService {
 
     static final String EMAIL_REQUEST = "SALARY_DEDUCTION_REQUEST";
     static final String EMAIL_CANCELLATION = "SALARY_DEDUCTION_CANCELLATION";
+    static final String EMAIL_CONFIRMATION = "SALARY_DEDUCTION_CONFIRMATION";
     /** Recorded as the requester when the due-date run creates a request. */
     static final String SYSTEM_ACTOR = "SYSTEM";
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("dd MMM yyyy");
@@ -367,10 +368,30 @@ public class SalaryDeductionService {
                 "Status: " + status, "Status: " + request.getStatus() + ", actual: " + actualAmount.toPlainString()
                         + ", shortfall: " + shortfall.toPlainString(),
                 actor, "Payroll result for " + request.getPayrollRequestId());
+        sendResultConfirmation(request, advance, actualAmount, actor);
         return toResponse(request, advance);
     }
 
     // ------------------------------------------------------------------ helpers
+
+    /**
+     * Replies to Payroll on the same thread as the request email, so the confirmed figures sit next to the request.
+     * Skipped when no payroll address is configured; the recorded result stands either way.
+     */
+    private void sendResultConfirmation(SalaryDeductionRequest request, CashAdvance advance, BigDecimal actualDeducted, String actor) {
+        String payrollEmail = policy.payrollReportEmail();
+        if (payrollEmail == null || payrollEmail.isBlank()) {
+            return;
+        }
+        String employee = employeeName(request.getEmployeeId());
+        OutboundEmail email = emailOutbox.enqueue(payrollEmail,
+                SalaryDeductionEmailTemplate.confirmationSubject(request, employee),
+                SalaryDeductionEmailTemplate.confirmationBody(request, advance, employee, actualDeducted, actor),
+                EMAIL_CONFIRMATION, request.getPayrollRequestId());
+        balanceLedger.recordChange("SalaryDeductionRequest", request.getSalaryDeductionRequestId(), "SALARY_DEDUCTION_CONFIRMATION_QUEUED",
+                null, "Outbound email: " + email.getOutboundEmailId(), actor,
+                "Payroll confirmation queued for " + request.getPayrollRequestId());
+    }
 
     /** Moves a PENDING_SEND request to SENT_TO_PAYROLL once its email has been delivered. Never the reverse. */
     private SalaryDeductionRequest syncEmail(SalaryDeductionRequest request) {

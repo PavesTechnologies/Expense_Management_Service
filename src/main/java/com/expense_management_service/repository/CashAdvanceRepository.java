@@ -24,6 +24,7 @@ public interface CashAdvanceRepository extends JpaRepository<CashAdvance, UUID> 
     List<CashAdvance> findByEmployeeId(String employeeId);
     List<CashAdvance> findByEmployeeIdAndStatus(String employeeId, String status);
     List<CashAdvance> findByEmployeeIdAndStatusIn(String employeeId, Collection<String> statuses);
+    List<CashAdvance> findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(String employeeId);
     List<CashAdvance> findByStatus(String status);
     List<CashAdvance> findByStatusIn(Collection<String> statuses);
     List<CashAdvance> findByManagerId(String managerId);

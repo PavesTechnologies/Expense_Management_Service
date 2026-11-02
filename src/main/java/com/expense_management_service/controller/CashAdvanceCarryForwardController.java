@@ -19,6 +19,10 @@ import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
+import com.expense_management_service.dto.request.CarryForwardReadyRequest;
+import com.expense_management_service.dto.response.CarryForwardReadyResponse;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 
 /**
  * Carry-forward of a cash advance's unspent balance to another advance. Proposal is open to the employee and Finance;
@@ -37,6 +41,26 @@ public class CashAdvanceCarryForwardController {
     @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE','GENERAL')")
     public ApiResponse<CashAdvanceCarryForwardResponse> propose(@Valid @RequestBody CashAdvanceCarryForwardRequest request) {
         return ApiResponse.success("Carry-forward proposed", carryForwardService.propose(request));
+    }
+
+    @PostMapping("/ready")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE','GENERAL')")
+    public ApiResponse<CarryForwardReadyResponse> markReady(@Valid @RequestBody CarryForwardReadyRequest request) {
+        return ApiResponse.success("Carry-forward is ready",
+                carryForwardService.markReady(request.advanceId(), request.amount(), request.reason()));
+    }
+
+    @GetMapping("/ready/{advanceId}")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE','GENERAL')")
+    public ApiResponse<CarryForwardReadyResponse> ready(@PathVariable UUID advanceId) {
+        return ApiResponse.success(carryForwardService.readyFor(advanceId));
+    }
+
+    @DeleteMapping("/ready/{advanceId}")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE','GENERAL')")
+    public ApiResponse<CarryForwardReadyResponse> cancelReady(@PathVariable UUID advanceId,
+                                                              @RequestParam(required = false) String reason) {
+        return ApiResponse.success("Ready carry-forward cancelled", carryForwardService.cancelReady(advanceId, reason));
     }
 
     @GetMapping("/{carryForwardId}")

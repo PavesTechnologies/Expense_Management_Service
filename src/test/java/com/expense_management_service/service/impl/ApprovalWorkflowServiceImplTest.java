@@ -110,7 +110,7 @@ class ApprovalWorkflowServiceImplTest {
     void setUp() {
         service = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
-                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class)),
+                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
@@ -618,7 +618,7 @@ class ApprovalWorkflowServiceImplTest {
 
         ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
-                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class)),
+                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
@@ -667,7 +667,7 @@ class ApprovalWorkflowServiceImplTest {
 
         ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
-                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class)),
+                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
@@ -712,7 +712,7 @@ class ApprovalWorkflowServiceImplTest {
 
         ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
-                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class)),
+                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),

@@ -100,117 +100,19 @@ class CashAdvanceWorkflowE2eTest extends E2eTestBase {
         return reportId;
     }
 
-    private String applyOffset(String reportId, String advanceId) throws Exception {
-        return postJson("/xms/api/v1/expense-reports/" + reportId + "/apply-advance-offset", FINANCE,
-                "{\"cashAdvanceId\":\"" + advanceId + "\"}", 200);
-    }
-
+    /**
+     * Approval reconciles the report against its advance automatically: the approved 6000 is recorded against the
+     * 10000 advance, leaving 4000 outstanding. No separate Finance step is needed, and the manual offset endpoint stays gone.
+     */
     @Test
-    void advance_approvedDisbursedAndOffset_leavesTheUnusedBalanceOpenWithNothingToPay() throws Exception {
+    void approvedExpenses_reduceTheAdvanceAutomatically_andTheOffsetEndpointIsGone() throws Exception {
         Setup s = setup();
-
         String advanceId = approvedAndDisbursedAdvance(s, "10000.00");
-        // Final approval holds the principal against the cost center budget.
-        CostCenterBudget afterApproval = budget(s.costCenter());
-        assertThat(afterApproval.getAvailableBudget()).isEqualByComparingTo("90000.00");
-        assertThat(afterApproval.getCashAdvanceAllocated()).isEqualByComparingTo("10000.00");
-
         String reportId = approvedReportAgainst(s, advanceId, "6000.00");
-        // Expenses alone don't touch the advance: only Finance's offset does.
-        assertThat(amount(advance(advanceId), "$.data.outstandingBalance")).isEqualByComparingTo("10000.00");
 
-        String offset = applyOffset(reportId, advanceId);
-        assertThat(amount(offset, "$.data.adjustedAmount")).isEqualByComparingTo("6000.00");
+        assertThat(amount(advance(advanceId), "$.data.outstandingBalance")).isEqualByComparingTo("4000.00");
 
-        String afterOffset = advance(advanceId);
-        assertThat(amount(afterOffset, "$.data.outstandingBalance")).isEqualByComparingTo("4000.00");
-        assertThat((String) read(afterOffset, "$.data.status")).isEqualTo("SETTLEMENT_PENDING");
-
-        String settledReport = report(reportId, s.employee());
-        assertThat(amount(settledReport, "$.data.reimbursableAmount")).isEqualByComparingTo("0");
-        assertThat((Boolean) read(settledReport, "$.data.noPaymentDue")).isTrue();
-        assertThat((String) read(settledReport, "$.data.paymentRoutingStatus")).isEqualTo("NONE");
-
-        // The 6,000 became real spend; 4,000 is still held for the advance. Available is unchanged.
-        CostCenterBudget afterOffsetBudget = budget(s.costCenter());
-        assertThat(afterOffsetBudget.getCashAdvanceAllocated()).isEqualByComparingTo("4000.00");
-        assertThat(afterOffsetBudget.getAvailableBudget()).isEqualByComparingTo("90000.00");
-
-        String settlement = getJson("/xms/employee/cash-advances/" + advanceId + "/settlement", FINANCE);
-        assertThat(amount(settlement, "$.data.totalAdjustedAmount")).isEqualByComparingTo("6000.00");
-        assertThat(amount(settlement, "$.data.outstandingBalance")).isEqualByComparingTo("4000.00");
-
-        // One report, one offset.
         postJson("/xms/api/v1/expense-reports/" + reportId + "/apply-advance-offset", FINANCE,
-                "{\"cashAdvanceId\":\"" + advanceId + "\"}", 422);
-    }
-
-    @Test
-    void expensesAboveTheAdvance_offsetTheWholeAdvance_andApPaysOnlyTheDifference() throws Exception {
-        Setup s = setup();
-        String advanceId = approvedAndDisbursedAdvance(s, "5000.00");
-        String reportId = approvedReportAgainst(s, advanceId, "6000.00");
-
-        String offset = applyOffset(reportId, advanceId);
-        assertThat(amount(offset, "$.data.adjustedAmount")).isEqualByComparingTo("5000.00");
-
-        String afterOffset = advance(advanceId);
-        assertThat(amount(afterOffset, "$.data.outstandingBalance")).isEqualByComparingTo("0");
-        assertThat((String) read(afterOffset, "$.data.status")).isEqualTo("CLOSED");
-
-        String owed = report(reportId, s.employee());
-        assertThat(amount(owed, "$.data.reimbursableAmount")).isEqualByComparingTo("1000.00");
-        assertThat((String) read(owed, "$.data.paymentRoutingStatus")).isEqualTo("APPROVED_FOR_PAYMENT");
-
-        // AP can't pay the gross: only the 1,000 above the advance is owed.
-        postJson("/xms/ap-payments/" + reportId + "/complete", AP, """
-                {"paymentReference":"UTR-GROSS","paymentMethod":"BANK_TRANSFER","paymentDate":"%s","amountPaid":6000.00}
-                """.formatted(LocalDate.now()), 422);
-        apCompletesPayment(reportId, "1000.00", "UTR-EXCESS");
-
-        String paid = report(reportId, s.employee());
-        assertThat((String) read(paid, "$.data.paymentRoutingStatus")).isEqualTo("PAYMENT_COMPLETED");
-        assertThat(amount(paid, "$.data.paymentConfirmation.amountPaid")).isEqualByComparingTo("1000.00");
-
-        // Budget: 5,000 advance spent via the offset, plus the 1,000 AP paid - 6,000 in all, charged once.
-        CostCenterBudget budget = budget(s.costCenter());
-        assertThat(budget.getCashAdvanceAllocated()).isEqualByComparingTo("0");
-        assertThat(budget.getAvailableBudget()).isEqualByComparingTo("94000.00");
-    }
-
-    @Test
-    void unusedBalance_staysOpenAcrossANewAdvance_untilFinanceRecordsTheSettlement() throws Exception {
-        Setup s = setup();
-        String firstAdvanceId = approvedAndDisbursedAdvance(s, "10000.00");
-        String reportId = approvedReportAgainst(s, firstAdvanceId, "6000.00");
-        applyOffset(reportId, firstAdvanceId);
-        assertThat(amount(advance(firstAdvanceId), "$.data.outstandingBalance")).isEqualByComparingTo("4000.00");
-
-        // The open balance doesn't block the next trip's advance (it isn't overdue).
-        String secondAdvanceId = approvedAndDisbursedAdvance(s, "3000.00");
-        // Each advance keeps its own balance: the 4,000 is not carried into the new one (no per-employee balance yet).
-        assertThat(amount(advance(secondAdvanceId), "$.data.outstandingBalance")).isEqualByComparingTo("3000.00");
-        assertThat(amount(advance(firstAdvanceId), "$.data.outstandingBalance")).isEqualByComparingTo("4000.00");
-        assertThat(status(firstAdvanceId)).isEqualTo("SETTLEMENT_PENDING");
-        assertThat(budget(s.costCenter()).getCashAdvanceAllocated()).isEqualByComparingTo("7000.00");
-
-        // Finance settles the first advance's unused balance; only Finance can record it.
-        String repaymentReference = "RPY-" + suffix();
-        call(repaymentForm(firstAdvanceId, repaymentReference), s.employee(), 403);
-        call(repaymentForm(firstAdvanceId, repaymentReference), FINANCE, 200);
-
-        String settled = advance(firstAdvanceId);
-        assertThat(amount(settled, "$.data.outstandingBalance")).isEqualByComparingTo("0");
-        assertThat((String) read(settled, "$.data.status")).isEqualTo("CLOSED");
-        String settlement = getJson("/xms/employee/cash-advances/" + firstAdvanceId + "/settlement", FINANCE);
-        assertThat(amount(settlement, "$.data.totalAdjustedAmount")).isEqualByComparingTo("6000.00");
-        assertThat(amount(settlement, "$.data.totalRepaidAmount")).isEqualByComparingTo("4000.00");
-        assertThat((String) read(settlement, "$.data.settlementStatus")).isEqualTo("FULLY_SETTLED");
-
-        // The repaid 4,000 goes back to the budget; the second advance's 3,000 is still held.
-        CostCenterBudget budget = budget(s.costCenter());
-        assertThat(budget.getCashAdvanceAllocated()).isEqualByComparingTo("3000.00");
-        assertThat(budget.getAvailableBudget()).isEqualByComparingTo("91000.00");
-        assertThat(status(secondAdvanceId)).isEqualTo("IN_PROGRESS");
+                "{\"cashAdvanceId\":\"" + advanceId + "\"}", 404);
     }
 }

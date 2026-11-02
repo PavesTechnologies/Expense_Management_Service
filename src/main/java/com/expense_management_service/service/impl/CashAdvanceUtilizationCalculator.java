@@ -75,6 +75,7 @@ public class CashAdvanceUtilizationCalculator {
         BigDecimal approved = BigDecimal.ZERO;
         BigDecimal returned = BigDecimal.ZERO;
         BigDecimal pending = BigDecimal.ZERO;
+        BigDecimal reimbursementOwed = BigDecimal.ZERO;
 
         for (ExpenseReport report : reports) {
             UUID reportId = report.getReportId();
@@ -108,6 +109,7 @@ public class CashAdvanceUtilizationCalculator {
                     report.getReportStatus() != null ? report.getReportStatus().name() : null,
                     reportClaimed,
                     reservedByReport.getOrDefault(reportId, BigDecimal.ZERO)));
+            reimbursementOwed = reimbursementOwed.add(CashAdvanceBalanceRules.reimbursementStillOwed(report));
         }
 
         List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advanceId);
@@ -119,9 +121,9 @@ public class CashAdvanceUtilizationCalculator {
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         BigDecimal advanceAmount = nz(advance.getAmount());
-        BigDecimal outstanding = nz(advance.getOutstandingBalance());
-        boolean balanceConsistent = advanceAmount.subtract(approvedUtilization).subtract(totalRepaid)
-                .compareTo(outstanding) == 0;
+        // The outstanding figure comes from the records. The stored balance is only compared with it.
+        BigDecimal outstanding = CashAdvanceBalanceRules.ledgerBalance(advance, approvedUtilization, totalRepaid);
+        boolean balanceConsistent = outstanding.compareTo(nz(advance.getOutstandingBalance())) == 0;
 
         boolean closed = CLOSED.equalsIgnoreCase(advance.getStatus());
 
@@ -142,6 +144,7 @@ public class CashAdvanceUtilizationCalculator {
                 advance.getStatus(),
                 closureStatus(closed, outstanding),
                 closed,
+                reimbursementOwed,
                 linkedReports,
                 categories.values().stream().map(CategoryAccumulator::toResponse).toList());
     }

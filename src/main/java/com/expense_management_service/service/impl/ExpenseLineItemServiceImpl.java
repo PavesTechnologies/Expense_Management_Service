@@ -55,6 +55,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.expense_management_service.dto.response.ExpenseDateRangeResponse;
+import java.time.Clock;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 @RequiredArgsConstructor
@@ -94,6 +97,21 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
      */
     @Value("${exchange.rate.base-currency}")
     private String baseCurrencyCode;
+
+    /** The business clock: real time in the business zone, or the development override. Tests replace it. */
+    @Autowired
+    private Clock clock = Clock.systemDefaultZone();
+
+    /** Length of a cash advance's spending window. The same setting the report submission deadline uses. */
+    @Value("${expense.submission.deadline-days:30}")
+    private int submissionDeadlineDays;
+
+    @Override
+    public ExpenseDateRangeResponse expenseDateRange(UUID reportId) {
+        ExpenseReport report = findReport(reportId);
+        assertOwnerOrAdmin(report);
+        return ExpenseDatePolicy.range(report, businessToday(), submissionDeadlineDays);
+    }
 
     @Override
     public ExpenseLineItemResponse create(UUID reportId, ExpenseLineItemRequest request) {
@@ -203,27 +221,12 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         log.info("Deleted line item {} from expense report {}", lineItemId, reportId);
     }
 
-    /**
-     * An item must be dated inside the report's trip dates, and not in the future. Reports without trip dates
-     * have no range to check against.
-     */
     private void assertExpenseDateWithinReport(ExpenseReport report, LocalDate expenseDate) {
-        assertExpenseDateValid(expenseDate);
-        LocalDate start = report.getTripStartDate();
-        LocalDate end = report.getTripEndDate();
-        if (start == null || end == null) {
-            return;
-        }
-        if (expenseDate.isBefore(start) || expenseDate.isAfter(end)) {
-            throw new IllegalArgumentException("Expense date " + expenseDate + " must fall within the report's trip dates ("
-                    + start + " to " + end + ").");
-        }
+        ExpenseDatePolicy.assertAllowed(ExpenseDatePolicy.range(report, businessToday(), submissionDeadlineDays), expenseDate);
     }
 
-    private void assertExpenseDateValid(LocalDate expenseDate) {
-        if (expenseDate.isAfter(LocalDate.now())) {
-            throw new IllegalArgumentException("expenseDate cannot be in the future");
-        }
+    private LocalDate businessToday() {
+        return LocalDate.now(clock);
     }
 
     private void applyRelations(ExpenseLineItem entity, ExpenseLineItemRequest request) {

@@ -56,6 +56,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
     private final CurrentUserService currentUserService;
     private final AuditLogRepository auditLogRepository;
     private final ApprovalEventPublisher approvalEventPublisher;
+    private final CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
 
     @Override
     public CashAdvanceAdjustmentResponse create(CashAdvanceAdjustmentRequest request) {
@@ -115,10 +116,16 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
             throw new BusinessRuleViolationException("Expense report " + report.getReportId() + " has already been adjusted against cash advance " + advance.getAdvanceId());
         }
 
-        BigDecimal currentBalance = advance.getOutstandingBalance();
-        if (currentBalance == null) {
-            currentBalance = advance.getAmount();
-        }
+        // The balance comes from the records (amount, offsets, repayments), so a stored value that drifted is corrected here.
+        BigDecimal offsetsSoFar = existingAdjustments.stream()
+                .map(CashAdvanceAdjustment::getAdjustedAmount)
+                .filter(java.util.Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal repaidSoFar = advance.getRepayments() == null ? BigDecimal.ZERO : advance.getRepayments().stream()
+                .map(com.expense_management_service.entity.CashAdvanceRepayment::getAmount)
+                .filter(java.util.Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal currentBalance = CashAdvanceBalanceRules.ledgerBalance(advance, offsetsSoFar, repaidSoFar);
 
         BigDecimal adjustedAmount = request.adjustedAmount();
         if (adjustedAmount.compareTo(currentBalance) > 0) {
@@ -126,11 +133,12 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         }
 
         int decimals = advance.getCurrency() != null ? advance.getCurrency().getDecimalPlaces() : 2;
-        BigDecimal newBalance = CashAdvanceBalanceRules.requireNonNegative(currentBalance.subtract(adjustedAmount), decimals);
+        BigDecimal newBalance = CashAdvanceBalanceRules.requireNonNegative(
+                CashAdvanceBalanceRules.ledgerBalance(advance, offsetsSoFar.add(adjustedAmount), repaidSoFar), decimals);
         advance.setOutstandingBalance(newBalance);
 
         String previousStatus = advance.getStatus();
-        advance.setStatus(CashAdvanceBalanceRules.statusAfterBalance(newBalance, decimals));
+        advance.setStatus(cashAdvanceBalanceLedger.statusFor(advance, newBalance, decimals));
         cashAdvanceRepository.save(advance);
 
         CashAdvanceAdjustment entity = cashAdvanceAdjustmentMapper.toEntity(request);

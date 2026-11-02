@@ -81,15 +81,32 @@ public class CashAdvance {
     @Column(name = "settlement_due_date")
     private LocalDate settlementDueDate;
 
+    /** Expected trip start the advance was requested for. Prefills the expense report. Null when not given. */
+    @Column(name = "expected_trip_start_date")
+    private LocalDate expectedTripStartDate;
+
+    /** Expected trip end the advance was requested for. Null when not given. */
+    @Column(name = "expected_trip_end_date")
+    private LocalDate expectedTripEndDate;
+
     @Column(name = "outstanding_balance", precision = 19, scale = 4)
     private BigDecimal outstandingBalance;
 
     /**
-     * Balance carried into this advance from earlier advances (carry-forward). Added to the obligation at disbursement.
-     * Changed only by an APPLIED carry-forward or its reversal. Null on older rows, which means zero.
+     * Balance carried into this advance from earlier advances (carry-forward). It is part of the advance amount: Finance
+     * pays the amount less this, because the employee already holds it. Changed only by an APPLIED carry-forward or its
+     * reversal. Null on older rows, which means zero.
      */
     @Column(name = "carried_in_amount", precision = 19, scale = 4)
     private BigDecimal carriedInAmount;
+
+    /** Balance this advance has carried out to other advances. Changed only by an APPLIED carry-forward or its reversal. */
+    @Column(name = "carried_out_amount", precision = 19, scale = 4)
+    private BigDecimal carriedOutAmount;
+
+    /** Unused balance marked ready to carry forward to the employee's next approved advance. Null means none is ready. */
+    @Column(name = "carry_forward_ready_amount", precision = 19, scale = 4)
+    private BigDecimal carryForwardReadyAmount;
 
     @Column(name = "approved_amount", precision = 19, scale = 4)
     private BigDecimal approvedAmount;

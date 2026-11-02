@@ -8,11 +8,13 @@ import com.expense_management_service.dto.response.ApPaymentQueueItemResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
 import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.entity.AuditLog;
+import com.expense_management_service.entity.CashAdvance;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.enums.PaymentRoutingStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.repository.AuditLogRepository;
+import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.service.ApPaymentService;
 import com.expense_management_service.service.ApprovalEventPublisher;
@@ -65,6 +67,8 @@ public class ApPaymentServiceImpl implements ApPaymentService {
     private final ExpenseReportResponseFactory expenseReportResponseFactory;
     private final CostCenterBudgetService costCenterBudgetService;
     private final BudgetEncumbranceService budgetEncumbranceService;
+    private final CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
+    private final CashAdvanceRepository cashAdvanceRepository;
 
     @Override
     @Transactional(readOnly = true)
@@ -160,6 +164,7 @@ public class ApPaymentServiceImpl implements ApPaymentService {
         report.setPaidAmount(request.amountPaid());
         report.setPaymentRemarks(request.remarks() != null && !request.remarks().isBlank() ? request.remarks().trim() : null);
         expenseReportRepository.save(report);
+        recheckLinkedCashAdvance(report, actingEmployeeId);
 
         auditLogRepository.save(AuditLog.builder()
                 .entityName("ExpenseReport")
@@ -178,6 +183,20 @@ public class ApPaymentServiceImpl implements ApPaymentService {
 
         log.info("Payment completed for report {} by {} (reference {})", reportId, actingEmployeeId, reference);
         return expenseReportResponseFactory.toResponse(findReport(reportId));
+    }
+
+    /**
+     * A paid reimbursement can be the last thing holding its cash advance open: once it is recorded, the advance closes
+     * if its balance is zero and no other linked reimbursement is still owed.
+     */
+    private void recheckLinkedCashAdvance(ExpenseReport report, String actingEmployeeId) {
+        CashAdvance advance = report.getCashAdvance();
+        if (advance == null) {
+            return;
+        }
+        cashAdvanceBalanceLedger.refreshStatus(advance, actingEmployeeId,
+                "Reimbursement paid for report " + report.getReportNumber());
+        cashAdvanceRepository.save(advance);
     }
 
     /**

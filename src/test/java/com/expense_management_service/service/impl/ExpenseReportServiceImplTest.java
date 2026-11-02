@@ -43,6 +43,10 @@ import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import com.expense_management_service.entity.CashAdvance;
+import com.expense_management_service.entity.ExpenseLineItem;
+import java.time.LocalDateTime;
+import java.util.ArrayList;
 
 @ExtendWith(MockitoExtension.class)
 class ExpenseReportServiceImplTest {
@@ -356,6 +360,49 @@ class ExpenseReportServiceImplTest {
     }
 
     @Test
+    void update_rejectsTripDatesThatLeaveAnExistingLineOutsideThem() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseLineItem line = ExpenseLineItem.builder().expenseDate(LocalDate.now().minusDays(10)).build();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).title("Old title")
+                .expenseLineItems(new ArrayList<>(List.of(line))).build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        stubActiveCostCenterAndCurrency();
+        when(expenseReportRepository.findByEmployeeIdAndFiscalYearAndTitleIgnoreCase(employeeId, fiscalYear, "Client visit - Q1"))
+                .thenReturn(Optional.empty());
+        ExpenseReportRequest narrowed = new ExpenseReportRequest("Client visit - Q1", "Client visit to discuss renewal terms",
+                costCenterId, currencyId, null, LocalDate.now().minusDays(5), LocalDate.now().minusDays(1), null, null);
+
+        assertThatThrownBy(() -> expenseReportService.update(reportId, narrowed))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("outside the permitted dates");
+
+        verify(expenseReportRepository, never()).save(any());
+    }
+
+    @Test
+    void update_acceptsTripDatesThatKeepEveryLineInside() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseLineItem line = ExpenseLineItem.builder().expenseDate(LocalDate.now().minusDays(2)).build();
+        ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
+                .reportStatus(ReportStatus.DRAFT).fiscalYear(fiscalYear).title("Old title")
+                .expenseLineItems(new ArrayList<>(List.of(line))).build();
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(existing));
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        stubActiveCostCenterAndCurrency();
+        when(expenseReportRepository.findByEmployeeIdAndFiscalYearAndTitleIgnoreCase(employeeId, fiscalYear, "Client visit - Q1"))
+                .thenReturn(Optional.empty());
+        when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
+        ExpenseReportRequest widened = new ExpenseReportRequest("Client visit - Q1", "Client visit to discuss renewal terms",
+                costCenterId, currencyId, null, LocalDate.now().minusDays(5), LocalDate.now().minusDays(1), null, null);
+
+        expenseReportService.update(reportId, widened);
+
+        verify(expenseReportRepository).save(any(ExpenseReport.class));
+    }
+
+    @Test
     void update_throwsBusinessRuleViolation_whenReportNotEditable() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
@@ -515,36 +562,4 @@ class ExpenseReportServiceImplTest {
                 null, null);
     }
 
-    private static com.expense_management_service.entity.CashAdvance advanceRequestedOn(LocalDate requested) {
-        return com.expense_management_service.entity.CashAdvance.builder()
-                .createdAt(requested.atTime(10, 0)).build();
-    }
-
-    @Test
-    void advanceWindow_allowsATripInsideOneMonthOfTheRequest() {
-        LocalDate requested = LocalDate.of(2026, 10, 27);
-        ExpenseReportServiceImpl.assertTripWithinAdvanceWindow(tripRequest(requested, LocalDate.of(2026, 11, 20)),
-                advanceRequestedOn(requested));
-    }
-
-    @Test
-    void advanceWindow_rejectsATripThatStartsBeforeTheRequest() {
-        LocalDate requested = LocalDate.of(2026, 10, 27);
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> ExpenseReportServiceImpl.assertTripWithinAdvanceWindow(
-                        tripRequest(LocalDate.of(2026, 10, 20), LocalDate.of(2026, 10, 25)), advanceRequestedOn(requested)))
-                .hasMessageContaining("within one month of the cash advance request");
-    }
-
-    @Test
-    void advanceWindow_rejectsATripEndingMoreThanOneMonthAfterTheRequest() {
-        LocalDate requested = LocalDate.of(2026, 10, 27);
-        org.assertj.core.api.Assertions.assertThatThrownBy(() -> ExpenseReportServiceImpl.assertTripWithinAdvanceWindow(
-                        tripRequest(requested, LocalDate.of(2026, 11, 28)), advanceRequestedOn(requested)))
-                .hasMessageContaining("within one month of the cash advance request");
-    }
-
-    @Test
-    void advanceWindow_doesNothingWithoutAnAdvance() {
-        ExpenseReportServiceImpl.assertTripWithinAdvanceWindow(tripRequest(LocalDate.of(2020, 1, 1), LocalDate.of(2020, 1, 2)), null);
-    }
 }

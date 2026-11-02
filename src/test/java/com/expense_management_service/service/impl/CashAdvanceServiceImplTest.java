@@ -104,6 +104,9 @@ class CashAdvanceServiceImplTest {
     @Mock
     private CurrentUserService currentUserService;
 
+    @Mock
+    private CashAdvanceCarryForwardService carryForwardService;
+
     @InjectMocks
     private CashAdvanceServiceImpl cashAdvanceService;
 
@@ -114,6 +117,15 @@ class CashAdvanceServiceImplTest {
     @AfterEach
     void tearDown() {
         SecurityContextHolder.clearContext();
+    }
+
+    @Mock private CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
+
+    @BeforeEach
+    void stubLedgerStatus() {
+        // The real status rule, so the advance's status is still derived from its balance here
+        lenient().when(cashAdvanceBalanceLedger.statusFor(any(), any(), anyInt()))
+                .thenAnswer(inv -> CashAdvanceBalanceRules.statusAfterBalance(inv.<BigDecimal>getArgument(1), inv.<Integer>getArgument(2)));
     }
 
     @BeforeEach
@@ -388,7 +400,8 @@ class CashAdvanceServiceImplTest {
     }
 
     @Test
-    void disburse_includesTheCarriedInBalanceInTheObligation() {
+    void disburse_keepsTheCarriedInBalanceInsideTheAmount() {
+        // The carried-in part is already part of the advance amount, so the obligation stays at the amount.
         CashAdvance advance = approvedAdvance();
         advance.setCarriedInAmount(new BigDecimal("300.00"));
         when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
@@ -396,7 +409,22 @@ class CashAdvanceServiceImplTest {
 
         cashAdvanceService.disburse(advanceId, "FIN001", bankTransfer());
 
-        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1300.00")));
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1000.00")));
+    }
+
+    @Test
+    void disburse_whenCarriedInCoversTheWholeAdvance_recordsItWithoutAnyPayment() {
+        CashAdvance advance = approvedAdvance();
+        advance.setCarriedInAmount(new BigDecimal("1000.00"));
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        when(cashAdvanceRepository.save(any(CashAdvance.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        cashAdvanceService.disburse(advanceId, "FIN001",
+                new CashAdvanceDisbursement(null, null, null, null, null, null, null, null, null, null));
+
+        assertEquals("IN_PROGRESS", advance.getStatus());
+        assertEquals("CARRIED_FORWARD", advance.getDisbursementMode());
+        assertEquals(0, advance.getOutstandingBalance().compareTo(new BigDecimal("1000.00")));
     }
 
     private CashAdvance approvedAdvance() {

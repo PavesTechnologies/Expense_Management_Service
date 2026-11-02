@@ -4,6 +4,7 @@ import com.expense_management_service.dto.request.ExpenseLineItemRequest;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
 import java.util.List;
 import java.util.UUID;
+import com.expense_management_service.dto.response.ExpenseDateRangeResponse;
 
 /**
  * Add/edit/delete expense line item business logic (EP02-S2).
@@ -22,6 +23,9 @@ public interface ExpenseLineItemService {
     ExpenseLineItemResponse getById(UUID reportId, UUID lineItemId);
 
     List<ExpenseLineItemResponse> getAllForReport(UUID reportId);
+
+    /** The dates an expense line on this report may carry, for the entry forms. */
+    ExpenseDateRangeResponse expenseDateRange(UUID reportId);
 
     void delete(UUID reportId, UUID lineItemId);
 }

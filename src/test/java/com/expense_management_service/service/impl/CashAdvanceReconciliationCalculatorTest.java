@@ -112,13 +112,13 @@ class CashAdvanceReconciliationCalculatorTest {
     @Test
     void carriedInAndCarriedOut_adjustTheExpectedBalance() {
         CashAdvance source = disbursed(1000, 700, "EMP001");
-        CashAdvance destination = disbursed(500, 800, "EMP001");   // 500 + 300 carried in
+        CashAdvance destination = disbursed(500, 500, "EMP001");   // 500 amount, of which 300 is carried in
         var allocation = carryForward(source, destination, 300, BEFORE_END, null);
 
         var lines = snapshot(List.of(source, destination), List.of(allocation), List.of(), List.of());
 
         assertThat(lines.get(0).expected()).isEqualByComparingTo("700");   // source: 1000 - 300 carried out
-        assertThat(lines.get(1).expected()).isEqualByComparingTo("800");   // destination: 500 + 300 carried in
+        assertThat(lines.get(1).expected()).isEqualByComparingTo("500");   // destination: the amount already includes the 300
         assertThat(lines.stream().noneMatch(l -> l.flagged())).isTrue();
     }
 

@@ -8,9 +8,11 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 
 /**
- * The 30-day window in which an employee must submit the expense report for a disbursed cash advance.
+ * The 30-day window in which an employee must submit expense reports for a cash advance.
  * <ul>
- *   <li>The window starts at {@code disbursedAt}. If {@code disbursedAt} is empty, the clock has not started and the window is open.</li>
+ *   <li>The window runs 30 days from the advance's expected trip end date. Without a trip end date it runs from
+ *       {@code disbursedAt}. Without either, the clock has not started and the window is open.</li>
+ *   <li>Cash timing does not move the window. A late disbursement still gets the full 30 days after the trip.</li>
  *   <li>Finance can extend the deadline to a date ({@code expenseDeadlineExtendedUntil}), which replaces the 30 days.</li>
  *   <li>Finance can reopen the window ({@code expenseDeadlineReopened}), which keeps it open regardless of date.</li>
  * </ul>
@@ -34,11 +36,14 @@ public final class CashAdvanceExpenseWindow {
         if (windowDays < 1) {
             throw new IllegalArgumentException("expense.submission.deadline-days must be at least 1");
         }
-        if (advance.getDisbursedAt() == null) {
-            return null;
-        }
         if (advance.getExpenseDeadlineExtendedUntil() != null) {
             return advance.getExpenseDeadlineExtendedUntil().atTime(LocalTime.of(23, 59, 59));
+        }
+        if (advance.getExpectedTripEndDate() != null) {
+            return advance.getExpectedTripEndDate().plusDays(windowDays).atTime(LocalTime.of(23, 59, 59));
+        }
+        if (advance.getDisbursedAt() == null) {
+            return null;
         }
         return advance.getDisbursedAt().plusDays(windowDays);
     }

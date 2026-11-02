@@ -23,7 +23,13 @@ public record CashAdvanceResponse(
         LocalDateTime createdAt,
         LocalDateTime updatedAt,
         String title,
-        String notes
+        String notes,
+        /** Balance carried in from earlier advances. It is part of {@code amount}, so Finance pays amount minus this. */
+        BigDecimal carriedInAmount,
+        /** Balance this advance has carried out to later advances (carry-forward). */
+        BigDecimal carriedOutAmount,
+        LocalDate expectedTripStartDate,
+        LocalDate expectedTripEndDate
 ) {
     public CashAdvanceResponse(
             UUID advanceId,
@@ -42,7 +48,7 @@ public record CashAdvanceResponse(
             LocalDateTime updatedAt
     ) {
         this(advanceId, employeeId, managerId, null, null, amount, currencyId, currencyCode, baseAmount,
-                purpose, status, settlementDueDate, neededByDate, outstandingBalance, createdAt, updatedAt, null, null);
+                purpose, status, settlementDueDate, neededByDate, outstandingBalance, createdAt, updatedAt, null, null, null, null, null, null);
     }
 
     public CashAdvanceResponse(
@@ -61,7 +67,7 @@ public record CashAdvanceResponse(
             LocalDateTime updatedAt
     ) {
         this(advanceId, employeeId, managerId, null, null, amount, currencyId, currencyCode, baseAmount,
-            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt, null, null);
+            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt, null, null, null, null, null, null);
     }
 
     public CashAdvanceResponse(
@@ -79,7 +85,7 @@ public record CashAdvanceResponse(
             LocalDateTime updatedAt
     ) {
         this(advanceId, employeeId, null, null, null, amount, currencyId, currencyCode, baseAmount,
-            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt, null, null);
+            purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt, null, null, null, null, null, null);
     }
 
     public CashAdvanceResponse(
@@ -95,6 +101,6 @@ public record CashAdvanceResponse(
             BigDecimal outstandingBalance
     ) {
         this(advanceId, employeeId, null, null, null, amount, currencyId, currencyCode, baseAmount,
-                purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, null, null, null, null);
+                purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, null, null, null, null, null, null, null, null);
     }
 }

@@ -79,7 +79,7 @@ class CashAdvanceRecoveryServiceTest {
         lenient().when(emailTransport.isConfigured()).thenReturn(true);
         PolicySettingsService policy = new PolicySettingsService(systemConfigurationRepository);
         service = new CashAdvanceRecoveryService(cashAdvanceRepository, adjustmentRepository, caseRepository,
-                new CashAdvanceBalanceLedger(auditLogRepository), outbox, policy, umsClient, currentUserService,
+                new CashAdvanceBalanceLedger(auditLogRepository, org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)), outbox, policy, umsClient, currentUserService,
                 notificationService, salaryDeductionRequestRepository, salaryDeductionService);
 
         advanceId = UUID.randomUUID();

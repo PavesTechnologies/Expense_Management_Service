@@ -49,6 +49,8 @@ class NotificationEventListenerTest {
     @Mock private ExpenseLineItemRepository expenseLineItemRepository;
     @Mock private ApprovalAssignmentRepository approvalAssignmentRepository;
     @Mock private EmployeeCacheRepository employeeCacheRepository;
+    @Mock private ApPaymentEmailService apPaymentEmailService;
+    @Mock private ApprovalReminderEmailService approvalReminderEmailService;
 
     private NotificationEventListener listener;
     private final UUID reportId = UUID.randomUUID();
@@ -58,7 +60,8 @@ class NotificationEventListenerTest {
     @BeforeEach
     void setUp() {
         listener = new NotificationEventListener(notificationService, notificationRepository, expenseReportRepository,
-                expenseLineItemRepository, approvalAssignmentRepository, employeeCacheRepository);
+                expenseLineItemRepository, approvalAssignmentRepository, employeeCacheRepository,
+                apPaymentEmailService, approvalReminderEmailService);
         ReflectionTestUtils.setField(listener, "baseCurrencyCode", "INR");
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
         when(expenseLineItemRepository.sumBaseAmountByReportId(reportId)).thenReturn(new BigDecimal("12500"));
@@ -174,5 +177,21 @@ class NotificationEventListenerTest {
 
         verify(notificationService, never()).notifyEmployee(anyString(), any());
         verify(notificationService, never()).notifyRole(anyString(), any());
+    }
+
+    @Test
+    void underspend_asksFinanceToChooseCarryForwardOrSalary_withTheLeftoverAndADirectLink() {
+        report.setCashAdvance(com.expense_management_service.entity.CashAdvance.builder()
+                .advanceId(java.util.UUID.fromString("00000000-0000-0000-0000-00000000abcd"))
+                .outstandingBalance(new java.math.BigDecimal("200"))
+                .build());
+
+        listener.onWorkflowEvent(new ApprovalDomainEvent("CASH_ADVANCE_UNDERSPEND", reportId, "advanceId=x"));
+
+        NotificationDraft finance = draftForRole(NotificationService.ROLE_FINANCE);
+        assertThat(finance.category()).isEqualTo(NotificationCategory.ACTION_REQUIRED);
+        assertThat(finance.title()).isEqualTo("Choose what to do with the leftover on EXP-1024");
+        assertThat(finance.message()).contains("200.00").contains("carry it forward or deduct it from salary");
+        assertThat(finance.link()).isEqualTo("/expense-management/cash-advance/settlement/00000000-0000-0000-0000-00000000abcd");
     }
 }

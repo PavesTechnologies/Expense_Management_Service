@@ -140,7 +140,7 @@ final class CashAdvanceEmailTemplate {
     private static String amount(CashAdvance advance) {
         String currency = advance.getCurrency() != null ? advance.getCurrency().getCurrencyCode() : "";
         BigDecimal value = advance.getAmount() == null ? BigDecimal.ZERO : advance.getAmount();
-        return currency + " " + value.toPlainString();
+        return currency + " " + value.setScale(2, java.math.RoundingMode.HALF_UP).toPlainString();
     }
 
     private static String costCenterName(CashAdvance advance) {

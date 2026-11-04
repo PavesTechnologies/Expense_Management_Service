@@ -1,10 +1,15 @@
 package com.expense_management_service.integration.email;
 
+import jakarta.mail.MessagingException;
+import jakarta.mail.internet.MimeMessage;
 import org.springframework.mail.MailException;
-import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.mail.javamail.MimeMessageHelper;
 
-/** Sends email through an SMTP server. Created only when {@code expense.mail.smtp-host} is set. */
+/**
+ * Sends email through an SMTP server. Created only when {@code expense.mail.smtp-host} is set.
+ * Each message is sent as HTML (with real tables) and plain text as the fallback.
+ */
 public class SmtpEmailTransport implements EmailTransport {
 
     private final JavaMailSender mailSender;
@@ -17,14 +22,15 @@ public class SmtpEmailTransport implements EmailTransport {
 
     @Override
     public void send(String to, String subject, String body) {
-        SimpleMailMessage message = new SimpleMailMessage();
-        message.setFrom(from);
-        message.setTo(to);
-        message.setSubject(subject);
-        message.setText(body);
         try {
+            MimeMessage message = mailSender.createMimeMessage();
+            MimeMessageHelper helper = new MimeMessageHelper(message, true, "UTF-8");
+            helper.setFrom(from);
+            helper.setTo(to);
+            helper.setSubject(subject);
+            helper.setText(body, EmailHtml.render(body));
             mailSender.send(message);
-        } catch (MailException e) {
+        } catch (MailException | MessagingException e) {
             throw new EmailTransportException("SMTP send failed: " + e.getMessage());
         }
     }

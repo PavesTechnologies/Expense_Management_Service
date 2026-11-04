@@ -43,4 +43,7 @@ public interface CashAdvanceRepository extends JpaRepository<CashAdvance, UUID> 
     Page<CashAdvance> findByManagerIdIn(Collection<String> managerIds, Pageable pageable);
     Page<CashAdvance> findByManagerIdInAndStatus(Collection<String> managerIds, String status, Pageable pageable);
     Page<CashAdvance> findByManagerIdInAndStatusIn(Collection<String> managerIds, Collection<String> statuses, Pageable pageable);
+
+    /** Open advances that have not yet had their expense-deadline reminder sent. Filtered by date in the service. */
+    List<CashAdvance> findByStatusInAndDeadlineReminderSentAtIsNull(Collection<String> statuses);
 }

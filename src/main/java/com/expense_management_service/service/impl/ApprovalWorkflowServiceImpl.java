@@ -1607,6 +1607,10 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             cashAdvanceBalanceLedger.applyBalance(advance, newBalance, "CASH_ADVANCE_BALANCE_RECALCULATED", "SYSTEM",
                     "Recalculated on approval of report " + report.getReportNumber());
             cashAdvanceRepository.save(advance);
+            if (newBalance.signum() > 0) {
+                // The employee spent less than the advance: Finance must choose carry forward or salary deduction.
+                approvalEventPublisher.publish("CASH_ADVANCE_UNDERSPEND", report.getReportId(), "advanceId=" + advance.getAdvanceId());
+            }
             approvalEventPublisher.publish("CASH_ADVANCE_ADJUSTED", advance.getAdvanceId(), "reportId=" + report.getReportId() + " amount=" + verifiedAmount);
         }
     }

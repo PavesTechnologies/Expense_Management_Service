@@ -56,6 +56,8 @@ public class NotificationEventListener {
     private final ExpenseLineItemRepository expenseLineItemRepository;
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
     private final EmployeeCacheRepository employeeCacheRepository;
+    private final ApPaymentEmailService apPaymentEmailService;
+    private final ApprovalReminderEmailService approvalReminderEmailService;
 
     @Value("${exchange.rate.base-currency}")
     private String baseCurrencyCode;
@@ -162,6 +164,19 @@ public class NotificationEventListener {
                 c.toOwner(NotificationCategory.PENDING, "Report %s is awaiting payment",
                         "Report %s is approved and with Accounts Payable. You'll be notified once "
                                 + c.payableText() + " has actually been paid.", "Awaiting payment", null);
+                apPaymentEmailService.onApprovedForPayment(c.report, c.ownerName(), c.payableText());
+            }
+
+            case "CASH_ADVANCE_UNDERSPEND" -> {
+                var advance = c.report.getCashAdvance();
+                if (advance != null) {
+                    String currency = advance.getCurrency() != null ? advance.getCurrency().getCurrencyCode() : "";
+                    c.toRole(ROLE_FINANCE, NotificationCategory.ACTION_REQUIRED, "Choose what to do with the leftover on %s",
+                            "%s spent less than the advance. %s %s is left to return: carry it forward or deduct it from salary.".formatted(
+                                    c.ownerName(), currency, advance.getOutstandingBalance().setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()),
+                            "Settlement pending", "Choose settlement",
+                            "/expense-management/cash-advance/settlement/" + advance.getAdvanceId());
+                }
             }
 
             case "REPORT_SETTLED_NO_PAYMENT" -> c.toOwner(NotificationCategory.COMPLETED, "Report %s settled, nothing to pay",
@@ -192,6 +207,8 @@ public class NotificationEventListener {
                 c.toEmployee(approver, NotificationCategory.ACTION_REQUIRED, "Reminder: %s is overdue for your approval",
                         "Report from %s (%s) is past its approval due date.".formatted(c.ownerName(), c.amountText()),
                         "Overdue", "Review expense", "/expense-management/approvals");
+                // Same once-per-24-hours guard as the in-app reminder above: the email goes out only with it.
+                approvalReminderEmailService.remind(approver, c.report, c.ownerName(), c.amountText());
             }
 
             default -> {

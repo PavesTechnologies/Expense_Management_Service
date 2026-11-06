@@ -12,6 +12,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 import java.math.RoundingMode;
 import java.util.Objects;
 import java.util.UUID;
@@ -56,11 +60,22 @@ public class DefaultMaterialChangeEvaluatorImpl implements MaterialChangeEvaluat
         if (report.getExpenseLineItems() == null) {
             return "";
         }
-        return report.getExpenseLineItems().stream()
+        String joined = report.getExpenseLineItems().stream()
                 .filter(li -> li.getCategory() != null && li.getCategory().getGlAccount() != null)
                 .map(li -> li.getLineItemId() + "=" + li.getCategory().getGlAccount().getGlAccountId())
                 .sorted()
                 .collect(Collectors.joining(";"));
+        // Stored as a SHA-256 hash: the list grows with every line, and the column holds 255 bytes.
+        // Only equality is ever checked, so a hash keeps every comparison exact.
+        return joined.isEmpty() ? "" : sha256Hex(joined);
+    }
+
+    private static String sha256Hex(String text) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(text.getBytes(StandardCharsets.UTF_8)));
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 is not available", e);
+        }
     }
 
     private boolean isAmountChangeMaterial(ExpenseReport report, ApprovalLevelInstance snapshot) {

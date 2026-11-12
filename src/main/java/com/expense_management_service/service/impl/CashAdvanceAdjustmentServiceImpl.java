@@ -1,7 +1,9 @@
 package com.expense_management_service.service.impl;
 
+import java.math.BigDecimal;
 import java.util.List;
 
+import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.CashAdvanceAdjustmentRequest;
 import com.expense_management_service.dto.response.CashAdvanceAdjustmentResponse;
@@ -12,6 +14,7 @@ import com.expense_management_service.mapper.CashAdvanceAdjustmentMapper;
 import com.expense_management_service.repository.CashAdvanceAdjustmentRepository;
 import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.service.CashAdvanceAdjustmentService;
 import lombok.RequiredArgsConstructor;
 
@@ -21,31 +24,162 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+import com.expense_management_service.enums.PaymentRoutingStatus;
+import com.expense_management_service.enums.ReportStatus;
+import com.expense_management_service.entity.AuditLog;
+import com.expense_management_service.repository.AuditLogRepository;
+import com.expense_management_service.service.ApprovalEventPublisher;
+import com.expense_management_service.security.RoleConstants;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional
 public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentService {
 
+    private final CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
+
     private final CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
     private final CashAdvanceRepository cashAdvanceRepository;
     private final ExpenseReportRepository expenseReportRepository;
     private final CashAdvanceAdjustmentMapper cashAdvanceAdjustmentMapper;
+    private final CurrentUserService currentUserService;
+    private final AuditLogRepository auditLogRepository;
+    private final ApprovalEventPublisher approvalEventPublisher;
+    private final CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
 
     @Override
     public CashAdvanceAdjustmentResponse create(CashAdvanceAdjustmentRequest request) {
+        if (!isFinanceCaller() && !isAdminCaller()) {
+            throw new BusinessRuleViolationException("Only Finance Executives can process cash advance settlements");
+        }
+        String idempotencyKey = request.idempotencyKey() == null || request.idempotencyKey().isBlank()
+                ? null
+                : request.idempotencyKey().trim();
+        if (idempotencyKey != null) {
+            // A retry returns the adjustment the first call created. It must not apply the offset a second time.
+            java.util.Optional<CashAdvanceAdjustment> earlier = cashAdvanceAdjustmentRepository.findByIdempotencyKey(idempotencyKey);
+            if (earlier.isPresent()) {
+                CashAdvanceAdjustment prior = earlier.get();
+                boolean sameRequest = prior.getCashAdvance() != null
+                        && prior.getCashAdvance().getAdvanceId().equals(request.advanceId())
+                        && prior.getReport() != null
+                        && prior.getReport().getReportId().equals(request.reportId())
+                        && prior.getAdjustedAmount().compareTo(request.adjustedAmount()) == 0;
+                if (!sameRequest) {
+                    throw new BusinessRuleViolationException("This idempotency key was already used for a different adjustment.");
+                }
+                return cashAdvanceAdjustmentMapper.toResponse(prior);
+            }
+        }
+
+        CashAdvance advance = findCashAdvance(request.advanceId());
+
+        List<String> allowedStatuses = List.of(
+                "DISBURSED", "IN_PROGRESS", "RECONCILIATION_PENDING", "SUBMITTED_FOR_REVIEW",
+                "UNDER_REVIEW", "APPROVED", "SETTLEMENT_PENDING", "EXPENSE_SUBMITTED",
+                "EXPENSE_VERIFIED", "PARTIALLY_SETTLED", "PARTIALLY_ADJUSTED"
+        );
+        String advStatusUpper = (advance.getStatus() != null) ? advance.getStatus().toUpperCase() : "";
+        if (!allowedStatuses.contains(advStatusUpper)) {
+            throw new BusinessRuleViolationException("Cash advance must be in an active post-disbursement status to perform settlement adjustment. Current status: " + advance.getStatus());
+        }
+
+        ExpenseReport report = findReport(request.reportId());
+        if (report.getReportStatus() != ReportStatus.APPROVED && report.getReportStatus() != ReportStatus.CLOSED) {
+            throw new BusinessRuleViolationException("Expense report must be fully approved and finance-verified before adjusting against a cash advance. Current report status: " + report.getReportStatus());
+        }
+
+        if (report.getPaymentRoutingStatus() == com.expense_management_service.enums.PaymentRoutingStatus.PAYMENT_COMPLETED) {
+            throw new BusinessRuleViolationException("Expense report " + report.getReportNumber() + " is already paid, so it can no longer be offset.");
+        }
+        if (report.getEmployeeId() != null && advance.getEmployeeId() != null
+                && !report.getEmployeeId().trim().equalsIgnoreCase(advance.getEmployeeId().trim())
+                && !isAdminCaller()) {
+            throw new BusinessRuleViolationException("Expense report employee (" + report.getEmployeeId()
+                    + ") does not match cash advance employee (" + advance.getEmployeeId() + ")");
+        }
+
+        List<CashAdvanceAdjustment> existingAdjustments = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId());
+        boolean duplicate = existingAdjustments.stream().anyMatch(adj -> adj.getReport() != null && adj.getReport().getReportId().equals(report.getReportId()));
+        if (duplicate) {
+            throw new BusinessRuleViolationException("Expense report " + report.getReportId() + " has already been adjusted against cash advance " + advance.getAdvanceId());
+        }
+
+        // The balance comes from the records (amount, offsets, repayments), so a stored value that drifted is corrected here.
+        BigDecimal offsetsSoFar = existingAdjustments.stream()
+                .map(CashAdvanceAdjustment::getAdjustedAmount)
+                .filter(java.util.Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal repaidSoFar = advance.getRepayments() == null ? BigDecimal.ZERO : advance.getRepayments().stream()
+                .map(com.expense_management_service.entity.CashAdvanceRepayment::getAmount)
+                .filter(java.util.Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal currentBalance = CashAdvanceBalanceRules.ledgerBalance(advance, offsetsSoFar, repaidSoFar);
+
+        BigDecimal adjustedAmount = request.adjustedAmount();
+        if (adjustedAmount.compareTo(currentBalance) > 0) {
+            throw new BusinessRuleViolationException("Adjusted amount (" + adjustedAmount + ") cannot exceed cash advance outstanding balance (" + currentBalance + ")");
+        }
+
+        int decimals = advance.getCurrency() != null ? advance.getCurrency().getDecimalPlaces() : 2;
+        BigDecimal newBalance = CashAdvanceBalanceRules.requireNonNegative(
+                CashAdvanceBalanceRules.ledgerBalance(advance, offsetsSoFar.add(adjustedAmount), repaidSoFar), decimals);
+        advance.setOutstandingBalance(newBalance);
+
+        String previousStatus = advance.getStatus();
+        advance.setStatus(cashAdvanceBalanceLedger.statusFor(advance, newBalance, decimals));
+        cashAdvanceRepository.save(advance);
+
         CashAdvanceAdjustment entity = cashAdvanceAdjustmentMapper.toEntity(request);
-        entity.setCashAdvance(findCashAdvance(request.advanceId()));
-        entity.setReport(findReport(request.reportId()));
+        entity.setCashAdvance(advance);
+        entity.setReport(report);
+        entity.setAdjustedAmount(adjustedAmount);
         entity.setAdjustedAt(LocalDateTime.now());
-        return cashAdvanceAdjustmentMapper.toResponse(cashAdvanceAdjustmentRepository.save(entity));
+        entity.setIdempotencyKey(idempotencyKey);
+        String actingUser = currentUserService.getEmployeeId();
+        if (entity.getAdjustedBy() == null || entity.getAdjustedBy().isBlank()) {
+            entity.setAdjustedBy(actingUser);
+        }
+
+        CashAdvanceAdjustment saved = cashAdvanceAdjustmentRepository.save(entity);
+        cashAdvanceBudgetMovements.moveAllocationToUtilized(advance, adjustedAmount, report);
+        refreshReimbursable(report);
+
+        auditLogRepository.save(AuditLog.builder()
+                .entityName("CashAdvanceAdjustment")
+                .entityId(saved.getAdjustmentId())
+                .action("ADJUSTMENT_CREATED")
+                .oldValue("Balance: " + currentBalance + ", Status: " + previousStatus)
+                .newValue("Adjusted: " + adjustedAmount + ", NewBalance: " + advance.getOutstandingBalance() + ", Status: " + advance.getStatus())
+                .performedBy(actingUser)
+                .performedAt(LocalDateTime.now())
+                .build());
+
+        approvalEventPublisher.publish("CASH_ADVANCE_ADJUSTED", advance.getAdvanceId(), "amount=" + adjustedAmount + ", reportId=" + report.getReportId());
+
+        return cashAdvanceAdjustmentMapper.toResponse(saved);
     }
 
     @Override
     public CashAdvanceAdjustmentResponse update(UUID adjustmentId, CashAdvanceAdjustmentRequest request) {
         CashAdvanceAdjustment entity = findEntity(adjustmentId);
+        assertNotPaid(entity.getReport());
+        ExpenseReport targetReport = findReport(request.reportId());
+        assertNotPaid(targetReport);
         cashAdvanceAdjustmentMapper.updateEntity(entity, request);
         entity.setCashAdvance(findCashAdvance(request.advanceId()));
-        entity.setReport(findReport(request.reportId()));
+        entity.setReport(targetReport);
         return cashAdvanceAdjustmentMapper.toResponse(cashAdvanceAdjustmentRepository.save(entity));
     }
 
@@ -63,7 +197,78 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
 
     @Override
     public void delete(UUID adjustmentId) {
-        cashAdvanceAdjustmentRepository.delete(findEntity(adjustmentId));
+        CashAdvanceAdjustment entity = findEntity(adjustmentId);
+        assertNotPaid(entity.getReport());
+        CashAdvance advance = entity.getCashAdvance();
+        String actingUser = currentUserService.getEmployeeId();
+        if (advance != null && entity.getAdjustedAmount() != null) {
+            BigDecimal currentBalance = advance.getOutstandingBalance() != null ? advance.getOutstandingBalance() : BigDecimal.ZERO;
+            BigDecimal restoredBalance = currentBalance.add(entity.getAdjustedAmount());
+            if (restoredBalance.compareTo(advance.getAmount()) > 0) {
+                restoredBalance = advance.getAmount();
+            }
+            advance.setOutstandingBalance(restoredBalance);
+            cashAdvanceBudgetMovements.reverseOffset(advance, entity.getAdjustedAmount(), entity.getReport());
+            if (restoredBalance.compareTo(advance.getAmount()) == 0) {
+                advance.setStatus("IN_PROGRESS");
+            } else {
+                advance.setStatus("SETTLEMENT_PENDING");
+            }
+            cashAdvanceRepository.save(advance);
+        }
+        auditLogRepository.save(AuditLog.builder()
+                .entityName("CashAdvanceAdjustment")
+                .entityId(entity.getAdjustmentId())
+                .action("ADJUSTMENT_DELETED")
+                .oldValue(advance != null ? "Adjusted: " + entity.getAdjustedAmount() + ", Advance: " + advance.getAdvanceId() : null)
+                .newValue("Adjustment removed; balance restored on the advance")
+                .performedBy(actingUser)
+                .performedAt(LocalDateTime.now())
+                .reason("Adjustment deleted by " + actingUser)
+                .build());
+        cashAdvanceAdjustmentRepository.delete(entity);
+        if (entity.getReport() != null) {
+            refreshReimbursable(entity.getReport());
+        }
+
+        auditLogRepository.save(AuditLog.builder()
+                .entityName("CashAdvanceAdjustment")
+                .entityId(adjustmentId)
+                .action("ADJUSTMENT_DELETED")
+                .oldValue("Amount: " + entity.getAdjustedAmount())
+                .newValue("DELETED")
+                .performedBy(actingUser)
+                .performedAt(LocalDateTime.now())
+                .build());
+    }
+
+        private boolean isFinanceCaller() {
+        try {
+            var auth = SecurityContextHolder.getContext().getAuthentication();
+            if (auth != null && auth.getAuthorities() != null) {
+                return auth.getAuthorities().stream()
+                        .anyMatch(a -> RoleConstants.ROLE_FINANCE.equals(a.getAuthority())
+                                || RoleConstants.FINANCE.equals(a.getAuthority())
+                                || RoleConstants.ROLE_FINANCE_EXECUTIVE.equals(a.getAuthority())
+                                || RoleConstants.FINANCE_EXECUTIVE.equals(a.getAuthority()));
+            }
+        } catch (Exception e) {
+            log.debug("Could not determine user authorities from security context", e);
+        }
+        return false;
+    }
+
+private boolean isAdminCaller() {
+        try {
+            var auth = SecurityContextHolder.getContext().getAuthentication();
+            if (auth != null && auth.getAuthorities() != null) {
+                return auth.getAuthorities().stream()
+                        .anyMatch(a -> RoleConstants.ROLE_ADMIN.equals(a.getAuthority()) || RoleConstants.ADMIN.equals(a.getAuthority()));
+            }
+        } catch (Exception e) {
+            log.debug("Could not determine user authorities from security context", e);
+        }
+        return false;
     }
 
     private CashAdvance findCashAdvance(UUID advanceId) {
@@ -79,5 +284,40 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
     private CashAdvanceAdjustment findEntity(UUID adjustmentId) {
         return cashAdvanceAdjustmentRepository.findById(adjustmentId)
                 .orElseThrow(() -> new ResourceNotFoundException("CashAdvanceAdjustment not found with id: " + adjustmentId));
+    }
+
+    /** Reimbursable = gross less this report's cash advance adjustments (BR-TAX-013). */
+    private void refreshReimbursable(ExpenseReport report) {
+        report.setReimbursableAmount(ReimbursementCalculator.reimbursable(report.getTotalAmount(),
+                cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId())));
+        reconcilePaymentDue(report);
+        expenseReportRepository.save(report);
+    }
+
+    /**
+     * An offset made after approval can wipe out what the employee is owed, or (when removed)
+     * restore it. AP's queue only ever holds reports with something to pay: a report left with
+     * nothing to pay leaves it as "no payment due" (never "paid"), and one owing again rejoins it.
+     */
+    private void reconcilePaymentDue(ExpenseReport report) {
+        if (report.getReportStatus() != ReportStatus.APPROVED) {
+            return;
+        }
+        boolean owed = report.getReimbursableAmount() != null && report.getReimbursableAmount().signum() > 0;
+        if (!owed && report.getPaymentRoutingStatus() == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) {
+            report.setPaymentRoutingStatus(PaymentRoutingStatus.NONE);
+            report.setNoPaymentDue(true);
+        } else if (owed && Boolean.TRUE.equals(report.getNoPaymentDue())
+                && report.getPaymentRoutingStatus() == PaymentRoutingStatus.NONE) {
+            report.setPaymentRoutingStatus(PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
+            report.setNoPaymentDue(false);
+        }
+    }
+
+    private static void assertNotPaid(ExpenseReport report) {
+        if (report != null && report.getPaymentRoutingStatus() == PaymentRoutingStatus.PAYMENT_COMPLETED) {
+            throw new BusinessRuleViolationException("Expense report " + report.getReportNumber()
+                    + " is already paid, so its cash advance adjustment can no longer be changed.");
+        }
     }
 }

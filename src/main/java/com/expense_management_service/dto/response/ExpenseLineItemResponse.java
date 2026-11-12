@@ -3,6 +3,7 @@ package com.expense_management_service.dto.response;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 public record ExpenseLineItemResponse(
@@ -31,9 +32,33 @@ public record ExpenseLineItemResponse(
         String costCenterName,
         UUID projectId,
         String projectName,
+        /** Frozen at submission time — see {@code ExpenseLineItem.resolvedClientId}'s javadoc. Null for non-billable line items. */
+        UUID resolvedClientId,
+        String resolvedClientName,
         Boolean clientBillable,
         String lineStatus,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        List<PolicyWarningResponse> policyWarnings,
+        /** The tax snapshot (code, components, source, status); null only for hand-built test fixtures. */
+        LineTaxResponse tax,
+        /** Why the expense is charged outside the employee's home department; null when not given. */
+        String allocationReason
 ) {
+    public ExpenseLineItemResponse(UUID lineItemId, UUID reportId, String reportNumber, String reportStatus,
+                                   UUID categoryId, String categoryName, boolean categoryActive, boolean receiptRequired,
+                                   BigDecimal categoryMaxLimit, LocalDate expenseDate, String merchantName,
+                                   String description, BigDecimal amount, UUID currencyId, String currencyCode,
+                                   BigDecimal exchangeRate, BigDecimal baseAmount, String baseCurrencyCode,
+                                   BigDecimal taxAmount, BigDecimal netAmount, UUID costCenterId, String costCenterName,
+                                   UUID projectId, String projectName, UUID resolvedClientId, String resolvedClientName,
+                                   Boolean clientBillable, String lineStatus, LocalDateTime createdAt,
+                                   LocalDateTime updatedAt, List<PolicyWarningResponse> policyWarnings,
+                                   LineTaxResponse tax) {
+        this(lineItemId, reportId, reportNumber, reportStatus, categoryId, categoryName, categoryActive, receiptRequired,
+                categoryMaxLimit, expenseDate, merchantName, description, amount, currencyId, currencyCode, exchangeRate,
+                baseAmount, baseCurrencyCode, taxAmount, netAmount, costCenterId, costCenterName, projectId, projectName,
+                resolvedClientId, resolvedClientName, clientBillable, lineStatus, createdAt, updatedAt, policyWarnings,
+                tax, null);
+    }
 }

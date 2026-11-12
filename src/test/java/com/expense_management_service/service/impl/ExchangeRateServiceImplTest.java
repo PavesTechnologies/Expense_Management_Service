@@ -243,6 +243,55 @@ class ExchangeRateServiceImplTest {
     }
 
     @Test
+    void convertAmount_returnsAmountUnchanged_whenSameCurrency_withoutLookingUpARate() {
+        BigDecimal result = exchangeRateService.convertAmount(
+                BigDecimal.valueOf(100), usd.getCurrencyId(), usd.getCurrencyId(), LocalDate.now());
+
+        assertThat(result).isEqualByComparingTo("100");
+        verify(exchangeRateRepository, never())
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
+                        any(), any(), any());
+    }
+
+    @Test
+    void convertAmount_returnsNull_whenAmountIsNull() {
+        BigDecimal result = exchangeRateService.convertAmount(null, usd.getCurrencyId(), inr.getCurrencyId(), LocalDate.now());
+
+        assertThat(result).isNull();
+    }
+
+    @Test
+    void convertAmount_multipliesByHistoricalRateAndRoundsToTargetCurrencyDecimalPlaces() {
+        LocalDate asOfDate = LocalDate.of(2026, 3, 15);
+        ExchangeRate rate = ExchangeRate.builder()
+                .exchangeRateId(UUID.randomUUID()).fromCurrency(usd).toCurrency(inr)
+                .rate(BigDecimal.valueOf(83.256)).effectiveDate(asOfDate).build();
+        when(exchangeRateRepository
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
+                        usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
+                .thenReturn(Optional.of(rate));
+        when(currencyRepository.findById(inr.getCurrencyId())).thenReturn(Optional.of(inr));
+
+        BigDecimal result = exchangeRateService.convertAmount(
+                BigDecimal.valueOf(10), usd.getCurrencyId(), inr.getCurrencyId(), asOfDate);
+
+        // 10 * 83.256 = 832.56, rounded to INR's 2 decimal places (inr.decimalPlaces == 2, per setUp)
+        assertThat(result).isEqualByComparingTo("832.56");
+    }
+
+    @Test
+    void convertAmount_throwsResourceNotFoundException_whenNoRateExistsOnOrBeforeDate() {
+        LocalDate asOfDate = LocalDate.of(2026, 3, 15);
+        when(exchangeRateRepository
+                .findFirstByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDateLessThanEqualOrderByEffectiveDateDescFetchedAtDesc(
+                        usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> exchangeRateService.convertAmount(BigDecimal.TEN, usd.getCurrencyId(), inr.getCurrencyId(), asOfDate))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
     void refreshRates_derivesPairsFromActiveCurrencyMasterData_notFromExistingExchangeRateRows() {
         // USD has never had an exchange_rate row created for it — the refresh must still pick it up
         // purely because it is Active in the Currency table.
@@ -289,9 +338,8 @@ class ExchangeRateServiceImplTest {
     }
 
     @Test
-    void refreshRates_skipsPair_whenRateAlreadyRecordedForToday() {
+    void refreshRates_skipsPairWithoutCallingProvider_whenRateAlreadyRecordedForToday() {
         when(currencyRepository.findAll()).thenReturn(List.of(inr, usd));
-        when(exchangeRateProvider.fetchRate(anyString(), anyString())).thenReturn(Optional.of(BigDecimal.valueOf(83.5)));
         when(exchangeRateRepository.existsByFromCurrency_CurrencyIdAndToCurrency_CurrencyIdAndEffectiveDate(
                 any(), any(), eq(LocalDate.now()))).thenReturn(true);
 
@@ -299,7 +347,24 @@ class ExchangeRateServiceImplTest {
 
         assertThat(response.ratesCreated()).isZero();
         assertThat(response.ratesSkipped()).isEqualTo(2);
+        assertThat(response.note()).containsIgnoringCase("already recorded");
         verify(exchangeRateRepository, never()).save(any());
+        verify(exchangeRateProvider, never()).fetchRate(any(), any());
+    }
+
+    @Test
+    void getAll_returnsNewestEffectiveDateFirst_thenByCurrencyPair() {
+        ExchangeRate oldUsdInr = ExchangeRate.builder().exchangeRateId(UUID.randomUUID()).fromCurrency(usd).toCurrency(inr)
+                .rate(BigDecimal.TEN).effectiveDate(LocalDate.of(2026, 1, 1)).build();
+        ExchangeRate newUsdInr = ExchangeRate.builder().exchangeRateId(UUID.randomUUID()).fromCurrency(usd).toCurrency(inr)
+                .rate(BigDecimal.TEN).effectiveDate(LocalDate.of(2026, 1, 2)).build();
+        ExchangeRate newInrUsd = ExchangeRate.builder().exchangeRateId(UUID.randomUUID()).fromCurrency(inr).toCurrency(usd)
+                .rate(BigDecimal.ONE).effectiveDate(LocalDate.of(2026, 1, 2)).build();
+
+        when(exchangeRateRepository.findAll()).thenReturn(List.of(oldUsdInr, newUsdInr, newInrUsd));
+
+        assertThat(exchangeRateService.getAll()).extracting(ExchangeRateResponse::exchangeRateId)
+                .containsExactly(newInrUsd.getExchangeRateId(), newUsdInr.getExchangeRateId(), oldUsdInr.getExchangeRateId());
     }
 
     @Test

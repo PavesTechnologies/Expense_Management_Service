@@ -17,7 +17,13 @@ public interface ExpenseCategoryRepository extends JpaRepository<ExpenseCategory
 
     Optional<ExpenseCategory> findByCategoryNameIgnoreCase(String categoryName);
 
+    Optional<ExpenseCategory> findFirstByCategoryCodeIgnoreCase(String categoryCode);
+
     boolean existsByCategoryNameIgnoreCase(String categoryName);
 
     List<ExpenseCategory> findByStatusIgnoreCaseOrderByCategoryNameAsc(String status);
+
+    List<ExpenseCategory> findByTaxCodeIgnoreCase(String taxCode);
+
+    long countByTaxCodeIgnoreCase(String taxCode);
 }

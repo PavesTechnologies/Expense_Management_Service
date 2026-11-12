@@ -26,7 +26,7 @@ import org.springframework.web.bind.annotation.RestController;
  */
 @Slf4j
 @RestController
-@RequestMapping("/api/v1/diagnostics")
+@RequestMapping("/xms/api/v1/diagnostics")
 @RequiredArgsConstructor
 @Tag(name = "Diagnostics", description = "UMS integration sanity checks (no database required)")
 public class DiagnosticController {

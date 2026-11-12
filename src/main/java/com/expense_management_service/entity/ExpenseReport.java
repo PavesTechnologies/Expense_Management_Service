@@ -1,11 +1,16 @@
 package com.expense_management_service.entity;
 
+import com.expense_management_service.enums.InvoiceHandoffStatus;
+import com.expense_management_service.enums.PaymentMethod;
+import com.expense_management_service.enums.PaymentRoutingStatus;
+import com.expense_management_service.enums.ReportStatus;
 import jakarta.persistence.*;
 import lombok.*;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -44,7 +49,13 @@ public class ExpenseReport {
     @Column(name = "business_purpose")
     private String businessPurpose;
 
-    /** Calendar-year fiscal period the report was created in, e.g. "2026" — used to scope title uniqueness per FR: "unique per employee per fiscal period". */
+    /**
+     * April-to-March fiscal period the report was created in, in "YYYY-YYYY" form (e.g. "2026-2027"
+     * for 1 Apr 2026 - 31 Mar 2027) — used to scope title uniqueness per FR: "unique per employee per
+     * fiscal period", and matched verbatim against {@code CostCenterBudget.fiscalYear} by {@code
+     * BudgetEncumbranceServiceImpl.validateAndEncumber}, so it must always agree with however budgets
+     * are labeled. See {@code ExpenseReportServiceImpl.fiscalYearFor}.
+     */
     @Column(name = "fiscal_year", length = 10, nullable = false)
     private String fiscalYear;
 
@@ -53,8 +64,9 @@ public class ExpenseReport {
     @ToString.Exclude
     private CostCenter costCenter;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "report_status", length = 255)
-    private String reportStatus;
+    private ReportStatus reportStatus;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "currency_id", nullable = false)
@@ -68,12 +80,56 @@ public class ExpenseReport {
     private BigDecimal reimbursableAmount;
 
     /**
+     * True for a company expense the employee does not claim back (e.g. a cash advance fee). Such a
+     * report carries no reimbursable amount and must never enter the reimbursement or AP payment queues.
+     */
+    @Column(name = "company_paid", nullable = false)
+    @Builder.Default
+    private boolean companyPaid = false;
+
+    /**
+     * The cash advance this report is settling, set when the employee creates the report from the
+     * advance. Null for ordinary reports. Offsets are only applied to reports with this link.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "cash_advance_id")
+    @ToString.Exclude
+    private CashAdvance cashAdvance;
+
+    /** Start date of the trip or client meeting. */
+    @Column(name = "trip_start_date")
+    private LocalDate tripStartDate;
+
+    /** Estimated end date of the trip or client meeting. The submission deadline is this date plus the configured days. */
+    @Column(name = "trip_end_date")
+    private LocalDate tripEndDate;
+
+    /** Actual reporting period covered by the expenses. Unlike the trip dates it is never in the future. */
+    @Column(name = "reporting_period_start")
+    private LocalDate reportingPeriodStart;
+
+    @Column(name = "reporting_period_end")
+    private LocalDate reportingPeriodEnd;
+
+    /**
+     * Finance extension of this report's submission deadline (set by a deadline override, with a reason in the audit log).
+     * Replaces the computed deadline. Reporting-period validation still applies.
+     */
+    @Column(name = "expense_deadline_extended_until")
+    private LocalDate expenseDeadlineExtendedUntil;
+
+    /** Finance reopen: the submission deadline check is lifted for this report. Set by a deadline override. */
+    @Column(name = "expense_deadline_reopened", nullable = false)
+    private boolean expenseDeadlineReopened;
+
+    /**
      * Optimistic-locking column. The {@code version} column already exists in the database
      * (NOT NULL, no default) but was unmapped, so every INSERT omitted it and MySQL rejected
      * the row with "Field 'version' doesn't have a default value" — surfaced to callers as a
      * generic {@code DataIntegrityViolationException}. Restoring this mapping also protects the
      * report's {@code totalAmount} recalculation (EP02-S3) from lost updates when line items are
-     * saved concurrently.
+     * saved concurrently, and protects against two concurrent approval actions racing on the
+     * same report (EP06).
      */
     @Version
     @Column(name = "version", nullable = false)
@@ -87,6 +143,79 @@ public class ExpenseReport {
 
     @Column(name = "closed_at")
     private LocalDateTime closedAt;
+
+    /** Set only on a terminal whole-report Reject (never on a line-level Needs Correction) - backs "my rejection history" (§14 backend gaps). */
+    @Column(name = "rejected_by", length = 255)
+    private String rejectedBy;
+
+    @Lob
+    @Column(name = "rejection_comment")
+    private String rejectionComment;
+
+    @Column(name = "rejected_at")
+    private LocalDateTime rejectedAt;
+
+    /**
+     * Downstream payment/invoice transport status, deliberately independent of {@link
+     * #reportStatus} - a Reimbursement/Invoice integration failure must never corrupt a report's
+     * completed approval/Finance-verification record. NONE for every existing report and for any
+     * flow with no FINANCE_VERIFICATION level; only ever set once Finance verification completes.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_routing_status", length = 255)
+    @Builder.Default
+    private PaymentRoutingStatus paymentRoutingStatus = PaymentRoutingStatus.NONE;
+
+    /**
+     * Client-invoicing track, independent of {@link #paymentRoutingStatus} — a client-billable
+     * report is both reimbursed to the employee (AP) and handed off to the invoice team. Set to
+     * PENDING at approval if any line item is client-billable, and to COMPLETED by {@code
+     * InvoiceHandoffServiceImpl} once every client-billable line item has been handed off.
+     */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "invoice_handoff_status", length = 32, nullable = false)
+    @Builder.Default
+    private InvoiceHandoffStatus invoiceHandoffStatus = InvoiceHandoffStatus.NOT_APPLICABLE;
+
+    /**
+     * Who confirmed the actual payment (AP_EXECUTIVE), and when - set only by {@code
+     * ApPaymentServiceImpl.markPaymentCompleted}, alongside {@link #paymentRoutingStatus}
+     * transitioning {@code APPROVED_FOR_PAYMENT -> PAYMENT_COMPLETED} and the payment details
+     * below. Approval, Finance verification and notifications never set any of these.
+     */
+    @Column(name = "payment_completed_by", length = 255)
+    private String paymentCompletedBy;
+
+    @Column(name = "payment_completed_at")
+    private LocalDateTime paymentCompletedAt;
+
+    /** Bank UTR, UPI transaction id or cheque number AP entered when confirming the payment. */
+    @Column(name = "payment_reference", length = 100)
+    private String paymentReference;
+
+    /** varchar, not a MySQL ENUM, so a new method never needs DDL. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "payment_method", columnDefinition = "varchar(32)")
+    private PaymentMethod paymentMethod;
+
+    /** The date the money actually left the company's account (may precede the confirmation). */
+    @Column(name = "payment_date")
+    private LocalDate paymentDate;
+
+    /** Organization base currency; must equal {@link #reimbursableAmount} when confirmed. */
+    @Column(name = "paid_amount", precision = 19, scale = 4)
+    private BigDecimal paidAmount;
+
+    @Column(name = "payment_remarks", length = 500)
+    private String paymentRemarks;
+
+    /**
+     * Approved with nothing to pay the employee (fully offset by a cash advance, or company-paid):
+     * never routed to AP and never shown as "paid". {@link #paymentRoutingStatus} stays NONE.
+     */
+    @Column(name = "no_payment_due")
+    @Builder.Default
+    private Boolean noPaymentDue = false;
 
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
@@ -104,10 +233,15 @@ public class ExpenseReport {
     @OneToMany(mappedBy = "report", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default
     @ToString.Exclude
-    private List<ApprovalTask> approvalTasks = new ArrayList<>();
+    private List<ApprovalLevelInstance> approvalLevelInstances = new ArrayList<>();
 
     @OneToMany(mappedBy = "report")
     @Builder.Default
     @ToString.Exclude
     private List<CashAdvanceAdjustment> cashAdvanceAdjustments = new ArrayList<>();
+
+    @OneToMany(mappedBy = "report", cascade = CascadeType.ALL, orphanRemoval = true)
+    @Builder.Default
+    @ToString.Exclude
+    private List<Receipt> receipts = new ArrayList<>();
 }

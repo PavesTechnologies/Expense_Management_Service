@@ -9,10 +9,9 @@ import com.expense_management_service.dto.request.CostCenterRequest;
 import com.expense_management_service.dto.response.CostCenterResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.integration.departments.DepartmentClient;
-import com.expense_management_service.integration.ums.UmsClient;
-import com.expense_management_service.integration.ums.dto.UmsUserResponse;
 import com.expense_management_service.mapper.CostCenterMapper;
 import com.expense_management_service.repository.CostCenterRepository;
+import com.expense_management_service.repository.EmployeeCacheRepository;
 import com.expense_management_service.service.CostCenterService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,11 +27,12 @@ public class CostCenterServiceImpl implements CostCenterService {
 
     private static final String STATUS_ACTIVE = "ACTIVE";
     private static final String STATUS_INACTIVE = "INACTIVE";
+    private static final String EMPLOYMENT_STATUS_ACTIVE = "Active";
 
     private final CostCenterRepository costCenterRepository;
     private final CostCenterMapper costCenterMapper;
     private final DepartmentClient departmentClient;
-    private final UmsClient umsClient;
+    private final EmployeeCacheRepository employeeCacheRepository;
 
     @Override
     public CostCenterResponse create(CostCenterRequest request) {
@@ -107,14 +107,21 @@ public class CostCenterServiceImpl implements CostCenterService {
     log.info("Department validation successful");
 }
 
+    /**
+     * Validates against the local {@link EmployeeCacheRepository}, not UMS. {@code ownerEmployeeId}
+     * is an EOS {@code employeeId} - the same identifier space as every other approver reference in
+     * this system (EmployeeCache.managerEmployeeId, ApprovalDelegation.delegatorId/delegateId,
+     * approval-flow approver sources). This previously validated against a UMS {@code user_id}
+     * instead, a different identifier space entirely, which meant COST_CENTER_OWNER approver
+     * resolution could never actually resolve to a real EOS employee. See V6 migration for the
+     * one-time data cleanup this fix required.
+     */
     private void assertOwnerExists(String ownerEmployeeId) {
-        UmsUserResponse owner = umsClient.getAllUsers().stream()
-                .filter(user -> ownerEmployeeId.equals(String.valueOf(user.userId())))
-                .findFirst()
-                .orElseThrow(() -> new IllegalArgumentException("ownerEmployeeId does not exist in UMS"));
+        var owner = employeeCacheRepository.findByEmployeeId(ownerEmployeeId)
+                .orElseThrow(() -> new IllegalArgumentException("ownerEmployeeId does not exist: " + ownerEmployeeId));
 
-        if (!owner.isActive()) {
-            throw new IllegalArgumentException("Owner user is inactive");
+        if (!EMPLOYMENT_STATUS_ACTIVE.equalsIgnoreCase(owner.getEmploymentStatus())) {
+            throw new IllegalArgumentException("Owner employee is not Active: " + ownerEmployeeId);
         }
     }
 

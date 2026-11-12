@@ -1,22 +1,35 @@
 package com.expense_management_service.service;
 
-import java.util.List;
-
-import com.expense_management_service.dto.request.NotificationRequest;
 import com.expense_management_service.dto.response.NotificationResponse;
+import com.expense_management_service.dto.response.PageResponse;
+import com.expense_management_service.enums.NotificationCategory;
 
-
+import java.time.LocalDate;
 import java.util.UUID;
 
+/**
+ * Workflow notifications. Producers call {@link #notifyEmployee} / {@link #notifyRole}; each
+ * notification is stored and pushed live over WebSocket once the surrounding transaction commits.
+ * The read side is always scoped to the caller: their own notifications plus their roles' team inboxes.
+ */
 public interface NotificationService {
 
-    NotificationResponse create(NotificationRequest request);
+    /** Team inboxes. Values match JWT roles upper-cased. */
+    String ROLE_FINANCE = "FINANCE_EXECUTIVE";
+    String ROLE_AP = "AP_EXECUTIVE";
+    String ROLE_ADMIN = "ADMIN";
 
-    NotificationResponse update(UUID notificationId, NotificationRequest request);
+    void notifyEmployee(String employeeId, NotificationDraft draft);
 
-    NotificationResponse getById(UUID notificationId);
+    void notifyRole(String role, NotificationDraft draft);
 
-    List<NotificationResponse> getAll();
+    /** @param readFilter all / read / unread */
+    PageResponse<NotificationResponse> search(String readFilter, NotificationCategory category, String eventType,
+                                              LocalDate from, LocalDate to, String q, int page, int size);
 
-    void delete(UUID notificationId);
+    long unreadCount();
+
+    void markRead(UUID notificationId);
+
+    int markAllRead();
 }

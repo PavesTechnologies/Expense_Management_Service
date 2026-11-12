@@ -1,20 +1,27 @@
 package com.expense_management_service.service.impl;
 
-import java.util.List;
-
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.AuditLogRequest;
+import com.expense_management_service.dto.response.AuditLogFacetsResponse;
 import com.expense_management_service.dto.response.AuditLogResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.entity.AuditLog;
+import com.expense_management_service.enums.AuditSource;
 import com.expense_management_service.mapper.AuditLogMapper;
 import com.expense_management_service.repository.AuditLogRepository;
 import com.expense_management_service.service.AuditLogService;
 import lombok.RequiredArgsConstructor;
 
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.Locale;
 import java.util.UUID;
 
 @Service
@@ -33,13 +40,6 @@ public class AuditLogServiceImpl implements AuditLogService {
     }
 
     @Override
-    public AuditLogResponse update(UUID auditId, AuditLogRequest request) {
-        AuditLog entity = findEntity(auditId);
-        auditLogMapper.updateEntity(entity, request);
-        return auditLogMapper.toResponse(auditLogRepository.save(entity));
-    }
-
-    @Override
     @Transactional(readOnly = true)
     public AuditLogResponse getById(UUID auditId) {
         return auditLogMapper.toResponse(findEntity(auditId));
@@ -47,13 +47,32 @@ public class AuditLogServiceImpl implements AuditLogService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<AuditLogResponse> getAll() {
-        return auditLogRepository.findAll().stream().map(auditLogMapper::toResponse).toList();
+    public PageResponse<AuditLogResponse> search(String entityName, UUID entityId, String action, String performedBy,
+                                                 AuditSource source, LocalDate from, LocalDate to, String q,
+                                                 int page, int size) {
+        if (from != null && to != null && from.isAfter(to)) {
+            throw new IllegalArgumentException("from must not be after to");
+        }
+        Page<AuditLog> result = auditLogRepository.search(
+                StringUtils.hasText(entityName) ? entityName : null,
+                entityId,
+                StringUtils.hasText(action) ? action : null,
+                StringUtils.hasText(performedBy) ? performedBy.trim() : null,
+                source,
+                from != null ? from.atStartOfDay() : null,
+                to != null ? to.plusDays(1).atStartOfDay() : null,
+                StringUtils.hasText(q) ? "%" + q.trim().toLowerCase(Locale.ROOT) + "%" : null,
+                PageRequest.of(page, size));
+        return PageResponse.of(result.map(auditLogMapper::toResponse));
     }
 
     @Override
-    public void delete(UUID auditId) {
-        auditLogRepository.delete(findEntity(auditId));
+    @Transactional(readOnly = true)
+    public AuditLogFacetsResponse facets() {
+        return new AuditLogFacetsResponse(
+                auditLogRepository.findDistinctEntityNames(),
+                auditLogRepository.findDistinctActions(),
+                Arrays.stream(AuditSource.values()).map(Enum::name).toList());
     }
 
     private AuditLog findEntity(UUID auditId) {

@@ -53,7 +53,7 @@ class ExpenseCategoryControllerTest {
 
     private static ExpenseCategoryResponse sampleResponse(UUID id) {
         return new ExpenseCategoryResponse(id, "TRAVEL", "Travel", UUID.randomUUID(), "Travel Expense",
-                "desc", true, null, "TX01", LocalDate.of(2026, 1, 1), null, "ACTIVE",
+                "desc", true, null, "TX01", new java.math.BigDecimal("18.00"), LocalDate.of(2026, 1, 1), null, "ACTIVE",
                 LocalDateTime.now(), LocalDateTime.now());
     }
 

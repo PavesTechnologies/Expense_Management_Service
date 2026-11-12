@@ -19,15 +19,6 @@ public class AuditLogMapper {
                 .build();
     }
 
-    public void updateEntity(AuditLog entity, AuditLogRequest request) {
-        entity.setEntityName(request.entityName());
-        entity.setEntityId(request.entityId());
-        entity.setAction(request.action());
-        entity.setOldValue(request.oldValue());
-        entity.setNewValue(request.newValue());
-        entity.setPerformedBy(request.performedBy());
-    }
-
     public AuditLogResponse toResponse(AuditLog entity) {
         return new AuditLogResponse(
                 entity.getAuditId(),
@@ -37,7 +28,9 @@ public class AuditLogMapper {
                 entity.getOldValue(),
                 entity.getNewValue(),
                 entity.getPerformedBy(),
-                entity.getPerformedAt()
+                entity.getPerformedAt(),
+                entity.getReason(),
+                entity.getSource() != null ? entity.getSource().name() : null
         );
     }
 }

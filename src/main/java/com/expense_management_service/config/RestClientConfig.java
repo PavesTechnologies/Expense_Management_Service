@@ -16,12 +16,12 @@ import java.net.http.HttpClient;
 import java.util.Optional;
 
 /**
- * Configures the {@link RestClient} used by {@code UmsClient} to call UMS.
+ * Configures the {@link RestClient}s used by the various integration clients.
  * <p>
- * Every outgoing request automatically forwards the caller's own
- * {@code Authorization} bearer token — the same one XMS itself already
- * validated — so UMS authorizes the original end user rather than a service
- * account. XMS never mints, caches, or stores a UMS token itself.
+ * Every client here — {@code umsRestClient}, {@code employeeOnboardingRestClient},
+ * {@code pmsRestClient} and {@code rmsRestClient} — forwards the caller's own {@code
+ * Authorization} bearer token (the UMS-issued one XMS itself already validated), so the
+ * downstream service authorizes the original end user; XMS never mints, caches, or stores a token.
  */
 @Slf4j
 @Configuration
@@ -30,6 +30,8 @@ public class RestClientConfig {
 
     private final UmsProperties umsProperties;
     private final EmployeeOnboardingProperties employeeOnboardingProperties;
+    private final PmsProperties pmsProperties;
+    private final RmsProperties rmsProperties;
 
     @Bean
     public RestClient umsRestClient() {
@@ -84,6 +86,41 @@ public class RestClientConfig {
         return RestClient.builder()
                 .baseUrl(employeeOnboardingProperties.baseUrl())
                 .requestFactory(new JdkClientHttpRequestFactory(jdkHttpClient))
+                .requestInterceptor((request, body, execution) -> {
+                    Optional<String> incomingAuth = getIncomingAuthorizationHeader();
+                    incomingAuth.ifPresent(auth -> request.getHeaders().set(HttpHeaders.AUTHORIZATION, auth));
+                    return execution.execute(request, body);
+                })
+                .build();
+    }
+
+    /**
+     * RestClient for PMS. Forwards the caller's own bearer token, same as {@link #umsRestClient()}
+     * — PMS accepts the same {@code GENERAL} role XMS already issues to ordinary employees, so no
+     * service account is needed for this one.
+     */
+    @Bean
+    public RestClient pmsRestClient() {
+        return RestClient.builder()
+                .baseUrl(pmsProperties.baseUrl())
+                .requestInterceptor((request, body, execution) -> {
+                    Optional<String> incomingAuth = getIncomingAuthorizationHeader();
+                    incomingAuth.ifPresent(auth -> request.getHeaders().set(HttpHeaders.AUTHORIZATION, auth));
+                    return execution.execute(request, body);
+                })
+                .build();
+    }
+
+    /**
+     * RestClient for RMS. Forwards the caller's own bearer token, same as {@link #pmsRestClient()}.
+     * RMS's client-lookup endpoints only accept {@code Admin}/{@code Resource_Manager}/{@code
+     * Project_Manager} roles, so a caller without one of those gets RMS's 403 (see
+     * {@code ClientServiceImpl}).
+     */
+    @Bean
+    public RestClient rmsRestClient() {
+        return RestClient.builder()
+                .baseUrl(rmsProperties.baseUrl())
                 .requestInterceptor((request, body, execution) -> {
                     Optional<String> incomingAuth = getIncomingAuthorizationHeader();
                     incomingAuth.ifPresent(auth -> request.getHeaders().set(HttpHeaders.AUTHORIZATION, auth));

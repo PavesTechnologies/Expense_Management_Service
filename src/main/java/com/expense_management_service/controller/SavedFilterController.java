@@ -18,7 +18,7 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/xms/employee/saved-filters")
 @RequiredArgsConstructor
-@PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
+@PreAuthorize("isAuthenticated()")
 public class SavedFilterController {
 
     private final SavedFilterService savedFilterService;

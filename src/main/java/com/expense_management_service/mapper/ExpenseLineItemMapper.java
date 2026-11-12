@@ -2,8 +2,15 @@ package com.expense_management_service.mapper;
 
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
+import com.expense_management_service.dto.response.LineTaxComponentResponse;
+import com.expense_management_service.dto.response.LineTaxResponse;
+import com.expense_management_service.dto.response.PolicyWarningResponse;
 import com.expense_management_service.entity.ExpenseLineItem;
+import com.expense_management_service.enums.ItcStatus;
 import org.springframework.stereotype.Component;
+
+import java.math.BigDecimal;
+import java.util.List;
 
 @Component
 public class ExpenseLineItemMapper {
@@ -16,6 +23,7 @@ public class ExpenseLineItemMapper {
                 .amount(request.amount())
                 .taxAmount(request.taxAmount())
                 .clientBillable(request.clientBillable())
+                .allocationReason(trimToNull(request.allocationReason()))
                 .build();
     }
 
@@ -26,15 +34,22 @@ public class ExpenseLineItemMapper {
         entity.setAmount(request.amount());
         entity.setTaxAmount(request.taxAmount());
         entity.setClientBillable(request.clientBillable());
+        entity.setAllocationReason(trimToNull(request.allocationReason()));
     }
 
-    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive, String baseCurrencyCode) {
+    private static String trimToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    public ExpenseLineItemResponse toResponse(ExpenseLineItem entity, boolean categoryActive, String baseCurrencyCode,
+                                               List<PolicyWarningResponse> policyWarnings) {
         var category = entity.getCategory();
         return new ExpenseLineItemResponse(
                 entity.getLineItemId(),
                 entity.getReport() != null ? entity.getReport().getReportId() : null,
                 entity.getReport() != null ? entity.getReport().getReportNumber() : null,
-                entity.getReport() != null ? entity.getReport().getReportStatus() : null,
+                entity.getReport() != null && entity.getReport().getReportStatus() != null
+                        ? entity.getReport().getReportStatus().name() : null,
                 category != null ? category.getCategoryId() : null,
                 category != null ? category.getCategoryName() : null,
                 categoryActive,
@@ -55,10 +70,56 @@ public class ExpenseLineItemMapper {
                 entity.getCostCenter() != null ? entity.getCostCenter().getCostCenterName() : null,
                 entity.getProject() != null ? entity.getProject().getProjectId() : null,
                 entity.getProject() != null ? entity.getProject().getProjectName() : null,
+                entity.getResolvedClientId(),
+                entity.getResolvedClientName(),
                 entity.getClientBillable(),
                 entity.getLineStatus(),
                 entity.getCreatedAt(),
-                entity.getUpdatedAt()
+                entity.getUpdatedAt(),
+                policyWarnings,
+                toTaxResponse(entity),
+                entity.getAllocationReason()
         );
+    }
+
+    public LineTaxResponse toTaxResponse(ExpenseLineItem entity) {
+        return new LineTaxResponse(
+                entity.getTaxCodeId(),
+                entity.getTaxCode(),
+                entity.getTaxType() != null ? entity.getTaxType().name() : null,
+                entity.getTaxRatePercent(),
+                entity.getTaxTreatment() != null ? entity.getTaxTreatment().name() : null,
+                entity.getNetAmount(),
+                entity.getTaxAmount(),
+                entity.getCalculatedTaxAmount(),
+                entity.getTaxSource() != null ? entity.getTaxSource().name() : null,
+                entity.getTaxOverrideReason(),
+                entity.getItcRecoverablePercent(),
+                entity.getRecoverableTaxAmount(),
+                nonRecoverable(entity.getTaxAmount(), entity.getRecoverableTaxAmount()),
+                entity.getBaseTaxAmount(),
+                entity.getBaseNetAmount(),
+                entity.getBaseRecoverableTaxAmount(),
+                nonRecoverable(entity.getBaseTaxAmount(), entity.getBaseRecoverableTaxAmount()),
+                ItcStatus.of(entity.getBaseRecoverableTaxAmount(), entity.getTaxValidationStatus()).name(),
+                entity.getSupplierGstin(),
+                entity.getOcrTaxAmount(),
+                entity.getTaxValidationStatus() != null ? entity.getTaxValidationStatus().name() : null,
+                entity.getTaxValidationReasons() == null || entity.getTaxValidationReasons().isBlank()
+                        ? List.of() : List.of(entity.getTaxValidationReasons().split(",")),
+                entity.getTaxSnapshotAt(),
+                entity.getTaxComponents() == null ? List.of() : entity.getTaxComponents().stream()
+                        .map(c -> new LineTaxComponentResponse(c.getComponentCode().name(), c.getLabel(), c.getRatePercent(),
+                                c.getTaxAmount(), c.getBaseTaxAmount(), c.getSource().name()))
+                        .toList()
+        );
+    }
+
+    /** tax - recoverable; null when the line has no tax snapshot. */
+    private static BigDecimal nonRecoverable(BigDecimal tax, BigDecimal recoverable) {
+        if (tax == null) {
+            return null;
+        }
+        return recoverable == null ? tax : tax.subtract(recoverable);
     }
 }

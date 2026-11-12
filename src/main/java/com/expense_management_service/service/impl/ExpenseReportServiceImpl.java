@@ -1,27 +1,29 @@
 package com.expense_management_service.service.impl;
 
 import java.time.LocalDate;
-import java.time.Year;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
 
-import com.expense_management_service.common.ReportStatusConstants;
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.DuplicateResourceException;
 import com.expense_management_service.common.exception.EmployeeInactiveException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import com.expense_management_service.dto.response.PageResponse;
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.integration.ums.UmsClient;
 import com.expense_management_service.integration.ums.dto.UmsUserResponse;
+import com.expense_management_service.entity.PolicyViolation;
 import com.expense_management_service.mapper.ExpenseReportMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
@@ -30,9 +32,15 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.Pageable;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.expense_management_service.dto.response.ExpenseDateRangeResponse;
+import com.expense_management_service.entity.ExpenseLineItem;
+import java.util.Objects;
+import java.time.Clock;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 @RequiredArgsConstructor
@@ -48,16 +56,32 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     private final UmsClient umsClient;
     private final CurrentUserService currentUserService;
     private final ExpenseReportMapper expenseReportMapper;
+    private final PolicyViolationRepository policyViolationRepository;
+    private final com.expense_management_service.repository.CashAdvanceRepository cashAdvanceRepository;
+
+    /** Advance statuses in which the employee may attach expenses to settle it. */
+    private static final java.util.Set<String> LINKABLE_ADVANCE_STATUSES = java.util.Set.of(
+            "DISBURSED", "IN_PROGRESS", "EXPENSE_SUBMITTED", "EXPENSE_VERIFIED",
+            "SETTLEMENT_PENDING", "PARTIALLY_ADJUSTED", "PARTIALLY_SETTLED");
 
     /** Minimum character length for the business purpose free-text field — configurable per FR: "minimum 10 characters (configurable)". */
     @Value("${expense-report.business-purpose.min-length:10}")
     private int businessPurposeMinLength;
+
+    /** The business clock: real time in the business zone, or the development override. Tests replace it. */
+    @Autowired
+    private Clock clock = Clock.systemDefaultZone();
+
+    /** Length of a cash advance's spending window. Same setting the line-item service reads. */
+    @Value("${expense.submission.deadline-days:30}")
+    private int submissionDeadlineDays = SubmissionDeadlinePolicy.DEFAULT_DEADLINE_DAYS;
 
     @Override
     public ExpenseReportResponse create(ExpenseReportRequest request) {
         CurrentUser caller = currentUserService.getCurrentUser();
         assertEmployeeActive(caller);
         assertBusinessPurposeLongEnough(request.businessPurpose());
+        assertTripRange(request);
 
         String fiscalYear = currentFiscalYear();
         assertTitleNotDuplicate(caller.employeeId(), fiscalYear, request.title(), null);
@@ -65,19 +89,47 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         CostCenter costCenter = findActiveCostCenter(request.costCenterId());
         Currency currency = findActiveCurrency(request.currencyId());
 
+        com.expense_management_service.entity.CashAdvance linkedAdvance =
+                request.cashAdvanceId() != null
+                        ? findLinkableAdvance(request.cashAdvanceId(), caller.employeeId())
+                        : null;
+
         ExpenseReport entity = expenseReportMapper.toEntity(request);
         entity.setEmployeeId(caller.employeeId());
         entity.setFiscalYear(fiscalYear);
-        entity.setReportStatus(ReportStatusConstants.DRAFT);
+        entity.setReportStatus(ReportStatus.DRAFT);
         entity.setReportNumber(generateReportNumber(fiscalYear));
         entity.setCostCenter(costCenter);
         entity.setCurrency(currency);
         entity.setTotalAmount(java.math.BigDecimal.ZERO);
         entity.setReimbursableAmount(java.math.BigDecimal.ZERO);
+        entity.setCashAdvance(linkedAdvance);
 
         ExpenseReport saved = expenseReportRepository.save(entity);
-        log.info("Created Draft expense report {} for employee {}", saved.getReportNumber(), saved.getEmployeeId());
+        log.info("Created Draft expense report {} for employee {}{}", saved.getReportNumber(), saved.getEmployeeId(),
+                linkedAdvance != null ? " linked to cash advance " + linkedAdvance.getAdvanceId() : "");
         return toResponse(saved);
+    }
+
+    /**
+     * The advance a report may settle: it must exist, belong to the caller, and be in a status where
+     * expenses are being settled. Anything else is rejected rather than linked silently.
+     */
+    private com.expense_management_service.entity.CashAdvance findLinkableAdvance(UUID advanceId, String employeeId) {
+        com.expense_management_service.entity.CashAdvance advance = cashAdvanceRepository.findById(advanceId)
+                .orElseThrow(() -> new ResourceNotFoundException("Cash advance not found with id: " + advanceId));
+
+        if (advance.getEmployeeId() == null || !advance.getEmployeeId().trim().equalsIgnoreCase(employeeId)) {
+            throw new BusinessRuleViolationException("This cash advance belongs to another employee.");
+        }
+
+        String status = advance.getStatus() != null ? advance.getStatus().toUpperCase() : "";
+        if (!LINKABLE_ADVANCE_STATUSES.contains(status)) {
+            throw new BusinessRuleViolationException(
+                    "Expenses can be linked only to a disbursed advance awaiting settlement. Current status: "
+                            + advance.getStatus());
+        }
+        return advance;
     }
 
     @Override
@@ -86,11 +138,17 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         assertOwnerOrAdmin(entity);
         assertEditable(entity);
         assertBusinessPurposeLongEnough(request.businessPurpose());
+        assertTripRange(request);
         assertTitleNotDuplicate(entity.getEmployeeId(), entity.getFiscalYear(), request.title(), reportId);
 
+        boolean tripDatesChanged = !Objects.equals(entity.getTripStartDate(), request.tripStartDate())
+                || !Objects.equals(entity.getTripEndDate(), request.tripEndDate());
         expenseReportMapper.updateEntity(entity, request);
         entity.setCostCenter(findActiveCostCenter(request.costCenterId()));
         entity.setCurrency(findActiveCurrency(request.currencyId()));
+        if (tripDatesChanged) {
+            assertLineItemsWithinRange(entity);
+        }
 
         ExpenseReport saved = expenseReportRepository.save(entity);
         log.info("Updated expense report {}", reportId);
@@ -107,24 +165,69 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
 
     @Override
     @Transactional(readOnly = true)
-    public List<ExpenseReportResponse> getAll() {
+    public PageResponse<ExpenseReportResponse> getAll(Pageable pageable) {
+        return getAll(pageable, null, null);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<ExpenseReportResponse> getAll(Pageable pageable, String status, String search) {
+        // Always the caller's own reports, whatever their role — this backs "My Expenses" and the
+        // personal dashboard. Reviewers (Admin/Manager/Finance/AP) reach other employees' reports
+        // through their own queues, and can still open one directly via getById/assertViewable.
         CurrentUser caller = currentUserService.getCurrentUser();
-        List<ExpenseReport> reports = isPrivilegedReviewer(caller)
-                ? expenseReportRepository.findAll()
-                : expenseReportRepository.findByEmployeeId(caller.employeeId());
-        return reports.stream().map(this::toResponse).toList();
+        String normalizedQuery = sanitizeSearch(search);
+        ReportStatus normalizedStatus = parseStatus(status);
+
+        var page = (normalizedStatus == null && normalizedQuery == null)
+                ? expenseReportRepository.findByEmployeeId(caller.employeeId(), pageable)
+                : expenseReportRepository.searchByEmployeeIdAndStatusAndQuery(
+                        caller.employeeId(), normalizedStatus, normalizedQuery, pageable);
+
+        return PageResponse.of(page.map(this::toResponse));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<ExpenseReportResponse> getSubmittedForEmployees(java.util.Collection<String> employeeIds,
+                                                                        Pageable pageable, String status, String search) {
+        if (employeeIds.isEmpty()) {
+            return PageResponse.of(org.springframework.data.domain.Page.<ExpenseReportResponse>empty(pageable));
+        }
+        var page = expenseReportRepository.searchByEmployeeIds(
+                employeeIds, ReportStatus.DRAFT, parseStatus(status), sanitizeSearch(search), pageable);
+        return PageResponse.of(page.map(this::toResponse));
     }
 
     @Override
     public void delete(UUID reportId) {
         ExpenseReport entity = findEntity(reportId);
         assertOwnerOrAdmin(entity);
-        if (!ReportStatusConstants.isDeletable(entity.getReportStatus())) {
+        if (!entity.getReportStatus().isDeletable()) {
             throw new BusinessRuleViolationException(
                     "Expense report cannot be deleted in status " + entity.getReportStatus() + " — only a Draft report may be deleted");
         }
         expenseReportRepository.delete(entity);
         log.info("Deleted Draft expense report {}", reportId);
+    }
+
+    private ReportStatus parseStatus(String status) {
+        if (status == null || status.isBlank() || "ALL".equalsIgnoreCase(status)) {
+            return null;
+        }
+        try {
+            return ReportStatus.valueOf(status.trim().toUpperCase(Locale.ROOT));
+        } catch (IllegalArgumentException ex) {
+            return null;
+        }
+    }
+
+    private String sanitizeSearch(String search) {
+        if (search == null) {
+            return null;
+        }
+        String sanitized = search.trim();
+        return sanitized.isEmpty() ? null : sanitized;
     }
 
     private void assertEmployeeActive(CurrentUser caller) {
@@ -137,6 +240,46 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
         if (!umsUser.isActive()) {
             throw new EmployeeInactiveException(
                     "Your account is marked Inactive in UMS. Expense reports cannot be created while inactive — please contact HR Support to reactivate your account.");
+        }
+    }
+
+    private void assertTripRange(ExpenseReportRequest request) {
+        if (!SubmissionDeadlinePolicy.isValidTripRange(request.tripStartDate(), request.tripEndDate())) {
+            throw new BusinessRuleViolationException("The trip end date cannot be before the start date.");
+        }
+        assertReportingPeriod(request.reportingPeriodStart(), request.reportingPeriodEnd(), businessToday());
+    }
+
+    /**
+     * Lines already on the report must still fit the permitted dates once the trip dates change. Otherwise the
+     * report would hold lines the employee can no longer date.
+     */
+    private void assertLineItemsWithinRange(ExpenseReport report) {
+        if (report.getExpenseLineItems() == null) {
+            return;
+        }
+        ExpenseDateRangeResponse range = ExpenseDatePolicy.range(report, businessToday(), submissionDeadlineDays);
+        for (ExpenseLineItem line : report.getExpenseLineItems()) {
+            try {
+                ExpenseDatePolicy.assertAllowed(range, line.getExpenseDate());
+            } catch (IllegalArgumentException ex) {
+                throw new BusinessRuleViolationException(
+                        "These trip dates would leave an expense line outside the permitted dates. " + ex.getMessage());
+            }
+        }
+    }
+
+    private LocalDate businessToday() {
+        return LocalDate.now(clock);
+    }
+
+    /** Shared by create, update and submit so the same rule applies on every path. */
+    static void assertReportingPeriod(LocalDate reportingPeriodStart, LocalDate reportingPeriodEnd, LocalDate today) {
+        if (reportingPeriodEnd != null && reportingPeriodEnd.isAfter(today)) {
+            throw new BusinessRuleViolationException("The reporting period cannot end in the future.");
+        }
+        if (!SubmissionDeadlinePolicy.isValidReportingPeriod(reportingPeriodStart, reportingPeriodEnd, today)) {
+            throw new BusinessRuleViolationException("The reporting period end date cannot be before its start date.");
         }
     }
 
@@ -178,7 +321,7 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     }
 
     private void assertEditable(ExpenseReport entity) {
-        if (!ReportStatusConstants.isEditable(entity.getReportStatus())) {
+        if (!entity.getReportStatus().isEditable()) {
             throw new BusinessRuleViolationException(
                     "Expense report cannot be edited in status " + entity.getReportStatus());
         }
@@ -186,7 +329,8 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
 
     private boolean isPrivilegedReviewer(CurrentUser caller) {
         return hasRole(caller, RoleConstants.ADMIN) || hasRole(caller, RoleConstants.FINANCE)
-                || hasRole(caller, RoleConstants.MANAGER);
+                || hasRole(caller, RoleConstants.MANAGER) || hasRole(caller, RoleConstants.FINANCE_EXECUTIVE)
+                || hasRole(caller, RoleConstants.AP_EXECUTIVE);
     }
 
     private boolean hasRole(CurrentUser caller, String role) {
@@ -218,9 +362,27 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
                 .orElseThrow(() -> new ResourceNotFoundException("ExpenseReport not found with id: " + reportId));
     }
 
-    /** Calendar year the report is created in — the fiscal period boundary for title-uniqueness scoping. */
+    /** The fiscal period the report is created in — see {@link #fiscalYearFor}. */
     private String currentFiscalYear() {
-        return String.valueOf(Year.from(LocalDate.now()).getValue());
+        return fiscalYearFor(LocalDate.now());
+    }
+
+    /**
+     * Fiscal year label in "YYYY-YYYY" form for the fiscal period containing {@code date}, using this
+     * organization's April-to-March convention (fiscal year "2026-2027" runs 1 Apr 2026 - 31 Mar 2027).
+     * <p>
+     * Bug fix (production-readiness follow-up): this used to return the bare calendar year (e.g.
+     * "2026"), which could never match a {@code CostCenterBudget.fiscalYear} entered in the required
+     * "2026-2027" format — every submission against a real budget failed with "No budget is configured
+     * for Cost Center ..." even though one existed, because {@code
+     * BudgetEncumbranceServiceImpl.validateAndEncumber} looks the budget up by exact-string {@code
+     * report.getFiscalYear()}, and the two values never matched. Extracted as a pure, package-visible
+     * function (rather than only inline in {@link #currentFiscalYear}) so the April/March boundary
+     * itself is directly unit-testable against fixed dates, without needing to mock "now".
+     */
+    static String fiscalYearFor(LocalDate date) {
+        int startYear = date.getMonthValue() >= 4 ? date.getYear() : date.getYear() - 1;
+        return startYear + "-" + (startYear + 1);
     }
 
     private String generateReportNumber(String fiscalYear) {
@@ -228,8 +390,10 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
     }
 
     private ExpenseReportResponse toResponse(ExpenseReport entity) {
-        boolean editable = ReportStatusConstants.isEditable(entity.getReportStatus());
-        boolean deletable = ReportStatusConstants.isDeletable(entity.getReportStatus());
-        return expenseReportMapper.toResponse(entity, editable, deletable);
+        boolean editable = entity.getReportStatus().isEditable();
+        boolean deletable = entity.getReportStatus().isDeletable();
+        List<PolicyViolation> violations = policyViolationRepository.findByLineItem_Report_ReportId(entity.getReportId());
+        int unjustified = (int) violations.stream().filter(v -> v.getJustification() == null).count();
+        return expenseReportMapper.toResponse(entity, editable, deletable, violations.size(), unjustified);
     }
 }

@@ -1,0 +1,13 @@
+@Library('paves-shared-lib') _
+
+// CD (prod) pipeline — promotes the latest paves/xms-dev image to paves/xms-prod
+// (re-tag, no rebuild), syncs secrets on the prod EC2 host, then commits the new image
+// tag into intranet-devops's `main` branch at k8s/backend/xms/deployment.yaml so ArgoCD
+// picks it up. See jenkins-shared-lib/vars/deployToProd.groovy in intranet-devops.
+//
+// NOTE: deployToProd derives the dev repo name by string-replacing "-prod" -> "-dev" on
+// ecrRepo below — "paves/xms-dev" / "paves/xms-prod" naming is mandatory, not cosmetic.
+deployToProd(
+    serviceName: 'xms',
+    ecrRepo:     'paves/xms-prod'
+)

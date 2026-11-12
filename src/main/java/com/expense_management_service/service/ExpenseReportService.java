@@ -2,7 +2,10 @@ package com.expense_management_service.service;
 
 import com.expense_management_service.dto.request.ExpenseReportRequest;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
+import java.util.Collection;
 import java.util.List;
+import com.expense_management_service.dto.response.PageResponse;
+import org.springframework.data.domain.Pageable;
 import java.util.UUID;
 
 /**
@@ -23,8 +26,20 @@ public interface ExpenseReportService {
     /** Employees may only fetch their own reports; Admin/Finance/Manager may fetch any. */
     ExpenseReportResponse getById(UUID reportId);
 
-    /** Employees see only their own reports; Admin/Finance/Manager see all. */
-    List<ExpenseReportResponse> getAll();
+    /** Returns the caller's own reports as a sorted, paginated expense history. */
+    PageResponse<ExpenseReportResponse> getAll(Pageable pageable);
+
+    /** Returns the caller's own reports filtered by status and/or free-text search. */
+    default PageResponse<ExpenseReportResponse> getAll(Pageable pageable, String status, String search) {
+        return getAll(pageable);
+    }
+
+    /**
+     * Submitted (non-Draft) reports of the given employees, filtered by status and/or free-text
+     * search. Authorization (that the caller may see these employees) is the caller's job.
+     */
+    PageResponse<ExpenseReportResponse> getSubmittedForEmployees(Collection<String> employeeIds, Pageable pageable,
+                                                                 String status, String search);
 
     /** Only the owning employee (or an Admin) may delete, and only while the report is still a Draft. */
     void delete(UUID reportId);

@@ -27,7 +27,6 @@ public final class PermissionConstants {
     public static final String EXPENSE_DELETE = "EXPENSE_DELETE";
     public static final String EXPENSE_SUBMIT = "EXPENSE_SUBMIT";
     public static final String EXPENSE_APPROVE = "EXPENSE_APPROVE";
-    public static final String EXPENSE_FINANCE_VERIFY = "EXPENSE_FINANCE_VERIFY";
 
     private PermissionConstants() {
     }

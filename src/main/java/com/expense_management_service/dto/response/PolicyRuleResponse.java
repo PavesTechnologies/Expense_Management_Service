@@ -1,19 +1,30 @@
 package com.expense_management_service.dto.response;
 
+import com.expense_management_service.enums.PolicyEnforcementType;
+import com.expense_management_service.enums.PolicyRuleType;
+import com.expense_management_service.enums.PolicySeverity;
+
 import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 public record PolicyRuleResponse(
         UUID policyId,
+        UUID policyBundleId,
         UUID categoryId,
         String categoryName,
         String policyName,
-        String ruleType,
+        PolicyRuleType ruleType,
         String ruleValue,
-        String action,
-        String severity,
+        PolicySeverity severity,
+        PolicyEnforcementType enforcementType,
         LocalDate effectiveFrom,
         LocalDate effectiveTo,
-        String status
+        String status,
+        LocalDateTime createdAt,
+        LocalDateTime updatedAt,
+        /** Empty when the rule is in legacy flat-limit mode - see {@code PolicyRuleRequest}'s javadoc. */
+        List<PolicyRuleLimitResponse> limits
 ) {
 }

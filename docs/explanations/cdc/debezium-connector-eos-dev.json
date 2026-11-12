@@ -1,0 +1,48 @@
+{
+  "name": "eos-employee-connector-dev",
+  "config": {
+    "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+    "tasks.max": "1",
+
+    "database.hostname": "REPLACE_WITH_RDS_ENDPOINT (e.g. paves-intranet-db-dev.<id>.ap-south-1.rds.amazonaws.com)",
+    "database.port": "3306",
+    "database.user": "REPLACE_WITH_DEBEZIUM_REPLICATION_USER",
+    "database.password": "${file:/opt/kafka/secrets/eos-debezium.properties:password}",
+
+    "database.server.id": "REPLACE_WITH_UNIQUE_NUMERIC_ID",
+    "_comment_server_id": "Must not collide with any other connector/replica reading this RDS instance's binlog - including LMS's existing 'eos_test' connector, if it points at the same instance. Confirm the registry of in-use server IDs before assigning one.",
+
+    "topic.prefix": "eos_dev",
+    "_comment_topic_prefix": "Deliberately NOT 'eos_test' - that is LMS's existing connector/topic. A distinct prefix keeps this service's consumer group isolated and avoids either side reprocessing the other's offsets.",
+
+    "database.include.list": "eos",
+    "table.include.list": "eos.employee_details,eos.employee_exit,eos.departments,eos.designations",
+    "_comment_tables": "employee_exit is required, not optional: terminations are written to employee_exit.status, not employee_details.employment_status. A connector on employee_details alone silently misses every termination.",
+
+    "include.schema.changes": "false",
+    "snapshot.mode": "initial",
+
+    "schema.history.internal.kafka.bootstrap.servers": "redpanda:29092",
+    "schema.history.internal.kafka.topic": "schema-changes.eos_dev",
+
+    "message.key.columns": "eos.employee_details:employee_uuid",
+    "_comment_key": "Keys on the stable business UUID, not the auto-increment 'id' column - matches the correlation key EmployeeCdcConsumer expects.",
+
+    "transforms": "unwrap",
+    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+    "transforms.unwrap.add.fields": "op,ts_ms",
+    "transforms.unwrap.delete.handling.mode": "rewrite",
+    "transforms.unwrap.drop.tombstones": "false",
+    "_comment_smt": "This exact SMT configuration is what LMS's already-merged, production consumer relies on (flattened __op/__ts_ms/__deleted fields, not a nested payload.after envelope). Do not change without updating EmployeeCdcConsumer and EmployeeCdcEvent to match.",
+
+    "key.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "key.converter.schemas.enable": "false",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false",
+    "_comment_no_schema_registry": "No Avro/Protobuf, no schema registry - matches the existing LMS contract exactly.",
+
+    "tombstones.on.delete": "true",
+    "decimal.handling.mode": "string",
+    "time.precision.mode": "connect"
+  }
+}

@@ -1,9 +1,13 @@
 package com.expense_management_service.entity;
 
+import com.expense_management_service.enums.DelegationStatus;
 import jakarta.persistence.*;
 import lombok.*;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.UpdateTimestamp;
 
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
@@ -35,6 +39,15 @@ public class ApprovalDelegation {
     @Column(name = "end_date")
     private LocalDate endDate;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "status", length = 255)
-    private String status;
+    private DelegationStatus status;
+
+    @CreationTimestamp
+    @Column(name = "created_at", updatable = false)
+    private LocalDateTime createdAt;
+
+    @UpdateTimestamp
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
 }

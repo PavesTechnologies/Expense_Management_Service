@@ -40,6 +40,25 @@ public class ProjectCache {
     @Column(name = "synced_at")
     private LocalDateTime syncedAt;
 
+    /**
+     * PMS's own stable numeric project id (their {@code Project.id}, a BIGINT identity — never
+     * their mutable {@code projectKey}). Null for any row created before this field existed via
+     * the legacy manual admin API ({@code ProjectCacheController}). Indexed uniquely (see
+     * {@code V18__project_cache_pms_client_index.sql}) but nullable, since MySQL permits multiple
+     * NULLs under a unique index — legacy manually-entered rows are not required to carry it.
+     */
+    @Column(name = "pms_project_id")
+    private Long pmsProjectId;
+
+    /**
+     * RMS client UUID ({@code client.client_id}), resolved from PMS's {@code Project.clientId} at
+     * the moment this row was last refreshed. This is a live-refreshable cache value, not an
+     * audit record — {@code ExpenseLineItem.resolvedClientId}/{@code resolvedClientName} hold the
+     * frozen snapshot taken at submission time instead.
+     */
+    @Column(name = "client_id")
+    private UUID clientId;
+
     @OneToMany(mappedBy = "project")
     @Builder.Default
     @ToString.Exclude

@@ -6,6 +6,7 @@ import com.expense_management_service.common.exception.EmployeeInactiveException
 import com.expense_management_service.common.exception.ResourceInUseException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.common.exception.UmsIntegrationException;
+import com.expense_management_service.service.TextractIntegrationException;
 import com.expense_management_service.storage.StorageException;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -15,8 +16,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClientResponseException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
@@ -42,8 +46,15 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error(ex.getMessage()));
     }
 
+    /** A route that does not exist (or was removed) is a 404, not a server error. */
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<ApiResponse<Void>> handleNoResource(org.springframework.web.servlet.resource.NoResourceFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.error("No such endpoint: " + ex.getResourcePath()));
+    }
+
     @ExceptionHandler(AccessDeniedException.class)
     public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException ex) {
+        log.warn("Access denied ({}): {}", ex.getClass().getSimpleName(), ex.getMessage());
         return ResponseEntity.status(HttpStatus.FORBIDDEN)
                 .body(ApiResponse.error("You do not have permission to perform this action"));
     }
@@ -61,6 +72,28 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(message));
     }
 
+    /** e.g. a numeric id sent to a UUID query parameter - a client error, not an unhandled 500. */
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        String expected = ex.getRequiredType() != null ? ex.getRequiredType().getSimpleName() : "a different type";
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error("Invalid value for '" + ex.getName() + "': expected " + expected));
+    }
+
+    /** A required query parameter left off - a client error, not an unhandled 500. */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMissingParameter(MissingServletRequestParameterException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error("Required parameter '" + ex.getParameterName() + "' is missing"));
+    }
+
+    /** A body sent in a format the endpoint does not accept (e.g. JSON where multipart is required) - 415, not a 500. */
+    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUnsupportedMediaType(HttpMediaTypeNotSupportedException ex) {
+        return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+                .body(ApiResponse.error("Unsupported content type: " + ex.getContentType()));
+    }
+
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<ApiResponse<Void>> handleIllegalArgument(IllegalArgumentException ex) {
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ApiResponse.error(ex.getMessage()));
@@ -74,8 +107,12 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(DataIntegrityViolationException.class)
     public ResponseEntity<ApiResponse<Void>> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
+        log.error("DataIntegrityViolationException occurred: ", ex);
+        String detailMessage = ex.getMostSpecificCause() != null && ex.getMostSpecificCause().getMessage() != null
+                ? ex.getMostSpecificCause().getMessage()
+                : "Database data integrity constraint was violated";
         return ResponseEntity.status(HttpStatus.CONFLICT)
-                .body(ApiResponse.error("This record cannot be saved or deleted because it is still referenced by other records"));
+                .body(ApiResponse.error(detailMessage));
     }
 
     @ExceptionHandler(DuplicateResourceException.class)
@@ -89,6 +126,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(BusinessRuleViolationException.class)
+    @SuppressWarnings("deprecation")
     public ResponseEntity<ApiResponse<Void>> handleBusinessRuleViolation(BusinessRuleViolationException ex) {
         return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(ApiResponse.error(ex.getMessage()));
     }
@@ -100,6 +138,13 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(UmsIntegrationException.class)
     public ResponseEntity<ApiResponse<Void>> handleUmsIntegration(UmsIntegrationException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(ex.getMessage()));
+    }
+
+    @ExceptionHandler(com.expense_management_service.common.exception.IntegrationUnavailableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleIntegrationUnavailable(
+            com.expense_management_service.common.exception.IntegrationUnavailableException ex) {
+        log.warn("{}", ex.getMessage(), ex.getCause());
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body(ApiResponse.error(ex.getMessage()));
     }
 
@@ -123,6 +168,7 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(MaxUploadSizeExceededException.class)
+    @SuppressWarnings("deprecation")
     public ResponseEntity<ApiResponse<Void>> handleMaxUploadSizeExceeded(MaxUploadSizeExceededException ex) {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
                 .body(ApiResponse.error("Uploaded file exceeds the maximum allowed size"));
@@ -139,6 +185,21 @@ public class GlobalExceptionHandler {
         log.error("S3 storage operation failed", ex);
         return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                 .body(ApiResponse.error("File storage is temporarily unavailable — please try again"));
+    }
+
+    @ExceptionHandler(TextractIntegrationException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTextractFailure(TextractIntegrationException ex) {
+        log.error("AWS Textract operation failed", ex);
+        return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                .body(ApiResponse.error("OCR is temporarily unavailable — you can continue with manual entry"));
+    }
+
+    /** Two users changed the same record at once (e.g. a double "Confirm payment") - the loser retries on fresh data. */
+    @ExceptionHandler(org.springframework.orm.ObjectOptimisticLockingFailureException.class)
+    public ResponseEntity<ApiResponse<Void>> handleOptimisticLock(org.springframework.orm.ObjectOptimisticLockingFailureException ex) {
+        log.warn("Concurrent update rejected: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(ApiResponse.error("This record was just changed by someone else. Refresh and try again."));
     }
 
     @ExceptionHandler(Exception.class)

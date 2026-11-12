@@ -9,16 +9,34 @@ import com.expense_management_service.entity.Currency;
 import com.expense_management_service.entity.ExpenseCategory;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
+import com.expense_management_service.entity.ProjectCache;
+import com.expense_management_service.enums.ReportStatus;
+import com.expense_management_service.integration.pms.dto.PmsProjectDetailResponse;
+import com.expense_management_service.integration.pms.dto.PmsProjectSummaryResponse;
 import com.expense_management_service.mapper.ExpenseLineItemMapper;
 import com.expense_management_service.repository.CostCenterRepository;
 import com.expense_management_service.repository.CurrencyRepository;
 import com.expense_management_service.repository.ExpenseCategoryRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.entity.PolicyViolation;
+import com.expense_management_service.enums.PolicyEnforcementType;
+import com.expense_management_service.enums.PolicyRuleType;
+import com.expense_management_service.enums.PolicySeverity;
+import com.expense_management_service.integration.pms.PmsClient;
+import com.expense_management_service.service.ClientService;
+import com.expense_management_service.dto.response.ClientResponse;
+import com.expense_management_service.common.exception.IntegrationUnavailableException;
+import com.expense_management_service.mapper.PolicyViolationMapper;
+import com.expense_management_service.repository.ApprovalAssignmentRepository;
+import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.repository.ProjectCacheRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
+import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ExchangeRateService;
+import com.expense_management_service.service.ExpenseSplitService;
+import com.expense_management_service.service.PolicyEvaluator;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -29,6 +47,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -40,11 +59,18 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import com.expense_management_service.entity.CashAdvance;
+import java.time.Clock;
+import java.time.ZoneId;
+import static org.mockito.Mockito.times;
 
 @ExtendWith(MockitoExtension.class)
 class ExpenseLineItemServiceImplTest {
 
+    @Mock
+    private SubmittedLineItemRemover submittedLineItemRemover;
     @Mock
     private ExpenseLineItemRepository expenseLineItemRepository;
     @Mock
@@ -61,6 +87,28 @@ class ExpenseLineItemServiceImplTest {
     private ExchangeRateService exchangeRateService;
     @Mock
     private CurrentUserService currentUserService;
+    @Mock
+    private PmsClient pmsClient;
+    @Mock
+    private ClientService clientService;
+    @Mock
+    private PolicyEvaluator policyEvaluator;
+    @Mock
+    private PolicyViolationRepository policyViolationRepository;
+    @Mock
+    private ApprovalAssignmentRepository approvalAssignmentRepository;
+    @Mock
+    private DelegationService delegationService;
+    @Mock
+    private ExpenseSplitService expenseSplitService;
+    @Mock
+    private com.expense_management_service.repository.TaxCodeRepository taxCodeRepository;
+    @Mock
+    private com.expense_management_service.service.ExpenseCategoryTaxMappingService taxMappingService;
+    @Mock
+    private com.expense_management_service.repository.SystemConfigurationRepository systemConfigurationRepository;
+    @Mock
+    private com.expense_management_service.service.TaxAuditService taxAuditService;
 
     private ExpenseLineItemServiceImpl expenseLineItemService;
 
@@ -78,23 +126,30 @@ class ExpenseLineItemServiceImplTest {
         expenseLineItemService = new ExpenseLineItemServiceImpl(
                 expenseLineItemRepository, expenseReportRepository, expenseCategoryRepository, currencyRepository,
                 costCenterRepository, projectCacheRepository, exchangeRateService, currentUserService,
-                new ExpenseLineItemMapper());
+                pmsClient, clientService,
+                new ExpenseLineItemMapper(), policyEvaluator, policyViolationRepository, new PolicyViolationMapper(),
+                approvalAssignmentRepository, delegationService, expenseSplitService,
+                new TaxSnapshotServiceImpl(new TaxCalculationServiceImpl(taxCodeRepository, taxMappingService, systemConfigurationRepository),
+                        expenseLineItemRepository, taxAuditService, new TaxValidationServiceImpl(systemConfigurationRepository), currencyRepository),
+                submittedLineItemRemover);
         ReflectionTestUtils.setField(expenseLineItemService, "baseCurrencyCode", "INR");
+        ReflectionTestUtils.setField(expenseLineItemService, "clock", Clock.system(ZoneId.of("Asia/Kolkata")));
+        ReflectionTestUtils.setField(expenseLineItemService, "submissionDeadlineDays", 30);
 
         reportId = UUID.randomUUID();
         categoryId = UUID.randomUUID();
         currencyId = UUID.randomUUID();
         currency = Currency.builder().currencyId(currencyId).currencyCode("INR").status("ACTIVE").build();
         draftReport = ExpenseReport.builder().reportId(reportId).employeeId(employeeId)
-                .reportStatus("DRAFT").currency(currency).build();
+                .reportStatus(ReportStatus.DRAFT).currency(currency).build();
 
         // Not every test reaches currency conversion (some fail earlier on ownership/status/category
-        // checks) — lenient() so those don't trip MockitoExtension's unnecessary-stubbing check.
+        // checks) â€” lenient() so those don't trip MockitoExtension's unnecessary-stubbing check.
         lenient().when(currencyRepository.findByCurrencyCodeIgnoreCase("INR")).thenReturn(Optional.of(currency));
     }
 
     private CurrentUser employeeCaller() {
-        return new CurrentUser(UUID.randomUUID(), employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
+        return new CurrentUser(UUID.randomUUID(), null, employeeId, "jordan@example.com", "Jordan", List.of("GENERAL"), List.of());
     }
 
     private ExpenseCategory activeCategory(String code) {
@@ -140,6 +195,259 @@ class ExpenseLineItemServiceImplTest {
     }
 
     @Test
+    void create_savesLineItem_withZeroPmsCalls_whenNotClientBillable() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        expenseLineItemService.create(reportId, validRequest());
+
+        verifyNoInteractions(pmsClient, clientService);
+    }
+
+    // --- Epic 8: client-billable project assignment + PMS client resolution (no RMS) ----------
+
+    private ExpenseLineItemRequest billableRequest(UUID projectId) {
+        return new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Uber", "Client meeting",
+                new BigDecimal("100.00"), currencyId, null, null, projectId, true);
+    }
+
+    private ProjectCache projectCache(UUID projectId, Long pmsProjectId, String code) {
+        return ProjectCache.builder().projectId(projectId).pmsProjectId(pmsProjectId)
+                .projectCode(code).projectName(code + " name").status("ACTIVE").build();
+    }
+
+    private PmsProjectSummaryResponse pmsSummary(Long pmsProjectId, String key) {
+        return new PmsProjectSummaryResponse(pmsProjectId, key, key + " name", null, "ACTIVE");
+    }
+
+    private PmsProjectDetailResponse pmsDetail(Long pmsProjectId, UUID clientId) {
+        return new PmsProjectDetailResponse(pmsProjectId, "PK-" + pmsProjectId, "Project " + pmsProjectId,
+                null, "ACTIVE", clientId, 42L, null, null, null);
+    }
+
+    @Test
+    void create_persistsPmsClientId_whenProjectIsAssigned() {
+        UUID projectId = UUID.randomUUID();
+        UUID clientId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, clientId)));
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, billableRequest(projectId));
+
+        assertThat(response.resolvedClientId()).isEqualTo(clientId);
+        // Client name comes from RMS, which is no longer called — only PMS's clientId is stored.
+        assertThat(response.resolvedClientName()).isNull();
+    }
+
+    @Test
+    void create_resolvesCorrectClient_whenEmployeeHasMultipleProjectsAcrossDifferentClients() {
+        UUID projectId = UUID.randomUUID();
+        UUID selectedClientId = UUID.randomUUID();
+        UUID otherClientId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        // Employee is assigned to two projects belonging to two different clients; ALPHA (501) is selected.
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA"), pmsSummary(777L, "BETA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, selectedClientId)));
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, billableRequest(projectId));
+
+        assertThat(response.resolvedClientId()).isEqualTo(selectedClientId);
+        verify(pmsClient, never()).getProject(777L);
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenProjectNotAssignedInPms() {
+        UUID projectId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        // Employee's assigned list does not include project 501.
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(999L, "OTHER")));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(projectId)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("not currently assigned");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenNeitherClientNorProjectSelectedForBillableExpense() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(null)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("A client must be selected");
+
+        verify(expenseLineItemRepository, never()).save(any());
+        verifyNoInteractions(pmsClient, clientService);
+    }
+
+    // --- Client selected from GET /xms/clients (project optional) ------------------------------
+
+    private ExpenseLineItemRequest billableRequest(UUID projectId, UUID clientId) {
+        return new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Uber", "Client meeting",
+                new BigDecimal("100.00"), currencyId, null, null, projectId, true, null, null, clientId);
+    }
+
+    private void stubBillableProject(UUID projectId, UUID pmsClientId) {
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(projectCache(projectId, 501L, "ALPHA")));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, pmsClientId)));
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    @Test
+    void create_savesBillableLineItem_withClientOnly_andNoProject() {
+        UUID clientId = UUID.randomUUID();
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(clientService.getActiveClients()).thenReturn(List.of(new ClientResponse(clientId, "Acme")));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, billableRequest(null, clientId));
+
+        assertThat(response.clientBillable()).isTrue();
+        assertThat(response.projectId()).isNull();
+        assertThat(response.resolvedClientId()).isEqualTo(clientId);
+        assertThat(response.resolvedClientName()).isEqualTo("Acme");
+        verifyNoInteractions(pmsClient);
+    }
+
+    @Test
+    void create_savesBillableLineItem_withClientAndMatchingProject() {
+        UUID projectId = UUID.randomUUID();
+        UUID clientId = UUID.randomUUID();
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        stubBillableProject(projectId, clientId);
+        when(clientService.getActiveClients()).thenReturn(List.of(new ClientResponse(clientId, "Acme")));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, billableRequest(projectId, clientId));
+
+        assertThat(response.projectId()).isEqualTo(projectId);
+        assertThat(response.resolvedClientId()).isEqualTo(clientId);
+        assertThat(response.resolvedClientName()).isEqualTo("Acme");
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenProjectBelongsToDifferentClient() {
+        UUID projectId = UUID.randomUUID();
+        UUID selectedClientId = UUID.randomUUID();
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        stubBillableProject(projectId, UUID.randomUUID());
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(projectId, selectedClientId)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("does not belong to the selected client");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenSelectedClientNotActiveInRms() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(clientService.getActiveClients()).thenReturn(List.of(new ClientResponse(UUID.randomUUID(), "Other")));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(null, UUID.randomUUID())))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("not found in RMS or is no longer active");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_propagatesIntegrationUnavailable_whenRmsUnreachable() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(clientService.getActiveClients()).thenThrow(new IntegrationUnavailableException("RMS down", null));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(null, UUID.randomUUID())))
+                .isInstanceOf(IntegrationUnavailableException.class);
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsBusinessRuleViolation_whenPmsProjectHasNoClientId() {
+        UUID projectId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, null)));
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, billableRequest(projectId)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("no client associated");
+
+    }
+
+    @Test
+    void update_reResolvesProjectAndClient_onCorrection() {
+        UUID lineItemId = UUID.randomUUID();
+        UUID projectId = UUID.randomUUID();
+        UUID clientId = UUID.randomUUID();
+        ProjectCache cache = projectCache(projectId, 501L, "ALPHA");
+        ExpenseLineItem existing = ExpenseLineItem.builder().lineItemId(lineItemId).report(draftReport)
+                .category(activeCategory("TRAVEL")).amount(new BigDecimal("50")).currency(currency).build();
+
+        stubOwnerAndReport();
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId)).thenReturn(Optional.of(existing));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(projectCacheRepository.findById(projectId)).thenReturn(Optional.of(cache));
+        when(currentUserService.getUmsUserId()).thenReturn(9001L);
+        when(pmsClient.getMyActiveProjects(9001L)).thenReturn(List.of(pmsSummary(501L, "ALPHA")));
+        when(pmsClient.getProject(501L)).thenReturn(Optional.of(pmsDetail(501L, clientId)));
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemResponse response = expenseLineItemService.update(reportId, lineItemId, billableRequest(projectId));
+
+        assertThat(response.resolvedClientId()).isEqualTo(clientId);
+        assertThat(response.projectId()).isEqualTo(projectId);
+    }
+
+    @Test
     void create_throwsIllegalArgumentException_whenCategoryInactive() {
         stubOwnerAndReport();
         ExpenseCategory inactive = ExpenseCategory.builder().categoryId(categoryId).categoryCode("TRAVEL")
@@ -151,6 +459,251 @@ class ExpenseLineItemServiceImplTest {
                 .hasMessageContaining("not Active");
 
         verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenExpenseDateIsOutsideTheTripDates() {
+        stubOwnerAndReport();
+        draftReport.setTripStartDate(LocalDate.now().minusDays(3));
+        draftReport.setTripEndDate(LocalDate.now().minusDays(1));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest outside = new ExpenseLineItemRequest(categoryId, LocalDate.now(), "Uber",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, outside))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within the report's trip dates");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenLinkedAndTheTripHasNotStarted() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID())
+                .disbursedAt(LocalDateTime.now().minusDays(10)).build());
+        draftReport.setTripStartDate(LocalDate.now().plusDays(5));
+        draftReport.setTripEndDate(LocalDate.now().plusDays(10));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest preTrip = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(5), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, preTrip))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("The trip starts on");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenLinkedAndDateIsBeforeDisbursement() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID())
+                .disbursedAt(LocalDateTime.now().minusDays(10)).build());
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest early = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(12), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, early))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within the cash advance spending window");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenLinkedAndWindowHasEnded() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID())
+                .disbursedAt(LocalDateTime.now().minusDays(40)).build());
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest late = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(5), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, late))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within the cash advance spending window");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenLinkedAdvanceIsNotDisbursed() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).build());
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest any = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, any))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not disbursed yet");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void create_throwsIllegalArgumentException_whenExpenseDateIsInTheFutureOnAStandaloneReport() {
+        stubOwnerAndReport();
+        draftReport.setTripStartDate(LocalDate.now().minusDays(3));
+        draftReport.setTripEndDate(LocalDate.now().plusDays(3));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+
+        ExpenseLineItemRequest future = new ExpenseLineItemRequest(categoryId, LocalDate.now().plusDays(1), "Cab",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, future))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot be in the future");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void expenseDateRange_returnsTheSpendingWindowForALinkedReport() {
+        stubOwnerAndReport();
+        LocalDateTime disbursed = LocalDateTime.now().minusDays(10);
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).disbursedAt(disbursed).build());
+
+        var range = expenseLineItemService.expenseDateRange(reportId);
+
+        assertThat(range.minDate()).isEqualTo(disbursed.toLocalDate());
+        assertThat(range.maxDate()).isEqualTo(range.today());
+        assertThat(range.blockedReason()).isNull();
+        assertThat(range.basis()).isEqualTo("the cash advance spending window");
+    }
+
+    // ---- The November scenario: a cash-advance trip that starts after today, tested on a fixed clock ----
+
+    private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Kolkata");
+
+    private void clockOn(LocalDate day) {
+        ReflectionTestUtils.setField(expenseLineItemService, "clock",
+                Clock.fixed(day.atTime(12, 0).atZone(BUSINESS_ZONE).toInstant(), BUSINESS_ZONE));
+    }
+
+    /** Linked to an advance disbursed 28 Oct; trip 31 Oct to 25 Nov. */
+    private void linkedOctToNovTrip() {
+        stubOwnerAndReport();
+        draftReport.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID())
+                .disbursedAt(LocalDateTime.of(2026, 10, 28, 10, 0)).build());
+        draftReport.setTripStartDate(LocalDate.of(2026, 10, 31));
+        draftReport.setTripEndDate(LocalDate.of(2026, 11, 25));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+    }
+
+    private ExpenseLineItemRequest lineOn(LocalDate date) {
+        return new ExpenseLineItemRequest(categoryId, date, "Green Leaf Restaurant", "desc",
+                new BigDecimal("1645.00"), currencyId, null, null, null, false);
+    }
+
+    private void stubSaveOfLine() {
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+    }
+
+    @Test
+    void november_acceptsTheCompletedTripDate_whenTheClockIsAfterTheTrip() {
+        clockOn(LocalDate.of(2026, 11, 5));
+        linkedOctToNovTrip();
+        stubSaveOfLine();
+
+        expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 2)));
+
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
+    void november_rejectsTheSameDate_whenTheClockIsBeforeTheTrip() {
+        clockOn(LocalDate.of(2026, 10, 28));
+        linkedOctToNovTrip();
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 2))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("The trip starts on 2026-10-31");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void november_rejectsAFutureDate_whenTheTripHasStarted() {
+        clockOn(LocalDate.of(2026, 11, 5));
+        linkedOctToNovTrip();
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 6))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot be in the future");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void november_rejectsADateAfterTheTripEnd() {
+        clockOn(LocalDate.of(2026, 11, 26));
+        linkedOctToNovTrip();
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 26))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within the report's trip dates and the cash advance spending window");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void november_acceptsTheTripStartAndEndDays_inclusively() {
+        clockOn(LocalDate.of(2026, 11, 26));
+        linkedOctToNovTrip();
+        stubSaveOfLine();
+
+        expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 10, 31)));
+        expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 25)));
+
+        verify(expenseLineItemRepository, times(2)).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
+    void november_rejectsTheDayBeforeTheTripStart() {
+        clockOn(LocalDate.of(2026, 11, 26));
+        linkedOctToNovTrip();
+
+        assertThatThrownBy(() -> expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 10, 30))))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("must fall within");
+
+        verify(expenseLineItemRepository, never()).save(any());
+    }
+
+    @Test
+    void november_acceptsToday_whenTodayIsInsideTheTrip() {
+        clockOn(LocalDate.of(2026, 11, 5));
+        linkedOctToNovTrip();
+        stubSaveOfLine();
+
+        expenseLineItemService.create(reportId, lineOn(LocalDate.of(2026, 11, 5)));
+
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
+    void create_savesLineItem_whenExpenseDateIsInsideTheTripDates() {
+        stubOwnerAndReport();
+        draftReport.setTripStartDate(LocalDate.now().minusDays(3));
+        draftReport.setTripEndDate(LocalDate.now().minusDays(1));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        ExpenseLineItemRequest inside = new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(2), "Uber",
+                "desc", new BigDecimal("10"), currencyId, null, null, null, false);
+
+        expenseLineItemService.create(reportId, inside);
+
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
     }
 
     @Test
@@ -170,7 +723,7 @@ class ExpenseLineItemServiceImplTest {
 
     @Test
     void create_throwsBusinessRuleViolation_whenReportNotEditable() {
-        draftReport.setReportStatus("SUBMITTED");
+        draftReport.setReportStatus(ReportStatus.PENDING_APPROVAL);
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
 
@@ -236,7 +789,7 @@ class ExpenseLineItemServiceImplTest {
     @Test
     void delete_throwsBusinessRuleViolation_whenReportSubmitted() {
         UUID lineItemId = UUID.randomUUID();
-        draftReport.setReportStatus("SUBMITTED");
+        draftReport.setReportStatus(ReportStatus.PENDING_APPROVAL);
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
 
@@ -264,6 +817,225 @@ class ExpenseLineItemServiceImplTest {
         when(expenseLineItemRepository.findByReport_ReportId(reportId)).thenReturn(List.of(item));
 
         assertThat(expenseLineItemService.getAllForReport(reportId)).hasSize(1);
+    }
+
+    /**
+     * Regression: {@code assertViewable}'s privileged-reviewer whitelist previously omitted
+     * FINANCE_EXECUTIVE/AP_EXECUTIVE (added after ADMIN/FINANCE/MANAGER), which meant an
+     * AP_EXECUTIVE calling {@code ApPaymentServiceImpl.getPaymentDetails} - which delegates here
+     * via {@code getAllForReport} - was wrongly denied on a report they don't personally own, even
+     * though the report had correctly reached APPROVED_FOR_PAYMENT.
+     */
+    @Test
+    void getAllForReport_returnsItems_forApExecutive_onSomeoneElsesReport() {
+        draftReport.setEmployeeId("someone-else");
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), null, "ap-user", "ap@example.com", "AP", List.of("AP_EXECUTIVE"), List.of()));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+        when(expenseLineItemRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
+
+        assertThat(expenseLineItemService.getAllForReport(reportId)).isEmpty();
+    }
+
+    @Test
+    void getAllForReport_returnsItems_forFinanceExecutive_onSomeoneElsesReport() {
+        draftReport.setEmployeeId("someone-else");
+        when(currentUserService.getCurrentUser()).thenReturn(
+                new CurrentUser(UUID.randomUUID(), null, "finance-user", "finance@example.com", "Finance", List.of("FINANCE_EXECUTIVE"), List.of()));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+        when(expenseLineItemRepository.findByReport_ReportId(reportId)).thenReturn(List.of());
+
+        assertThat(expenseLineItemService.getAllForReport(reportId)).isEmpty();
+    }
+
+    // --- EP05: policy evaluation is advisory-only and must never affect the save --------------
+
+    @Test
+    void create_savesLineItem_whenPolicyEvaluatorThrows() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(policyEvaluator.evaluate(any())).thenThrow(new RuntimeException("boom"));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, validRequest());
+
+        assertThat(response.amount()).isEqualByComparingTo("100.00");
+        assertThat(response.policyWarnings()).isEmpty();
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
+    void create_includesPolicyWarnings_inResponse() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        PolicyViolation violation = PolicyViolation.builder()
+                .violationId(UUID.randomUUID())
+                .ruleType(PolicyRuleType.MISSING_DESCRIPTION)
+                .severity(PolicySeverity.WARN)
+                .message("This expense is missing a description")
+                .build();
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(violation));
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of(violation));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, validRequest());
+
+        assertThat(response.policyWarnings()).hasSize(1);
+        assertThat(response.policyWarnings().get(0).message()).isEqualTo("This expense is missing a description");
+    }
+
+    @Test
+    void update_preservesJustification_acrossRecompute() {
+        UUID lineItemId = UUID.randomUUID();
+        ExpenseCategory category = activeCategory("TRAVEL");
+        ExpenseLineItem existingLineItem = ExpenseLineItem.builder().lineItemId(lineItemId).report(draftReport)
+                .category(category).amount(new BigDecimal("50")).currency(currency).build();
+
+        PolicyViolation existingViolation = PolicyViolation.builder()
+                .violationId(UUID.randomUUID())
+                .ruleType(PolicyRuleType.MISSING_DESCRIPTION)
+                .severity(PolicySeverity.WARN)
+                .message("This expense is missing a description")
+                .justification("Client requested no memo")
+                .justifiedAt(LocalDateTime.now().minusDays(1))
+                .build();
+        PolicyViolation recomputedViolation = PolicyViolation.builder()
+                .ruleType(PolicyRuleType.MISSING_DESCRIPTION)
+                .severity(PolicySeverity.WARN)
+                .message("This expense is missing a description")
+                .build();
+
+        stubOwnerAndReport();
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId))
+                .thenReturn(Optional.of(existingLineItem));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(category));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(policyViolationRepository.findByLineItem_LineItemId(lineItemId)).thenReturn(List.of(existingViolation));
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(recomputedViolation));
+
+        expenseLineItemService.update(reportId, lineItemId, validRequest());
+
+        assertThat(recomputedViolation.getJustification()).isEqualTo("Client requested no memo");
+        assertThat(recomputedViolation.getJustifiedAt()).isNotNull();
+        verify(policyViolationRepository).saveAll(List.of(recomputedViolation));
+    }
+
+    // ---- Phase 3: BLOCK enforcement flips lineStatus; WARN leaves it ACTIVE ------------------
+    // PolicyEvaluator is mocked here (as in every other test in this class) because the amount-
+    // limit threshold/overage math itself belongs to DefaultPolicyEvaluatorTest and must not be
+    // re-verified here — only the wiring from a returned violation's enforcementType to
+    // ExpenseLineItem.lineStatus is this class's concern. Request amounts are chosen to match the
+    // scenario being illustrated even though the mocked evaluator doesn't actually inspect them.
+
+    private ExpenseLineItemRequest requestWithAmount(BigDecimal amount) {
+        return new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Restaurant", "Team lunch",
+                amount, currencyId, null, null, null, false);
+    }
+
+    private PolicyViolation amountLimitViolation(PolicyEnforcementType enforcementType) {
+        return PolicyViolation.builder()
+                .violationId(UUID.randomUUID())
+                .ruleType(PolicyRuleType.AMOUNT_LIMIT)
+                .severity(PolicySeverity.WARN)
+                .enforcementType(enforcementType)
+                .message("Amount exceeds the configured limit of 1500")
+                .build();
+    }
+
+    @Test
+    void create_lineStatusIsActive_whenAmountWithinLimit_noViolation() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, requestWithAmount(new BigDecimal("1200")));
+
+        assertThat(response.lineStatus()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void create_lineStatusIsActive_whenAmountEqualsLimit_noViolationBecauseEvaluatorUsesStrictlyGreaterThan() {
+        // The evaluator's amount > limit (not >=) semantics are DefaultPolicyEvaluatorTest's concern;
+        // here we only confirm that an empty violation list (as it would return for amount == limit)
+        // leaves the line item ACTIVE.
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, requestWithAmount(new BigDecimal("1500")));
+
+        assertThat(response.lineStatus()).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void create_setsLineStatusBlocked_whenBlockViolationDetected() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        PolicyViolation blocking = amountLimitViolation(PolicyEnforcementType.BLOCK);
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(blocking));
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of(blocking));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, requestWithAmount(new BigDecimal("1600")));
+
+        assertThat(response.lineStatus()).isEqualTo("BLOCKED");
+        assertThat(response.policyWarnings()).hasSize(1);
+        verify(policyViolationRepository).saveAll(List.of(blocking));
+        // BLOCK never rejects the save - the line item and its violation are both still persisted.
+        verify(expenseLineItemRepository).save(any(ExpenseLineItem.class));
+    }
+
+    @Test
+    void create_lineStatusRemainsActive_whenOnlyWarnViolationDetected() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        PolicyViolation warning = amountLimitViolation(PolicyEnforcementType.WARN);
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of(warning));
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of(warning));
+
+        ExpenseLineItemResponse response = expenseLineItemService.create(reportId, requestWithAmount(new BigDecimal("1600")));
+
+        assertThat(response.lineStatus()).isEqualTo("ACTIVE");
+        assertThat(response.policyWarnings()).hasSize(1);
+    }
+
+    @Test
+    void update_revertsLineStatusFromBlockedToActive_whenBlockingViolationIsResolved() {
+        UUID lineItemId = UUID.randomUUID();
+        ExpenseCategory category = activeCategory("TRAVEL");
+        ExpenseLineItem existing = ExpenseLineItem.builder().lineItemId(lineItemId).report(draftReport)
+                .category(category).amount(new BigDecimal("1600")).currency(currency).lineStatus("BLOCKED").build();
+        PolicyViolation staleBlocking = amountLimitViolation(PolicyEnforcementType.BLOCK);
+
+        stubOwnerAndReport();
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId))
+                .thenReturn(Optional.of(existing));
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(category));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+        when(expenseLineItemRepository.save(any(ExpenseLineItem.class))).thenAnswer(inv -> inv.getArgument(0));
+        // First call is refreshPolicyViolations()'s "existing" lookup (before delete); the second
+        // is toResponse()'s post-recompute read — a real repository would return the recomputed
+        // (now empty) set there, which this two-value stub mirrors.
+        when(policyViolationRepository.findByLineItem_LineItemId(lineItemId)).thenReturn(List.of(staleBlocking), List.of());
+        // The employee lowered the amount to 1200 - no longer breaches the limit.
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+
+        ExpenseLineItemResponse response = expenseLineItemService.update(reportId, lineItemId, requestWithAmount(new BigDecimal("1200")));
+
+        assertThat(response.lineStatus()).isEqualTo("ACTIVE");
+        assertThat(response.policyWarnings()).isEmpty();
+        verify(policyViolationRepository).deleteAll(List.of(staleBlocking));
     }
 
     // ---- EP02-S4: VAT/GST ----
@@ -326,7 +1098,7 @@ class ExpenseLineItemServiceImplTest {
         verify(expenseLineItemRepository, never()).save(any());
     }
 
-    // ---- EP02-S3: multi-currency — every line item converts into the Organization Base Currency
+    // ---- EP02-S3: multi-currency â€” every line item converts into the Organization Base Currency
     // (INR, per setUp()'s shared `currency`), regardless of what currency the report itself is in.
     // Each test below deliberately sets the report's currency to something else (GBP) to prove the
     // report currency never influences the conversion target.
@@ -363,6 +1135,36 @@ class ExpenseLineItemServiceImplTest {
     }
 
     @Test
+    void create_derivesBaseTaxValues_forAnEnteredTaxWithoutATaxCode() {
+        reportDisplayCurrencyDifferentFromBase();
+        UUID usdId = UUID.randomUUID();
+        Currency usd = Currency.builder().currencyId(usdId).currencyCode("USD").status("ACTIVE").build();
+
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(usdId)).thenReturn(Optional.of(usd));
+        when(exchangeRateService.getHistoricalRate(eq(usdId), eq(currencyId), any()))
+                .thenReturn(new ExchangeRateResponse(UUID.randomUUID(), usdId, "USD", currencyId, "INR",
+                        new BigDecimal("95.969290"), LocalDate.now().minusDays(1), "SCHEDULED_REFRESH", null, null, null));
+        org.mockito.ArgumentCaptor<ExpenseLineItem> saved = org.mockito.ArgumentCaptor.forClass(ExpenseLineItem.class);
+        when(expenseLineItemRepository.save(saved.capture())).thenAnswer(inv -> inv.getArgument(0));
+
+        expenseLineItemService.create(reportId, new ExpenseLineItemRequest(categoryId, LocalDate.now().minusDays(1), "Hotel",
+                "desc", new BigDecimal("100.00"), usdId, new BigDecimal("10.00"), null, null, false));
+
+        ExpenseLineItem line = saved.getValue();
+        // base tax = round(10.00 x 95.969290) to INR paise; base net makes up the rest of base amount exactly.
+        assertThat(line.getBaseTaxAmount()).isEqualByComparingTo("959.69");
+        assertThat(line.getBaseNetAmount()).isEqualByComparingTo("8637.2390");
+        assertThat(line.getBaseNetAmount().add(line.getBaseTaxAmount())).isEqualByComparingTo(line.getBaseAmount());
+        // The category has no tax code mapped, so the entered tax stands, flagged for configuration.
+        assertThat(line.getTaxSource()).isEqualTo(com.expense_management_service.enums.TaxSource.EMPLOYEE_OVERRIDE);
+        assertThat(line.getTaxValidationStatus()).isEqualTo(com.expense_management_service.enums.TaxValidationStatus.CONFIGURATION_MISSING);
+        assertThat(line.getRecoverableTaxAmount()).isEqualByComparingTo("0");
+        assertThat(line.getTaxCodeId()).isNull();
+    }
+
+    @Test
     void create_convertsEurToOrgBaseCurrency_regardlessOfReportCurrency() {
         reportDisplayCurrencyDifferentFromBase();
         UUID eurId = UUID.randomUUID();
@@ -387,7 +1189,7 @@ class ExpenseLineItemServiceImplTest {
         assertThat(response.baseCurrencyCode()).isEqualTo("INR");
     }
 
-    /** exchangeRate = 1 only because the line item's own currency equals the Organization Base Currency — never because it happens to equal the report's (GBP) currency. */
+    /** exchangeRate = 1 only because the line item's own currency equals the Organization Base Currency â€” never because it happens to equal the report's (GBP) currency. */
     @Test
     void create_keepsExchangeRateAtOne_whenLineItemCurrencyEqualsOrgBaseCurrency() {
         reportDisplayCurrencyDifferentFromBase();
@@ -406,7 +1208,7 @@ class ExpenseLineItemServiceImplTest {
         verify(exchangeRateService, never()).getHistoricalRate(any(), any(), any());
     }
 
-    /** Two line items in different transaction currencies on the same (GBP-denominated) report both land in INR — proving report totals sum correctly across multiple currencies. */
+    /** Two line items in different transaction currencies on the same (GBP-denominated) report both land in INR â€” proving report totals sum correctly across multiple currencies. */
     @Test
     void create_multipleCurrenciesOnSameReport_allConvertToOrgBaseCurrency() {
         reportDisplayCurrencyDifferentFromBase();
@@ -439,7 +1241,7 @@ class ExpenseLineItemServiceImplTest {
 
         assertThat(usdResponse.baseAmount()).isEqualByComparingTo("9596.9290");
         assertThat(eurResponse.baseAmount()).isEqualByComparingTo("5500.0000");
-        // Report total is a repository-computed SUM(baseAmount) — asserted against the stubbed value here;
+        // Report total is a repository-computed SUM(baseAmount) â€” asserted against the stubbed value here;
         // the DB-level correctness of "SUM(baseAmount) in INR" is exercised structurally by the query itself
         // only ever summing the baseAmount column, never amount.
         assertThat(draftReport.getTotalAmount()).isEqualByComparingTo("15096.9290");

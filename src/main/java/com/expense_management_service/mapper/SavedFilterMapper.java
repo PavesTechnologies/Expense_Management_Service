@@ -8,17 +8,16 @@ import org.springframework.stereotype.Component;
 @Component
 public class SavedFilterMapper {
 
-    public SavedFilter toEntity(SavedFilterRequest request) {
+    public SavedFilter toEntity(SavedFilterRequest request, String employeeId) {
         return SavedFilter.builder()
-                .employeeId(request.employeeId())
-                .filterName(request.filterName())
+                .employeeId(employeeId)
+                .filterName(request.filterName().trim())
                 .filterJson(request.filterJson())
                 .build();
     }
 
     public void updateEntity(SavedFilter entity, SavedFilterRequest request) {
-        entity.setEmployeeId(request.employeeId());
-        entity.setFilterName(request.filterName());
+        entity.setFilterName(request.filterName().trim());
         entity.setFilterJson(request.filterJson());
     }
 

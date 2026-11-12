@@ -16,6 +16,7 @@ public class CostCenterMapper {
                 .description(request.description())
                 .ownerEmployeeId(request.ownerEmployeeId())
                 .status(request.status())
+                .allowUnbudgeted(Boolean.TRUE.equals(request.allowUnbudgeted()))
                 .build();
     }
 
@@ -26,6 +27,9 @@ public class CostCenterMapper {
         entity.setDescription(request.description());
         entity.setOwnerEmployeeId(request.ownerEmployeeId());
         entity.setStatus(request.status());
+        if (request.allowUnbudgeted() != null) {
+            entity.setAllowUnbudgeted(request.allowUnbudgeted());
+        }
     }
 
     public CostCenterResponse toResponse(CostCenter entity) {
@@ -38,7 +42,8 @@ public class CostCenterMapper {
                 entity.getOwnerEmployeeId(),
                 entity.getStatus(),
                 entity.getCreatedAt(),
-                entity.getUpdatedAt()
+                entity.getUpdatedAt(),
+                entity.getAllowUnbudgeted()
         );
     }
 }

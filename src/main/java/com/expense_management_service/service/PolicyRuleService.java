@@ -15,5 +15,8 @@ public interface PolicyRuleService {
 
     List<PolicyRuleResponse> getAll();
 
+    /** All rules configured for a single category — the shape an admin UI actually needs, rather than the full table. */
+    List<PolicyRuleResponse> getAllForCategory(UUID categoryId);
+
     void delete(UUID policyId);
 }

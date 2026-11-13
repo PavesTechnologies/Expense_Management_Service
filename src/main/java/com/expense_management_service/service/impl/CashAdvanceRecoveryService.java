@@ -51,6 +51,7 @@ public class CashAdvanceRecoveryService {
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("dd MMM yyyy", Locale.ENGLISH);
 
     private final CashAdvanceRepository cashAdvanceRepository;
+    private final CashAdvanceBalanceCalculator balanceCalculator;
     private final CashAdvanceAdjustmentRepository adjustmentRepository;
     private final CashAdvanceRecoveryCaseRepository caseRepository;
     private final CashAdvanceBalanceLedger balanceLedger;
@@ -128,8 +129,9 @@ public class CashAdvanceRecoveryService {
     // ---------------------------------------------------------------- route 3
 
     /**
-     * Runs on schedule. Settles cases whose advance is back at zero, and queues one payroll report for the open cases whose
-     * grace period has ended. Returns the number of cases that moved to SENT_TO_PAYROLL.
+     * Runs on schedule. Settles cases whose advance is back at zero, and moves the open cases whose grace period has ended to
+     * PENDING_FINANCE_REVIEW. Payroll is contacted only when Finance confirms ({@link #sendToPayroll}). Returns the number of
+     * cases moved to review.
      */
     @Transactional
     public int escalateDueCases(LocalDateTime now) {
@@ -158,23 +160,66 @@ public class CashAdvanceRecoveryService {
                         recoveryCase.getRecoveryCaseId(), advanceId);
                 continue;
             }
-            // Not paid by the due time: Finance's salary deduction request is created automatically for the outstanding amount.
-            Optional<SalaryDeductionRequest> request = salaryDeductions.initiateForRecoveryCase(
-                    advance, recoveryCase.getRecoveryCaseId(), outstanding, now.toLocalDate());
-            if (request.isEmpty()) {
-                log.warn("Recovery case {} stays open: no payroll email is configured for the salary deduction request",
-                        recoveryCase.getRecoveryCaseId());
-                continue;
-            }
-            recoveryCase.setStatus(CashAdvanceRecoveryCase.SENT_TO_PAYROLL);
-            recoveryCase.setPayrollReportSentAt(now);
+            // Not paid by the due time. Finance reviews the case before payroll is contacted. The default recommendation is a
+            // salary deduction when no expense has been settled against the advance (a no-trip advance).
+            boolean noTrip = adjustmentRepository.findByCashAdvance_AdvanceId(advanceId).isEmpty();
+            String recommendation = noTrip
+                    ? "Recommended: salary deduction (no expense settled against this advance)"
+                    : "Recommended: Finance to decide (expenses were settled against this advance)";
+            recoveryCase.setStatus(CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW);
+            recoveryCase.setResolutionNote(recommendation);
             caseRepository.save(recoveryCase);
-            balanceLedger.recordChange("CashAdvanceRecoveryCase", recoveryCase.getRecoveryCaseId(), "RECOVERY_SALARY_DEDUCTION_INITIATED",
-                    "Status: NOTICE_SENT", "Status: SENT_TO_PAYROLL, request: " + request.get().getPayrollRequestId(), "system",
-                    "Payment not received by the due time; salary deduction requested automatically");
+            balanceLedger.recordChange("CashAdvanceRecoveryCase", recoveryCase.getRecoveryCaseId(), "RECOVERY_FINANCE_REVIEW_REQUIRED",
+                    "Status: NOTICE_SENT", "Status: PENDING_FINANCE_REVIEW", "system",
+                    "Grace period ended; payroll is not contacted until Finance confirms. " + recommendation);
             initiated++;
         }
         return initiated;
+    }
+
+    /**
+     * Finance confirms the salary deduction for a case that has passed its grace period. Only this call contacts payroll.
+     * Locks the advance before the case, the same order as {@link #escalateDueCases}.
+     */
+    @Transactional
+    public CashAdvanceRecoveryCase sendToPayroll(UUID recoveryCaseId, String reason) {
+        requireFinance();
+        String actor = currentUserService.getActorId();
+        String note = blank(reason);
+        if (note == null) {
+            throw new BusinessRuleViolationException("Enter the reason for sending this case to payroll.");
+        }
+        CashAdvanceRecoveryCase probe = caseRepository.findById(recoveryCaseId)
+                .orElseThrow(() -> new ResourceNotFoundException("Recovery case not found: " + recoveryCaseId));
+        CashAdvance advance = cashAdvanceRepository.findByIdForUpdate(probe.getAdvance().getAdvanceId())
+                .orElse(probe.getAdvance());
+        CashAdvanceRecoveryCase recoveryCase = caseRepository.findByIdForUpdate(recoveryCaseId)
+                .orElseThrow(() -> new ResourceNotFoundException("Recovery case not found: " + recoveryCaseId));
+        if (!CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW.equals(recoveryCase.getStatus())) {
+            throw new BusinessRuleViolationException("Only a case awaiting Finance review can be sent to payroll (current status: "
+                    + recoveryCase.getStatus() + ").");
+        }
+        BigDecimal outstanding = outstanding(advance);
+        if (outstanding.signum() <= 0) {
+            throw new BusinessRuleViolationException("Nothing is outstanding on this advance, so there is nothing to deduct.");
+        }
+        if (hasOpenSalaryDeduction(advance.getAdvanceId())) {
+            throw new BusinessRuleViolationException("A salary deduction is already open for this advance.");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        Optional<SalaryDeductionRequest> request = salaryDeductions.initiateForRecoveryCase(
+                advance, recoveryCase.getRecoveryCaseId(), outstanding, now.toLocalDate());
+        if (request.isEmpty()) {
+            throw new BusinessRuleViolationException("No payroll email is configured, so the salary deduction could not be sent.");
+        }
+        recoveryCase.setStatus(CashAdvanceRecoveryCase.SENT_TO_PAYROLL);
+        recoveryCase.setPayrollReportSentAt(now);
+        recoveryCase.setResolutionNote(note);
+        caseRepository.save(recoveryCase);
+        balanceLedger.recordChange("CashAdvanceRecoveryCase", recoveryCase.getRecoveryCaseId(), "RECOVERY_SENT_TO_PAYROLL",
+                "Status: PENDING_FINANCE_REVIEW", "Status: SENT_TO_PAYROLL, request: " + request.get().getPayrollRequestId(),
+                actor, note);
+        return recoveryCase;
     }
 
     /**
@@ -216,7 +261,8 @@ public class CashAdvanceRecoveryService {
         }
         CashAdvanceRecoveryCase recoveryCase = caseRepository.findByIdForUpdate(recoveryCaseId)
                 .orElseThrow(() -> new ResourceNotFoundException("Recovery case not found: " + recoveryCaseId));
-        if (!CashAdvanceRecoveryCase.NOTICE_SENT.equals(recoveryCase.getStatus())) {
+        if (!CashAdvanceRecoveryCase.NOTICE_SENT.equals(recoveryCase.getStatus())
+                && !CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW.equals(recoveryCase.getStatus())) {
             throw new BusinessRuleViolationException("Only a refund notice that has not gone to payroll can be cancelled (current status: "
                     + recoveryCase.getStatus() + ").");
         }
@@ -246,7 +292,8 @@ public class CashAdvanceRecoveryService {
     @Transactional(readOnly = true)
     public List<CashAdvanceRecoveryCase> openCases() {
         requireFinance();
-        return caseRepository.findByStatusIn(List.of(CashAdvanceRecoveryCase.NOTICE_SENT, CashAdvanceRecoveryCase.SENT_TO_PAYROLL));
+        return caseRepository.findByStatusIn(List.of(CashAdvanceRecoveryCase.NOTICE_SENT,
+                CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW, CashAdvanceRecoveryCase.SENT_TO_PAYROLL));
     }
 
     // ---------------------------------------------------------------- text and lookups
@@ -262,6 +309,7 @@ public class CashAdvanceRecoveryService {
 
     private BigDecimal verifiedExpense(CashAdvance advance) {
         return adjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId()).stream()
+                .filter(a -> a.isActive())
                 .map(a -> a.getAdjustedAmount() == null ? BigDecimal.ZERO : a.getAdjustedAmount())
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
@@ -273,8 +321,8 @@ public class CashAdvanceRecoveryService {
                 .findFirst();
     }
 
-    private static BigDecimal outstanding(CashAdvance advance) {
-        return advance.getOutstandingBalance() != null ? advance.getOutstandingBalance() : advance.getAmount();
+    private BigDecimal outstanding(CashAdvance advance) {
+        return balanceCalculator.outstanding(advance);
     }
 
     private static void requireFinance() {

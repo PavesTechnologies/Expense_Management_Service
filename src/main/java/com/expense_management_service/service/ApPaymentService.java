@@ -37,6 +37,10 @@ public interface ApPaymentService {
      */
     ExpenseReportResponse markPaymentCompleted(UUID reportId, CompletePaymentRequest request, String actingEmployeeId);
 
+    /** One bank payment covering several reports (Decision 3). Each report gets its own allocation. */
+    com.expense_management_service.dto.response.ApPaymentBatchResponse recordBatchPayment(
+            com.expense_management_service.dto.request.ApPaymentBatchRequest request, String actingEmployeeId);
+
     /**
      * AP Payment history tabs - any {@code paymentRoutingStatus} other than {@code
      * APPROVED_FOR_PAYMENT} (that one is the pending queue, see {@link #getApQueue}) or {@code

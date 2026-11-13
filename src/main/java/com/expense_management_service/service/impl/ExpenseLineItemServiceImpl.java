@@ -241,6 +241,10 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
             // Internal expense: preserve the original lenient behavior exactly — project is
             // optional, no PMS/RMS calls, no unnecessary requirements imposed.
             UUID projectId = request.projectId();
+            // Stage 1 (S1-14): a line with no project of its own inherits the report's default project.
+            if (projectId == null && entity.getReport() != null && entity.getReport().getProjectId() != null) {
+                projectId = entity.getReport().getProjectId();
+            }
             entity.setProject(projectId == null ? null : findProject(projectId));
             entity.setResolvedClientId(null);
             entity.setResolvedClientName(null);
@@ -503,9 +507,16 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
     private void recalculateReportTotal(ExpenseReport report) {
         BigDecimal total = expenseLineItemRepository.sumBaseAmountByReportId(report.getReportId());
         report.setTotalAmount(total);
+        // Company-card lines were paid by the company, so they never enter the employee's reimbursable amount
+        // (Stage 1, S1-12). A null sum (no lines, or no repository result) falls back to the total.
+        BigDecimal reimbursableGross = expenseReportRepository.sumReimbursableBaseAmount(report.getReportId(),
+                com.expense_management_service.enums.EmployeePaymentMethod.COMPANY_CARD);
+        if (reimbursableGross == null) {
+            reimbursableGross = total;
+        }
         // Gross less cash advance adjustments (BR-TAX-013). Policy-based non-reimbursable portions
         // (e.g. personal-use exclusions) are a later Policy Management concern.
-        report.setReimbursableAmount(ReimbursementCalculator.reimbursable(total, report.getCashAdvanceAdjustments()));
+        report.setReimbursableAmount(ReimbursementCalculator.reimbursable(reimbursableGross, report.getCashAdvanceAdjustments()));
         expenseReportRepository.save(report);
     }
 

@@ -96,6 +96,14 @@ public class ExpenseReport {
     @ToString.Exclude
     private CashAdvance cashAdvance;
 
+    /** The internal project the trip is for. Stage 1 (S1-15): at least one of project or client is required before submission. */
+    @Column(name = "project_id")
+    private UUID projectId;
+
+    /** The RMS client the trip is for. Stage 1 (S1-15): at least one of project or client is required before submission. */
+    @Column(name = "client_id")
+    private UUID clientId;
+
     /** Start date of the trip or client meeting. */
     @Column(name = "trip_start_date")
     private LocalDate tripStartDate;

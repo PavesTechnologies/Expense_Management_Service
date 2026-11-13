@@ -26,4 +26,7 @@ public interface CashAdvanceCarryForwardRepository extends JpaRepository<CashAdv
     List<CashAdvanceCarryForward> findByDestinationAdvance_AdvanceIdAndStatusIn(UUID destinationAdvanceId, Collection<String> statuses);
 
     List<CashAdvanceCarryForward> findByStatusIn(Collection<String> statuses);
+
+    /** Compensations already proposed or applied against a rollover. */
+    List<CashAdvanceCarryForward> findByReversesCarryForwardIdAndStatusIn(UUID reversesCarryForwardId, Collection<String> statuses);
 }

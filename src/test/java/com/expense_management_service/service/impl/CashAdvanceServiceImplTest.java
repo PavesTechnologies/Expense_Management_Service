@@ -52,6 +52,7 @@ import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 
+import java.time.LocalDateTime;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -61,6 +62,7 @@ import static org.mockito.Mockito.*;
 class CashAdvanceServiceImplTest {
     @org.mockito.Mock private CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
     @org.mockito.Mock private CashAdvanceRecoveryService cashAdvanceRecoveryService;
+    @org.mockito.Mock private CashAdvanceBalanceCalculator balanceCalculator;
 
     @Mock
     private CashAdvanceRepository cashAdvanceRepository;
@@ -123,6 +125,7 @@ class CashAdvanceServiceImplTest {
 
     @BeforeEach
     void stubLedgerStatus() {
+        TestBalanceCalculators.stubStoredCache(balanceCalculator);
         // The real status rule, so the advance's status is still derived from its balance here
         lenient().when(cashAdvanceBalanceLedger.statusFor(any(), any(), anyInt()))
                 .thenAnswer(inv -> CashAdvanceBalanceRules.statusAfterBalance(inv.<BigDecimal>getArgument(1), inv.<Integer>getArgument(2)));
@@ -695,23 +698,49 @@ class CashAdvanceServiceImplTest {
     }
 
     @Test
-    void processOverdueAdvances_shouldMarkOverdueAdvancesPastDueDate() {
-        CashAdvance pastDueAdvance = CashAdvance.builder()
+    void processOverdueAdvances_shouldMarkOverdueAdvancesPastTheExpenseWindow() {
+        CashAdvance pastWindow = CashAdvance.builder()
                 .advanceId(advanceId)
                 .employeeId("EMP001")
                 .amount(new BigDecimal("500.00"))
                 .outstandingBalance(new BigDecimal("500.00"))
+                .disbursedAt(LocalDateTime.now().minusDays(60))
+                .status("DISBURSED")
+                .build();
+
+        when(cashAdvanceRepository.findByStatusIn(anyList())).thenReturn(List.of(pastWindow));
+        doAnswer(inv -> {
+            CashAdvance a = inv.getArgument(0);
+            a.setStatus("OVERDUE");
+            return null;
+        }).when(cashAdvanceBalanceLedger).refreshStatus(eq(pastWindow), anyString(), anyString());
+
+        cashAdvanceService.processOverdueAdvances();
+
+        assertEquals("OVERDUE", pastWindow.getStatus());
+        verify(cashAdvanceRepository).save(pastWindow);
+        verify(approvalEventPublisher).publish(eq("CASH_ADVANCE_OVERDUE"), eq(advanceId), anyString());
+    }
+
+    @Test
+    void processOverdueAdvances_ignoresAnAdvanceStillInsideTheExpenseWindow_evenIfTheSettlementDateHasPassed() {
+        CashAdvance inWindow = CashAdvance.builder()
+                .advanceId(advanceId)
+                .employeeId("EMP001")
+                .amount(new BigDecimal("500.00"))
+                .outstandingBalance(new BigDecimal("500.00"))
+                .disbursedAt(LocalDateTime.now().minusDays(5))
                 .settlementDueDate(LocalDate.now().minusDays(2))
                 .status("DISBURSED")
                 .build();
 
-        when(cashAdvanceRepository.findByStatusIn(anyList())).thenReturn(List.of(pastDueAdvance));
+        when(cashAdvanceRepository.findByStatusIn(anyList())).thenReturn(List.of(inWindow));
 
         cashAdvanceService.processOverdueAdvances();
 
-        assertEquals("OVERDUE", pastDueAdvance.getStatus());
-        verify(cashAdvanceRepository).save(pastDueAdvance);
-        verify(approvalEventPublisher).publish(eq("CASH_ADVANCE_OVERDUE"), eq(advanceId), anyString());
+        assertEquals("DISBURSED", inWindow.getStatus());
+        verify(cashAdvanceBalanceLedger, never()).refreshStatus(any(), anyString(), anyString());
+        verify(approvalEventPublisher, never()).publish(anyString(), any(), anyString());
     }
 
     @Test

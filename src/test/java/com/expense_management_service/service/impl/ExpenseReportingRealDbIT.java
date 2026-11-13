@@ -47,7 +47,7 @@ class ExpenseReportingRealDbIT {
         CurrentUserService currentUserService = mock(CurrentUserService.class);
         when(currentUserService.getCurrentUser()).thenReturn(
                 new CurrentUser(UUID.randomUUID(), null, employeeId, "it@example.com", "IT", List.of(roles), List.of()));
-        ExpenseReportingServiceImpl service = new ExpenseReportingServiceImpl(currentUserService, employeeCacheRepository);
+        ExpenseReportingServiceImpl service = new ExpenseReportingServiceImpl(currentUserService, TestBalanceCalculators.storedCache(), employeeCacheRepository);
         ReflectionTestUtils.setField(service, "em", entityManager);
         ReflectionTestUtils.setField(service, "baseCurrencyCode", "INR");
         return service;

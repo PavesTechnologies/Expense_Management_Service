@@ -64,6 +64,7 @@ public class ExpenseReportingServiceImpl implements ExpenseReportingService {
     private static final String UNASSIGNED = "unassigned";
 
     private final CurrentUserService currentUserService;
+    private final CashAdvanceBalanceCalculator balanceCalculator;
     private final EmployeeCacheRepository employeeCacheRepository;
 
     @PersistenceContext
@@ -253,13 +254,19 @@ public class ExpenseReportingServiceImpl implements ExpenseReportingService {
     }
 
     private CashAdvances cashAdvances(LocalDate start, LocalDate end, Set<String> scopeIds) {
-        TypedQuery<Object[]> query = em.createQuery("""
-                        select a.status, a.amount, a.baseAmount, a.outstandingBalance from CashAdvance a
+        TypedQuery<com.expense_management_service.entity.CashAdvance> query = em.createQuery("""
+                        select a from CashAdvance a
                         where a.createdAt >= :start and a.createdAt < :end and a.status <> 'DRAFT'
-                        """ + (scopeIds != null ? " and a.employeeId in :ids" : ""), Object[].class)
+                        """ + (scopeIds != null ? " and a.employeeId in :ids" : ""),
+                com.expense_management_service.entity.CashAdvance.class)
                 .setParameter("start", start.atStartOfDay()).setParameter("end", end.plusDays(1).atStartOfDay());
         if (scopeIds != null) query.setParameter("ids", scopeIds);
-        List<Object[]> rows = query.getResultList();
+        List<com.expense_management_service.entity.CashAdvance> advances = query.getResultList();
+        // Outstanding comes from the authoritative calculator, in one batch. Never from the cached column.
+        Map<java.util.UUID, BigDecimal> owedById = balanceCalculator.rawOutstandingFor(advances);
+        List<Object[]> rows = advances.stream()
+                .map(a -> new Object[]{a.getStatus(), a.getAmount(), a.getBaseAmount(), owedById.get(a.getAdvanceId())})
+                .toList();
 
         Map<String, Long> counts = new HashMap<>();
         Map<String, BigDecimal> amounts = new HashMap<>();

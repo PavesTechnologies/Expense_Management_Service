@@ -117,7 +117,7 @@ public class SalaryDeductionService {
         if (!RECOVERABLE_STATUSES.contains(status)) {
             throw new BusinessRuleViolationException("Salary deduction is not available for an advance in status " + advance.getStatus() + ".");
         }
-        BigDecimal balance = CashAdvancePayrollPosting.currentBalance(advance);
+        BigDecimal balance = payrollPosting.currentBalance(advance);
         if (balance.signum() <= 0) {
             throw new BusinessRuleViolationException("This advance has no outstanding balance to recover.");
         }
@@ -308,7 +308,7 @@ public class SalaryDeductionService {
                     + status + ").");
         }
 
-        BigDecimal balance = CashAdvancePayrollPosting.currentBalance(advance);
+        BigDecimal balance = payrollPosting.currentBalance(advance);
         requireAmount(actualAmount, balance, CashAdvancePayrollPosting.decimals(advance), true);
         if (actualAmount.compareTo(request.getRequestedAmount()) > 0) {
             throw new BusinessRuleViolationException("The actual deduction cannot exceed the requested amount ("
@@ -444,7 +444,7 @@ public class SalaryDeductionService {
     /** The body Payroll works from. Built from stored data only; nothing here is an authorization ID. */
     private String requestBody(SalaryDeductionRequest request, CashAdvance advance) {
         return SalaryDeductionEmailTemplate.requestBody(request, advance, employeeName(request.getEmployeeId()),
-                CashAdvancePayrollPosting.currentBalance(advance), deductionComponent);
+                payrollPosting.currentBalance(advance), deductionComponent);
     }
 
     private String employeeName(String employeeId) {
@@ -513,7 +513,7 @@ public class SalaryDeductionService {
                 request.getEvidenceNote(),
                 request.getConfirmedAt(),
                 request.getConfirmedBy(),
-                CashAdvancePayrollPosting.currentBalance(advance),
+                payrollPosting.currentBalance(advance),
                 pendingSend && "FAILED".equals(emailStatus),
                 pendingSend || SalaryDeductionRequest.SENT_TO_PAYROLL.equals(request.getStatus()),
                 (SalaryDeductionRequest.SENT_TO_PAYROLL.equals(request.getStatus()) || cancelledAfterSend)

@@ -49,8 +49,19 @@ public record ExpenseLineItemRequest(
          * Why the expense is charged to a cost center outside the employee's home department.
          * Optional on save; required at submission when the line (or its split) is cross-department.
          */
-        @Size(max = 500) String allocationReason
+        @Size(max = 500) String allocationReason,
+        /** How the employee originally paid. Required before the report is submitted (Stage 1, S1-11); null only on older clients. */
+        com.expense_management_service.enums.EmployeePaymentMethod employeePaymentMethod
 ) {
+    /** Shape before the employee payment method was added: the line carries no payment method (null). */
+    public ExpenseLineItemRequest(UUID categoryId, LocalDate expenseDate, String merchantName, String description,
+                                  BigDecimal amount, UUID currencyId, BigDecimal taxAmount, UUID costCenterId,
+                                  UUID projectId, Boolean clientBillable, UUID taxCodeId, String taxOverrideReason,
+                                  UUID clientId, String allocationReason) {
+        this(categoryId, expenseDate, merchantName, description, amount, currencyId, taxAmount, costCenterId,
+                projectId, clientBillable, taxCodeId, taxOverrideReason, clientId, allocationReason, null);
+    }
+
     public ExpenseLineItemRequest(UUID categoryId, LocalDate expenseDate, String merchantName, String description,
                                   BigDecimal amount, UUID currencyId, BigDecimal taxAmount, UUID costCenterId,
                                   UUID projectId, Boolean clientBillable, UUID taxCodeId, String taxOverrideReason,

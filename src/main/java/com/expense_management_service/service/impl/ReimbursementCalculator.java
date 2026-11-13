@@ -16,9 +16,24 @@ final class ReimbursementCalculator {
     private ReimbursementCalculator() {
     }
 
+    /**
+     * Amounts under this (base currency) are written off, not paid: an AP payment for less than a rupee costs more
+     * than the money itself. The write-off is applied when a report is approved and when its advance offsets change.
+     */
+    static final BigDecimal WRITE_OFF_BELOW = new BigDecimal("1.00");
+
+    /** The amount AP is asked to pay: zero when the owed amount is under the write-off threshold. */
+    static BigDecimal payable(BigDecimal reimbursable) {
+        if (reimbursable == null || reimbursable.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+        return reimbursable.compareTo(WRITE_OFF_BELOW) < 0 ? BigDecimal.ZERO : reimbursable;
+    }
+
     static BigDecimal reimbursable(BigDecimal gross, Collection<CashAdvanceAdjustment> adjustments) {
         BigDecimal total = gross != null ? gross : BigDecimal.ZERO;
         BigDecimal adjusted = adjustments == null ? BigDecimal.ZERO : adjustments.stream()
+                .filter(CashAdvanceAdjustment::isActive)
                 .map(CashAdvanceAdjustment::getAdjustedAmount)
                 .filter(java.util.Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);

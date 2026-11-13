@@ -114,7 +114,15 @@ public class CashAdvanceMapper {
                 entity.getCarriedInAmount(),
                 entity.getCarriedOutAmount(),
                 entity.getExpectedTripStartDate(),
-                entity.getExpectedTripEndDate()
+                entity.getExpectedTripEndDate(),
+                entity.getApprovedAmount(),
+                entity.getDisbursedAmount(),
+                "REJECTED".equalsIgnoreCase(entity.getStatus()) ? entity.getRejectionReason() : null,
+                "DEFERRED".equalsIgnoreCase(entity.getStatus()) ? entity.getDeferredReason() : null,
+                entity.getRequestType() == null ? "COMPLETE_NEW" : entity.getRequestType(),
+                entity.getAdditionalAmountRequested(),
+                entity.getTotalAdvanceAllocation(),
+                entity.getEmployeeJustification()
         );
     }
 }

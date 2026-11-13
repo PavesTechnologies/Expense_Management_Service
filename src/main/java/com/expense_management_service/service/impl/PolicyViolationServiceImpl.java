@@ -111,6 +111,11 @@ public class PolicyViolationServiceImpl implements PolicyViolationService {
                         "PolicyViolation not found with id: " + violationId + " on line item " + lineItemId));
 
         String actingEmployeeId = currentUserService.getCurrentUser().employeeId();
+        // Confirmed requirement: a mandatory receipt cannot be bypassed by an employee's own explanation.
+        if (violation.getRuleType() == PolicyRuleType.RECEIPT_REQUIRED) {
+            throw new IllegalArgumentException(
+                    "A missing receipt cannot be justified. Upload the receipt before submitting. Receipt exceptions are not available yet.");
+        }
         String previousJustification = violation.getJustification();
         violation.setJustification(request.justification().trim());
         violation.setJustifiedAt(LocalDateTime.now());

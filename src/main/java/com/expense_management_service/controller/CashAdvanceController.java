@@ -44,6 +44,21 @@ public class CashAdvanceController {
     private final CashAdvanceService cashAdvanceService;
     private final CurrentUserService currentUserService;
 
+    @Operation(summary = "Calculation preview for a new cash advance request (informational; the server recalculates on save and submit)")
+    @PostMapping("/preview")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','MANAGER','FINANCE','FINANCE_EXECUTIVE')")
+    public ApiResponse<com.expense_management_service.dto.response.CashAdvancePreviewResponse> preview(
+            @Valid @RequestBody com.expense_management_service.dto.request.CashAdvancePreviewRequest request) {
+        return ApiResponse.success(cashAdvanceService.preview(request));
+    }
+
+    @Operation(summary = "The signed-in employee's identity for the request form (read-only)")
+    @GetMapping("/my-profile")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','MANAGER','FINANCE','FINANCE_EXECUTIVE')")
+    public ApiResponse<com.expense_management_service.dto.response.EmployeeProfileResponse> myProfile() {
+        return ApiResponse.success(cashAdvanceService.myProfile());
+    }
+
     @Operation(summary = "Create a cash advance request in DRAFT status")
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
@@ -66,6 +81,14 @@ public class CashAdvanceController {
             @RequestParam(required = false) String status,
             Pageable pageable) {
         return ApiResponse.success(cashAdvanceService.getMyAdvances(currentUserService.getEmployeeId(), status, pageable));
+    }
+
+    @Operation(summary = "Employee's other open advances and balances, for the approver's decision")
+    @GetMapping("/{advanceId}/approval-balance")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','FINANCE_EXECUTIVE','GENERAL')")
+    public ApiResponse<com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse> approvalBalance(
+            @PathVariable UUID advanceId) {
+        return ApiResponse.success(cashAdvanceService.getEmployeeBalanceForApproval(advanceId, currentUserService.getEmployeeId()));
     }
 
     @Operation(summary = "Get cash advance requests awaiting the authenticated manager's approval")
@@ -106,6 +129,25 @@ public class CashAdvanceController {
     @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','FINANCE_EXECUTIVE','GENERAL') or hasAuthority('EXPENSE_APPROVE')")
     public ApiResponse<CashAdvanceResponse> approve(@PathVariable UUID advanceId) {
         return ApiResponse.success("Cash advance approved", cashAdvanceService.approve(advanceId, currentUserService.getEmployeeId()));
+    }
+
+    @Operation(summary = "Finance approval of a Cash Advance + Outstanding request: rollover, approved cash and any overdue exception, atomically")
+    @PostMapping("/{advanceId}/approve-allocation")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE')")
+    public ApiResponse<CashAdvanceResponse> approveAllocation(
+            @PathVariable UUID advanceId,
+            @RequestBody com.expense_management_service.dto.request.CashAdvanceAllocationApprovalRequest request) {
+        return ApiResponse.success("Cash advance approved", cashAdvanceService.approveAllocation(advanceId,
+                currentUserService.getEmployeeId(), request));
+    }
+
+    @Operation(summary = "Manager decision on a cash advance: full, reduced, set-off recommendation, defer or reject (Authorized Manager/Delegate/Admin)")
+    @PostMapping("/{advanceId}/manager-decision")
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','FINANCE_EXECUTIVE','GENERAL') or hasAuthority('EXPENSE_APPROVE')")
+    public ApiResponse<CashAdvanceResponse> managerDecision(
+            @PathVariable UUID advanceId,
+            @RequestBody com.expense_management_service.dto.request.CashAdvanceManagerDecisionRequest request) {
+        return ApiResponse.success("Decision recorded", cashAdvanceService.managerDecision(advanceId, currentUserService.getEmployeeId(), request));
     }
 
     @Operation(summary = "Reject a submitted cash advance request with mandatory reason (Authorized Manager/Delegate/Admin)")

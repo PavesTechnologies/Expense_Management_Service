@@ -35,7 +35,12 @@ public interface CashAdvanceService {
 
     CashAdvanceResponse approve(UUID advanceId, String approverId);
 
+    com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse getEmployeeBalanceForApproval(UUID advanceId, String approverId);
+
     CashAdvanceResponse reject(UUID advanceId, String approverId, String reason);
+
+    /** The manager's decision: full, reduced, set-off recommendation, defer or reject. */
+    CashAdvanceResponse managerDecision(UUID advanceId, String approverId, com.expense_management_service.dto.request.CashAdvanceManagerDecisionRequest request);
 
     CashAdvanceResponse disburse(UUID advanceId, String financeUserId, CashAdvanceDisbursement disbursement);
 
@@ -56,6 +61,17 @@ public interface CashAdvanceService {
     CashAdvanceResponse cancel(UUID advanceId);
 
     void delete(UUID advanceId);
+
+    /** Finance's approval of a Cash Advance + Outstanding request: rollover, approved cash and any overdue exception, atomically. */
+    CashAdvanceResponse approveAllocation(UUID advanceId, String approverId,
+                                          com.expense_management_service.dto.request.CashAdvanceAllocationApprovalRequest request);
+
+    /** Calculation preview for a new request. Calculated on the server from the ledger; the employee's input is not trusted. */
+    com.expense_management_service.dto.response.CashAdvancePreviewResponse preview(
+            com.expense_management_service.dto.request.CashAdvancePreviewRequest request);
+
+    /** The signed-in employee's identity for the request form. Read-only. */
+    com.expense_management_service.dto.response.EmployeeProfileResponse myProfile();
 }
 
 

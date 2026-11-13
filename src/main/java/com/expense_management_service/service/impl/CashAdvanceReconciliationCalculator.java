@@ -129,7 +129,7 @@ public final class CashAdvanceReconciliationCalculator {
 
             BigDecimal adjusted = BigDecimal.ZERO;
             for (CashAdvanceAdjustment a : adjustments) {
-                if (a.getCashAdvance() == null || !id.equals(a.getCashAdvance().getAdvanceId()) || a.getAdjustedAt() == null) {
+                if (!a.isActive() || a.getCashAdvance() == null || !id.equals(a.getCashAdvance().getAdvanceId()) || a.getAdjustedAt() == null) {
                     continue;
                 }
                 if (a.getAdjustedAt().isBefore(endExclusive)) {

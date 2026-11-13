@@ -78,8 +78,8 @@ class CashAdvanceRecoveryServiceTest {
         outbox = new EmailOutboxService(outboundEmailRepository, emailTransport);
         lenient().when(emailTransport.isConfigured()).thenReturn(true);
         PolicySettingsService policy = new PolicySettingsService(systemConfigurationRepository);
-        service = new CashAdvanceRecoveryService(cashAdvanceRepository, adjustmentRepository, caseRepository,
-                new CashAdvanceBalanceLedger(auditLogRepository, org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)), outbox, policy, umsClient, currentUserService,
+        service = new CashAdvanceRecoveryService(cashAdvanceRepository, TestBalanceCalculators.storedCache(), adjustmentRepository, caseRepository,
+                new CashAdvanceBalanceLedger(auditLogRepository, TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)), outbox, policy, umsClient, currentUserService,
                 notificationService, salaryDeductionRequestRepository, salaryDeductionService);
 
         advanceId = UUID.randomUUID();
@@ -226,39 +226,69 @@ class CashAdvanceRecoveryServiceTest {
     // ------------------------------------------------------------ route 3: automatic salary deduction
 
     @Test
-    void dueCaseWithBalance_raisesASalaryDeductionAutomatically_andMarksTheCaseSentToPayroll() {
+    void dueCaseWithBalance_movesToFinanceReview_andDoesNotContactPayroll() {
         CashAdvanceRecoveryCase due = openCase(advance, NOW.minusHours(1));
         when(caseRepository.findByStatusAndDueAtLessThanEqual(CashAdvanceRecoveryCase.NOTICE_SENT, NOW))
                 .thenReturn(List.of(due));
         when(caseRepository.findByIdForUpdate(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
         when(cashAdvanceRepository.findByIdForUpdate(advanceId)).thenReturn(Optional.of(advance));
-        when(salaryDeductionService.initiateForRecoveryCase(eq(advance), eq(due.getRecoveryCaseId()),
-                eq(new BigDecimal("800.00")), any()))
-                .thenReturn(Optional.of(com.expense_management_service.entity.SalaryDeductionRequest.builder()
-                        .payrollRequestId("PR-2026-2027-AAAA1111").build()));
 
-        int initiated = service.escalateDueCases(NOW);
+        int moved = service.escalateDueCases(NOW);
 
-        assertThat(initiated).isEqualTo(1);
-        assertThat(due.getStatus()).isEqualTo(CashAdvanceRecoveryCase.SENT_TO_PAYROLL);
-        assertThat(due.getPayrollReportSentAt()).isEqualTo(NOW);
-        assertThat(advance.getOutstandingBalance()).isEqualByComparingTo("800.00"); // the advance itself is not changed
-        verify(salaryDeductionService).initiateForRecoveryCase(eq(advance), eq(due.getRecoveryCaseId()),
-                eq(new BigDecimal("800.00")), any());
-        verify(outboundEmailRepository, never()).save(any(OutboundEmail.class)); // the salary request sends its own email
+        assertThat(moved).isEqualTo(1);
+        assertThat(due.getStatus()).isEqualTo(CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW);
+        assertThat(due.getResolutionNote()).startsWith("Recommended: salary deduction");
+        assertThat(due.getPayrollReportSentAt()).isNull();
+        assertThat(advance.getOutstandingBalance()).isEqualByComparingTo("800.00");
+        verify(salaryDeductionService, never()).initiateForRecoveryCase(any(), any(), any(), any());
+        verify(outboundEmailRepository, never()).save(any(OutboundEmail.class));
     }
 
     @Test
-    void dueCaseStaysOpen_whenTheSalaryRequestCannotBeCreated() {
+    void sendToPayroll_isRefusedToNonFinance() {
+        actAs(EMPLOYEE, "GENERAL");
         CashAdvanceRecoveryCase due = openCase(advance, NOW.minusHours(1));
-        when(caseRepository.findByStatusAndDueAtLessThanEqual(CashAdvanceRecoveryCase.NOTICE_SENT, NOW))
-                .thenReturn(List.of(due));
-        when(caseRepository.findByIdForUpdate(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
+        due.setStatus(CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW);
+
+        assertThatThrownBy(() -> service.sendToPayroll(due.getRecoveryCaseId(), "Trying to send it myself"))
+                .hasMessageContaining("Only Finance");
+        verify(salaryDeductionService, never()).initiateForRecoveryCase(any(), any(), any(), any());
+    }
+
+    @Test
+    void sendToPayroll_contactsPayroll_onlyWhenFinanceConfirms() {
+        actAs("FIN001", "FINANCE");
+        CashAdvanceRecoveryCase due = openCase(advance, NOW.minusHours(1));
+        due.setStatus(CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW);
+        when(caseRepository.findById(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
         when(cashAdvanceRepository.findByIdForUpdate(advanceId)).thenReturn(Optional.of(advance));
+        when(caseRepository.findByIdForUpdate(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
+        when(salaryDeductionService.initiateForRecoveryCase(eq(advance), eq(due.getRecoveryCaseId()),
+                eq(new BigDecimal("800.00")), any()))
+                .thenReturn(Optional.of(com.expense_management_service.entity.SalaryDeductionRequest.builder()
+                        .payrollRequestId("PR-2026-2027-BBBB2222").build()));
+
+        CashAdvanceRecoveryCase result = service.sendToPayroll(due.getRecoveryCaseId(), "Finance confirmed the deduction");
+
+        assertThat(result.getStatus()).isEqualTo(CashAdvanceRecoveryCase.SENT_TO_PAYROLL);
+        assertThat(result.getPayrollReportSentAt()).isNotNull();
+        verify(salaryDeductionService).initiateForRecoveryCase(eq(advance), eq(due.getRecoveryCaseId()),
+                eq(new BigDecimal("800.00")), any());
+    }
+
+    @Test
+    void sendToPayroll_isRefused_whenNoPayrollEmailIsConfigured_andTheCaseStaysInReview() {
+        actAs("FIN001", "FINANCE");
+        CashAdvanceRecoveryCase due = openCase(advance, NOW.minusHours(1));
+        due.setStatus(CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW);
+        when(caseRepository.findById(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
+        when(cashAdvanceRepository.findByIdForUpdate(advanceId)).thenReturn(Optional.of(advance));
+        when(caseRepository.findByIdForUpdate(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
         when(salaryDeductionService.initiateForRecoveryCase(any(), any(), any(), any())).thenReturn(Optional.empty());
 
-        assertThat(service.escalateDueCases(NOW)).isZero();
-        assertThat(due.getStatus()).isEqualTo(CashAdvanceRecoveryCase.NOTICE_SENT);
+        assertThatThrownBy(() -> service.sendToPayroll(due.getRecoveryCaseId(), "Finance confirmed the deduction"))
+                .hasMessageContaining("No payroll email");
+        assertThat(due.getStatus()).isEqualTo(CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW);
     }
 
     @Test
@@ -320,15 +350,16 @@ class CashAdvanceRecoveryServiceTest {
     }
 
     @Test
-    void withoutAPayrollEmail_theReportIsNotQueued_andTheCaseStaysOpen() {
+    void withoutAPayrollEmail_escalationStillOnlyMovesTheCaseToFinanceReview() {
         CashAdvanceRecoveryCase due = openCase(advance, NOW.minusHours(1));
         when(caseRepository.findByStatusAndDueAtLessThanEqual(CashAdvanceRecoveryCase.NOTICE_SENT, NOW))
                 .thenReturn(List.of(due));
         when(caseRepository.findByIdForUpdate(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
+        when(cashAdvanceRepository.findByIdForUpdate(advanceId)).thenReturn(Optional.of(advance));
 
-        assertThat(service.escalateDueCases(NOW)).isZero();
+        assertThat(service.escalateDueCases(NOW)).isEqualTo(1);
 
-        assertThat(due.getStatus()).isEqualTo(CashAdvanceRecoveryCase.NOTICE_SENT);
+        assertThat(due.getStatus()).isEqualTo(CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW);
         verify(outboundEmailRepository, never()).save(any());
     }
 

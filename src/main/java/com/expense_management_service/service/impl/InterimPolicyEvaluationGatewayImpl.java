@@ -3,7 +3,9 @@ package com.expense_management_service.service.impl;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.PolicyViolation;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.mapper.PolicyViolationMapper;
+import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
 import com.expense_management_service.service.CrossDepartmentAllocationService;
 import com.expense_management_service.service.PolicyDecision;
@@ -49,6 +51,7 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
     private final PolicyViolationMapper policyViolationMapper;
     private final ReceiptDuplicateService receiptDuplicateService;
     private final CrossDepartmentAllocationService crossDepartmentAllocationService;
+    private final ExpenseLineItemRepository expenseLineItemRepository;
 
     @Override
     public PolicyDecision evaluate(ExpenseReport report) {
@@ -60,6 +63,43 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
         List<ReceiptDuplicateService.DuplicateMatch> duplicates = receiptDuplicateService.findBlockingMatchesForReport(report);
         if (!duplicates.isEmpty()) {
             return new PolicyDecision(false, display, duplicateReceiptReason(duplicates));
+        }
+
+        // Stage 1 (S1-15): a trip report must say which project or client it is for.
+        if (report.getProjectId() == null && report.getClientId() == null) {
+            return new PolicyDecision(false, display, "Enter the project or client for this trip before submitting.");
+        }
+
+        // Stage 1 (S1-11): every line must say how the employee paid.
+        List<String> missingPaymentMethod = report.getExpenseLineItems().stream()
+                .filter(line -> line.getEmployeePaymentMethod() == null)
+                .map(line -> lineLabel(line))
+                .toList();
+        if (!missingPaymentMethod.isEmpty()) {
+            return new PolicyDecision(false, display, "Choose how you paid for each expense before submitting: "
+                    + String.join("; ", missingPaymentMethod));
+        }
+
+        // Stage 1 (S1-13): 'Other' needs a written explanation, which is the line description.
+        List<String> otherWithoutExplanation = report.getExpenseLineItems().stream()
+                .filter(line -> line.getEmployeePaymentMethod() == com.expense_management_service.enums.EmployeePaymentMethod.OTHER)
+                .filter(line -> line.getDescription() == null || line.getDescription().isBlank())
+                .map(line -> lineLabel(line))
+                .toList();
+        if (!otherWithoutExplanation.isEmpty()) {
+            return new PolicyDecision(false, display, "Explain the payment method 'Other' in the description of: "
+                    + String.join("; ", otherWithoutExplanation));
+        }
+
+        List<String> missingReceipts = missingMandatoryReceipts(report);
+        if (!missingReceipts.isEmpty()) {
+            return new PolicyDecision(false, display, "Attach the mandatory receipt before submitting: " + String.join("; ", missingReceipts));
+        }
+
+        List<String> claimedElsewhere = duplicateClaimsOnOtherReports(report);
+        if (!claimedElsewhere.isEmpty()) {
+            return new PolicyDecision(false, display, "These expenses are already claimed on another expense report and cannot be claimed twice: "
+                    + String.join("; ", claimedElsewhere));
         }
 
         List<String> missingAllocationReasons = crossDepartmentAllocationService.findLinesMissingReason(report);
@@ -76,6 +116,36 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
         }
         return new PolicyDecision(false, display, "Explain each policy violation before submitting ("
                 + unexplained.size() + " without a justification): " + String.join("; ", unexplained));
+    }
+
+    /** A short label for a line in a submission message: its category (or merchant) and date. */
+    private static String lineLabel(ExpenseLineItem line) {
+        String name = line.getCategory() != null ? line.getCategory().getCategoryName()
+                : (line.getMerchantName() != null ? line.getMerchantName() : "expense");
+        return name + " on " + line.getExpenseDate();
+    }
+
+    /** Confirmed requirement: a line in a receipt-required category must carry a receipt before submission. */
+    private List<String> missingMandatoryReceipts(ExpenseReport report) {
+        return report.getExpenseLineItems().stream()
+                .filter(line -> line.getCategory() != null && Boolean.TRUE.equals(line.getCategory().getReceiptRequired()))
+                .filter(line -> line.getReceipts() == null || line.getReceipts().isEmpty())
+                .map(line -> line.getCategory().getCategoryName() + " on " + line.getExpenseDate())
+                .toList();
+    }
+
+    /** Confirmed requirement: the same expense may not be claimed on two reports (same employee, merchant, date, amount, currency). */
+    private List<String> duplicateClaimsOnOtherReports(ExpenseReport report) {
+        String employeeId = report.getEmployeeId();
+        List<ReportStatus> notAClaim = List.of(ReportStatus.DRAFT, ReportStatus.CANCELLED, ReportStatus.REJECTED);
+        return report.getExpenseLineItems().stream()
+                .filter(line -> line.getMerchantName() != null && !line.getMerchantName().isBlank()
+                        && line.getAmount() != null && line.getCurrency() != null && line.getExpenseDate() != null)
+                .filter(line -> !expenseLineItemRepository.findActiveClaimsDuplicating(employeeId, report.getReportId(),
+                        line.getMerchantName(), line.getExpenseDate(), line.getAmount(), line.getCurrency().getCurrencyId(),
+                        notAClaim).isEmpty())
+                .map(line -> line.getMerchantName() + " on " + line.getExpenseDate() + " for " + line.getAmount())
+                .toList();
     }
 
     private List<PolicyViolation> refreshViolations(ExpenseReport report) {

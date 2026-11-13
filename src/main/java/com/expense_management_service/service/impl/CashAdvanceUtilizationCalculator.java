@@ -115,7 +115,7 @@ public class CashAdvanceUtilizationCalculator {
         List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advanceId);
         List<CashAdvanceRepayment> repayments = cashAdvanceRepaymentRepository.findByCashAdvance_AdvanceId(advanceId);
 
-        BigDecimal approvedUtilization = sum(adjustments.stream().map(CashAdvanceAdjustment::getAdjustedAmount));
+        BigDecimal approvedUtilization = sum(adjustments.stream().filter(a -> a.isActive()).map(CashAdvanceAdjustment::getAdjustedAmount));
         BigDecimal totalRepaid = sum(repayments.stream().map(CashAdvanceRepayment::getAmount));
         BigDecimal submittedReservations = reservedByReport.values().stream()
                 .reduce(BigDecimal.ZERO, BigDecimal::add);

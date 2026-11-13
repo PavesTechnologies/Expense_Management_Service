@@ -34,6 +34,10 @@ import com.expense_management_service.dto.response.CashAdvanceUtilizationRespons
 import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.storage.StorageService;
 import com.expense_management_service.entity.CashAdvance;
+import com.expense_management_service.dto.request.CashAdvancePreviewRequest;
+import com.expense_management_service.dto.response.CashAdvancePreviewResponse;
+import com.expense_management_service.dto.response.EmployeeProfileResponse;
+import com.expense_management_service.enums.CashAdvanceRequestType;
 import com.expense_management_service.entity.CashAdvanceAdjustment;
 import com.expense_management_service.entity.CashAdvanceRepayment;
 import com.expense_management_service.entity.CostCenter;
@@ -79,6 +83,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     private Clock clock = Clock.systemDefaultZone();
 
     private final CashAdvanceBudgetMovements cashAdvanceBudgetMovements;
+    private final CashAdvanceBalanceCalculator balanceCalculator;
     private final CashAdvanceRecoveryService cashAdvanceRecoveryService;
 
     /** The disbursement mode recorded when carried-in balance covers the whole advance and no cash is paid. */
@@ -117,8 +122,10 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     public CashAdvanceResponse create(CashAdvanceRequest request) {
 
         validateAndExtractFutureDate(request);
+        validateRoundAmount(request.amount());
 
         CashAdvance entity = cashAdvanceMapper.toEntity(request);
+        entity.setRequestedAmount(request.amount());
 
         Currency currency = findCurrency(request.currencyId());
         entity.setCurrency(currency);
@@ -142,9 +149,9 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
+        applyAllocationRules(entity, request);
         resolveAndSetManager(entity);
 
-        checkOverdueAdvances(entity.getEmployeeId());
 
         // Validate cash advance amount against configured limit
         checkPolicyLimit(entity.getAmount());
@@ -206,15 +213,18 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
         // Status and outstandingBalance cannot be updated via request - they're managed server-side
         // Validate that entity is in DRAFT or SUBMITTED status before allowing updates
-        if (!List.of("DRAFT", "SUBMITTED").contains(currentStatusUpper)) {
+        // Only a draft can be edited. A submitted request is read-only, and a manager's query will reopen it for the
+        // employee's response (a separate, authorised workflow).
+        if (!"DRAFT".equals(currentStatusUpper)) {
             throw new BusinessRuleViolationException(
-                    "Cannot update cash advance in status: " + entity.getStatus()
+                    "Only a draft can be edited. A submitted request is read-only. Current status: " + entity.getStatus()
             );
         }
 
         validateAndExtractFutureDate(request);
 
         cashAdvanceMapper.updateEntity(entity, request);
+        applyAllocationRules(entity, request);
         // Nothing has been paid out yet, so the balance is still the full requested amount. Keep it in step with the edit.
         if (entity.getDisbursedAt() == null) {
             entity.setOutstandingBalance(entity.getAmount());
@@ -580,10 +590,11 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         }
 
         if (!"DRAFT".equalsIgnoreCase(entity.getStatus())
-                && !"REJECTED".equalsIgnoreCase(entity.getStatus())) {
+                && !"REJECTED".equalsIgnoreCase(entity.getStatus())
+                && !"DEFERRED".equalsIgnoreCase(entity.getStatus())) {
 
             throw new BusinessRuleViolationException(
-                    "Only DRAFT or REJECTED cash advances can be submitted."
+                    "Only DRAFT, REJECTED or DEFERRED cash advances can be submitted."
             );
         }
 
@@ -598,7 +609,6 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
         resolveAndSetManager(entity);
 
-        checkOverdueAdvances(entity.getEmployeeId());
 
         // IMPORTANT: block submission when amount exceeds configured limit
         checkPolicyLimit(entity.getAmount());
@@ -606,6 +616,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         String oldStatus = entity.getStatus();
 
         entity.setStatus("SUBMITTED");
+        // The reason for the last rejection or deferral is shown until the request goes back to the manager.
+        entity.setRejectionReason(null);
 
         CashAdvance saved =
                 cashAdvanceRepository.save(entity);
@@ -653,11 +665,88 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         }
     }
 
+    /**
+     * Finance's approval of a Cash Advance + Outstanding request. In one transaction: the rollover is taken from the eligible
+     * balances (oldest first), the approved cash is set (it may be lower than requested), any overdue exception is recorded,
+     * and then the request is approved. If the rollover cannot be applied, nothing is approved.
+     */
+    @Override
+    public CashAdvanceResponse approveAllocation(UUID advanceId, String approverId,
+                                                 com.expense_management_service.dto.request.CashAdvanceAllocationApprovalRequest request) {
+        cashAdvanceRepository.findByIdForUpdate(advanceId);
+        CashAdvance entity = findEntity(advanceId);
+        if (!CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING.name().equals(entity.getRequestType())) {
+            throw new BusinessRuleViolationException("Only a Cash Advance + Outstanding request is approved through an allocation.");
+        }
+        String statusUpper = entity.getStatus() == null ? "" : entity.getStatus().toUpperCase();
+        if (!List.of("PENDING_FINANCE_APPROVAL", "PENDING_FINANCE").contains(statusUpper)) {
+            throw new BusinessRuleViolationException("This request is not awaiting Finance approval. Current status: " + entity.getStatus());
+        }
+        validateApproverAuthorization(entity, approverId);
+
+        BigDecimal requestedCash = entity.getAdditionalAmountRequested();
+        if (requestedCash == null) {
+            throw new BusinessRuleViolationException("The additional amount is missing on this request.");
+        }
+        BigDecimal cash = request.approvedCashAmount() != null ? request.approvedCashAmount() : requestedCash;
+        if (cash.signum() < 0 || cash.compareTo(requestedCash) > 0) {
+            throw new BusinessRuleViolationException("The approved cash must be between 0 and the requested " + requestedCash.toPlainString() + ".");
+        }
+        if (cash.signum() > 0) {
+            validateRoundAmount(cash);
+        }
+
+        // The eligible balance is read here, under the lock, not from the employee's earlier figures.
+        BigDecimal eligible = allocationFor(entity.getEmployeeId(), CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING, requestedCash)
+                .eligibleOutstanding();
+        CashAdvanceCarryForwardService.OverdueException overdue = null;
+        if (request.overdueSourceAdvanceId() != null) {
+            if (!hasAuthority(RoleConstants.ROLE_FINANCE_EXECUTIVE)) {
+                throw new org.springframework.security.access.AccessDeniedException(
+                        "Only a Finance executive can authorise a rollover from an overdue advance.");
+            }
+            overdue = new CashAdvanceCarryForwardService.OverdueException(
+                    request.overdueSourceAdvanceId(), request.overdueAmount(), request.overdueJustification());
+        }
+        BigDecimal maxRollover = overdue != null && overdue.amount() != null ? eligible.add(overdue.amount()) : eligible;
+        BigDecimal rollover = request.rolloverAmount() != null ? request.rolloverAmount() : maxRollover;
+        if (rollover.signum() <= 0) {
+            throw new BusinessRuleViolationException("There is no eligible outstanding balance to roll over.");
+        }
+        if (rollover.compareTo(maxRollover) > 0) {
+            throw new BusinessRuleViolationException("The rollover is more than the eligible balance of " + maxRollover.toPlainString() + ".");
+        }
+        if (rollover.compareTo(maxRollover) < 0
+                && (request.reductionJustification() == null || request.reductionJustification().isBlank())) {
+            throw new BusinessRuleViolationException(
+                    "Explain why the rollover is less than the eligible balance. The rest stays outstanding on its advance.");
+        }
+
+        carryForwardService.applyRollover(entity, rollover, cash, overdue, approverId,
+                "Rolled over on Finance approval of " + advanceId, hasAuthority(RoleConstants.ROLE_FINANCE_EXECUTIVE));
+        return approveInternal(advanceId, approverId, overdue == null ? null : overdue.sourceAdvanceId());
+    }
+
+    private static boolean hasAuthority(String role) {
+        org.springframework.security.core.Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth == null) {
+            return false;
+        }
+        return auth.getAuthorities().stream().anyMatch(a -> role.equals(a.getAuthority()));
+    }
+
     @Override
     public CashAdvanceResponse approve(
             UUID advanceId,
             String approverId) {
+        return approveInternal(advanceId, approverId, null);
+    }
 
+    /** The shared approval. {@code exemptAdvanceId} is an overdue advance Finance has explicitly authorised to roll over. */
+    private CashAdvanceResponse approveInternal(UUID advanceId, String approverId, UUID exemptAdvanceId) {
+
+        // Serialise on this advance: a concurrent change waits here, so state checks below run on settled data.
+        cashAdvanceRepository.findByIdForUpdate(advanceId);
         CashAdvance entity =
                 findEntity(advanceId);
 
@@ -716,9 +805,12 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         }
 
         /*
-         * Keep existing overdue advance protection.
+         * Overdue advances are routed to Finance. The request is approved at the Finance stage only if every overdue
+         * balance is either settled or covered by an explicit Finance executive authorisation (the exempt advance).
          */
-        checkOverdueAdvances(entity.getEmployeeId());
+        if (List.of("PENDING_FINANCE_APPROVAL", "PENDING_FINANCE").contains(statusUpper)) {
+            checkOverdueAdvances(entity.getEmployeeId(), exemptAdvanceId);
+        }
 
         String oldStatus = entity.getStatus();
 
@@ -764,11 +856,27 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
         } else {
 
+            // Cash Advance + Outstanding needs the rollover step before it can be approved. Until that exists, refuse it
+            // here so no cash can be disbursed without the balance being rolled over.
+            if (CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING.name().equals(entity.getRequestType())
+                    && entity.getAuthorizedRolloverAmount() == null) {
+                throw new BusinessRuleViolationException(
+                        "A Cash Advance + Outstanding request is approved through the Finance allocation approval, which sets its rollover.");
+            }
             // Final Finance/Admin approval consumes the selected Cost Center budget.
             // Manager and Cost Center approvals only advance the workflow.
             consumeCostCenterBudget(entity);
 
             nextStatus = "APPROVED";
+            // Freeze the approved amount. Disbursement pays this, and Finance cannot change it.
+            if (entity.getAmount() != null) {
+                entity.setApprovedAmount(entity.getAmount());
+            }
+            // Final approval is Finance's authorization of any exposure exception the manager recorded.
+            if (entity.getExposureExceptionJustification() != null && entity.getExposureExceptionAuthorizedBy() == null) {
+                entity.setExposureExceptionAuthorizedBy(actingUser);
+                entity.setExposureExceptionAuthorizedAt(LocalDateTime.now());
+            }
         }
 
         entity.setStatus(nextStatus);
@@ -776,8 +884,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         CashAdvance saved =
                 cashAdvanceRepository.save(entity);
 
-        if ("APPROVED".equals(nextStatus)) {
-            // Ready carry-forwards are detected and added here, once this advance is approved.
+        if ("APPROVED".equals(nextStatus) && saved.getRequestType() == null) {
+            // Legacy requests only. Requests of the new flow get their rollover explicitly, never from a ready balance.
             carryForwardService.applyReadyForDestination(saved);
         }
 
@@ -878,6 +986,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         String oldStatus = entity.getStatus();
 
         entity.setStatus("REJECTED");
+        entity.setRejectionReason(reason.trim());
 
         CashAdvance saved =
                 cashAdvanceRepository.save(entity);
@@ -922,6 +1031,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             String financeUserId,
             CashAdvanceDisbursement disbursement) {
 
+        // Serialise on this advance: a concurrent change waits here, so state checks below run on settled data.
+        cashAdvanceRepository.findByIdForUpdate(advanceId);
         CashAdvance entity =
                 findEntity(advanceId);
 
@@ -945,7 +1056,22 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
+        if (CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING.name().equals(entity.getRequestType())
+                && entity.getAuthorizedRolloverAmount() == null) {
+            throw new BusinessRuleViolationException(
+                    "A Cash Advance + Outstanding request cannot be disbursed until its rollover is authorised.");
+        }
+        // A proposed carry-forward into this advance is not yet money the employee already holds. Pay nothing until it is decided.
+        carryForwardService.assertNoPendingProposalInto(entity.getAdvanceId());
         BigDecimal carriedIn = CashAdvanceBalanceRules.carriedIn(entity);
+        if ("SET_OFF".equals(entity.getRecommendedTreatment())) {
+            BigDecimal recommended = entity.getRecommendedSetOffAmount() == null ? BigDecimal.ZERO : entity.getRecommendedSetOffAmount();
+            if (carriedIn.compareTo(recommended) < 0) {
+                throw new BusinessRuleViolationException("The manager recommended a set-off of " + recommended
+                        + " from advance " + entity.getRecommendedSourceAdvanceId()
+                        + ", but it is not applied yet (applied: " + carriedIn + "). Finance must propose and approve the carry-forward before disbursement.");
+            }
+        }
         if (carriedIn.signum() > 0 && entity.getAmount().subtract(carriedIn).signum() <= 0) {
             // The carried-in balance covers the whole advance, so nothing is paid in cash. Record it as a carry-forward.
             return disburseCarriedForward(entity, financeUserId);
@@ -968,6 +1094,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         // The 30-day expense window starts here (CashAdvanceExpenseWindow reads this field).
         entity.setDisbursedAt(LocalDateTime.now());
         applyDisbursementDetails(entity, disbursement, mode, proofKey);
+        entity.setDisbursedAmount(entity.getAmount().subtract(carriedIn));
 
         if (entity.getOutstandingBalance() == null) {
             // The obligation is the advance amount. Any carried-in balance is already part of it (carry-forward).
@@ -1010,6 +1137,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         entity.setDisbursedAt(LocalDateTime.now());
         entity.setDisbursementMode(CARRIED_FORWARD_MODE);
         entity.setDisbursementPaymentDate(LocalDate.now(clock));
+        entity.setDisbursedAmount(BigDecimal.ZERO);
         if (entity.getOutstandingBalance() == null) {
             entity.setOutstandingBalance(entity.getAmount());
         }
@@ -1136,12 +1264,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             );
         }
 
-        BigDecimal currentBalance =
-                advance.getOutstandingBalance();
-
-        if (currentBalance == null) {
-            currentBalance = advance.getAmount();
-        }
+        // The authoritative balance from the records, not the cached column.
+        BigDecimal currentBalance = balanceCalculator.outstanding(advance);
 
         if (currentBalance.compareTo(BigDecimal.ZERO) <= 0) {
 
@@ -1331,6 +1455,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         BigDecimal totalAdjusted =
                 adjustments
                         .stream()
+                        .filter(a -> a.isActive())
                         .map(CashAdvanceAdjustment::getAdjustedAmount)
                         .filter(a -> a != null)
                         .reduce(
@@ -1442,43 +1567,41 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                         )
                 );
 
-        LocalDate today = LocalDate.now();
+        LocalDateTime now = LocalDateTime.now();
 
         for (CashAdvance advance : activeAdvances) {
 
-            if (advance.getSettlementDueDate() != null
-                    && advance.getSettlementDueDate().isBefore(today)) {
-
-                if (advance.getOutstandingBalance() != null
-                        && advance.getOutstandingBalance()
-                                .compareTo(BigDecimal.ZERO) > 0) {
-
-                    String oldStatus = advance.getStatus();
-
-                    advance.setStatus("OVERDUE");
-
-                    cashAdvanceRepository.save(advance);
-
-                    auditLogRepository.save(
-                            AuditLog.builder()
-                                    .entityName("CashAdvance")
-                                    .entityId(advance.getAdvanceId())
-                                    .action("OVERDUE_MARKED")
-                                    .oldValue(oldStatus)
-                                    .newValue("OVERDUE")
-                                    .performedBy("SYSTEM")
-                                    .performedAt(LocalDateTime.now())
-                                    .build()
-                    );
-
-                    approvalEventPublisher.publish(
-                            "CASH_ADVANCE_OVERDUE",
-                            advance.getAdvanceId(),
-                            "due="
-                                    + advance.getSettlementDueDate()
-                    );
-                }
+            // Overdue means: an open balance after the 30-day expense window (see CashAdvanceExpenseWindow), not the
+            // user-entered settlement date. The ledger derives OVERDUE from the same rule, so the status is durable.
+            if (!CashAdvanceExpenseWindow.isLocked(advance, now)
+                    || balanceCalculator.outstanding(advance).compareTo(BigDecimal.ZERO) <= 0) {
+                continue;
             }
+            String oldStatus = advance.getStatus();
+            if ("OVERDUE".equals(oldStatus)) {
+                continue;
+            }
+
+            cashAdvanceBalanceLedger.refreshStatus(advance, "SYSTEM", "Expense window ended with an open balance");
+            cashAdvanceRepository.save(advance);
+
+            auditLogRepository.save(
+                    AuditLog.builder()
+                            .entityName("CashAdvance")
+                            .entityId(advance.getAdvanceId())
+                            .action("OVERDUE_MARKED")
+                            .oldValue(oldStatus)
+                            .newValue(advance.getStatus())
+                            .performedBy("SYSTEM")
+                            .performedAt(now)
+                            .build()
+            );
+
+            approvalEventPublisher.publish(
+                    "CASH_ADVANCE_OVERDUE",
+                    advance.getAdvanceId(),
+                    "windowEnded=" + CashAdvanceExpenseWindow.deadline(advance)
+            );
         }
     }
 
@@ -1531,6 +1654,17 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         );
     }
 
+
+    /** Advances are requested in whole blocks of this amount (the base currency). Change it here only. */
+    public static final BigDecimal ADVANCE_ROUND_BLOCK = new BigDecimal("500");
+
+    private static void validateRoundAmount(BigDecimal amount) {
+        if (amount == null || amount.signum() <= 0
+                || amount.remainder(ADVANCE_ROUND_BLOCK).signum() != 0) {
+            throw new BusinessRuleViolationException(
+                    "The advance amount must be a positive multiple of " + ADVANCE_ROUND_BLOCK.toPlainString() + ".");
+        }
+    }
 
     // ============================================================
     // DATE VALIDATION
@@ -1863,6 +1997,390 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
      * delegate or cost center owner who approves it. Anyone else gets "not found", so the response doesn't reveal
      * that the advance exists.
      */
+    /**
+     * The employee's other open advances, for the approver to see before deciding. Same approver check as approve:
+     * only someone who can approve this request may read the employee's balance.
+     */
+    /** Approval view: this request, the employee's open advances (each at its ledger balance) and exposure against the limit. */
+    @Override
+    @Transactional(readOnly = true)
+    public com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse getEmployeeBalanceForApproval(
+            UUID advanceId, String approverId) {
+        CashAdvance advance = findEntity(advanceId);
+        validateApproverAuthorization(advance, approverId);
+
+        List<com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse.OpenAdvance> others = new java.util.ArrayList<>();
+        for (CashAdvance other : cashAdvanceRepository.findByEmployeeIdAndStatusIn(advance.getEmployeeId(), OPEN_BALANCE_STATUSES)) {
+            if (other.getAdvanceId().equals(advanceId)) {
+                continue;
+            }
+            BigDecimal owed = ledgerOutstanding(other);
+            if (owed.signum() > 0) {
+                others.add(new com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse.OpenAdvance(
+                        other.getAdvanceId(), other.getTitle(), other.getStatus(), other.getAmount(), owed));
+            }
+        }
+        BigDecimal outstanding = others.stream()
+                .map(com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse.OpenAdvance::outstandingBalance)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal committed = committedAmount(advance.getEmployeeId(), advanceId);
+
+        CashAdvanceExposure.Result exposure = evaluateExposure(advance.getEmployeeId(), advanceId, outstanding, committed, advance.getAmount());
+
+        return new com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse(
+                advanceId,
+                advance.getEmployeeId(),
+                advance.getCurrency() != null ? advance.getCurrency().getCurrencyCode() : null,
+                advance.getAmount(),
+                outstanding,
+                others,
+                exposure.limit(),
+                committed,
+                exposure.potential(),
+                exposure.excessOverLimit(),
+                exposure.exceedsLimit(),
+                managerDecisionOf(advance));
+    }
+
+    /** The manager's recorded recommendation, or null when there is none yet. */
+    static com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse.ManagerDecision managerDecisionOf(CashAdvance advance) {
+        boolean hasDecision = advance.getRecommendedTreatment() != null || advance.getManagerDecidedAt() != null;
+        boolean hasException = advance.getExposureExceptionAt() != null;
+        if (!hasDecision && !hasException) {
+            return null;
+        }
+        UUID source = null;
+        if (advance.getRecommendedSourceAdvanceId() != null && !advance.getRecommendedSourceAdvanceId().isBlank()) {
+            source = UUID.fromString(advance.getRecommendedSourceAdvanceId());
+        }
+        return new com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse.ManagerDecision(
+                advance.getRecommendedTreatment(),
+                advance.getManagerJustification(),
+                advance.getManagerDecidedBy(),
+                advance.getManagerDecidedAt(),
+                source,
+                advance.getRecommendedSetOffAmount(),
+                advance.getExposureExceptionJustification(),
+                advance.getExposureExceptionBy(),
+                advance.getExposureExceptionAt(),
+                advance.getExposureExceptionAuthorizedBy() != null);
+    }
+
+    /** Statuses in which an advance is approved or pending but not disbursed: committed exposure. */
+    private static final List<String> COMMITTED_STATUSES = List.of(
+            "SUBMITTED", "PENDING_APPROVAL", "PENDING", "PENDING_MANAGER_APPROVAL",
+            "PENDING_COST_CENTER_APPROVAL", "PENDING_COST_CENTER", "PENDING_FINANCE_APPROVAL", "PENDING_FINANCE", "APPROVED");
+
+    /** Statuses in which the manager still has the decision. */
+    private static final List<String> MANAGER_STAGE_STATUSES = List.of(
+            "SUBMITTED", "PENDING_APPROVAL", "PENDING", "PENDING_MANAGER_APPROVAL");
+
+    private static final String EXPOSURE_LIMIT_CONFIG_KEY = "cash_advance.max_employee_exposure";
+
+    /** Outstanding balance of one advance, from its records: amount, active offsets and repayments. Never the stored field alone. */
+    private BigDecimal ledgerOutstanding(CashAdvance advance) {
+        if (balanceCalculator != null) {
+            return balanceCalculator.outstanding(advance);
+        }
+        // Same rule as CashAdvanceBalanceCalculator.outstanding: active offsets and repayments only.
+        BigDecimal offsets = CashAdvanceBalanceCalculator.activeOffsets(
+                cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId()));
+        BigDecimal repaid = CashAdvanceBalanceCalculator.repaymentTotal(
+                cashAdvanceRepaymentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId()));
+        int decimals = advance.getCurrency() != null ? advance.getCurrency().getDecimalPlaces() : 2;
+        return CashAdvanceBalanceRules.requireNonNegative(CashAdvanceBalanceRules.ledgerBalance(advance, offsets, repaid), decimals);
+    }
+
+    /** Amount of the employee's other approved or pending advances that are not disbursed yet. */
+    private BigDecimal committedAmount(String employeeId, UUID excludeAdvanceId) {
+        return cashAdvanceRepository.findByEmployeeIdAndStatusIn(employeeId, COMMITTED_STATUSES).stream()
+                .filter(a -> !a.getAdvanceId().equals(excludeAdvanceId))
+                .map(a -> a.getApprovedAmount() != null ? a.getApprovedAmount() : a.getAmount())
+                .filter(java.util.Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private CashAdvanceExposure.Result evaluateExposure(String employeeId, UUID advanceId, BigDecimal outstanding,
+                                                        BigDecimal committed, BigDecimal requested) {
+        return CashAdvanceExposure.evaluate(readExposureLimit(), outstanding, committed, requested);
+    }
+
+    /** The company limit on an employee's total exposure. Not configured means no limit. */
+    private BigDecimal readExposureLimit() {
+        return systemConfigurationRepository.findByConfigKey(EXPOSURE_LIMIT_CONFIG_KEY)
+                .map(c -> CashAdvanceExposure.parseLimit(c.getConfigValue()))
+                .orElse(null);
+    }
+
+    /**
+     * The manager's decision. Each option is recorded on the advance before the normal approval or rejection runs, in the
+     * same transaction, so a failed step leaves nothing half-written.
+     */
+    @Override
+    public CashAdvanceResponse managerDecision(UUID advanceId, String approverId,
+                                               com.expense_management_service.dto.request.CashAdvanceManagerDecisionRequest request) {
+        if (request == null || request.decision() == null || request.decision().isBlank()) {
+            throw new BusinessRuleViolationException("Choose a decision: APPROVE_FULL, APPROVE_REDUCED, SET_OFF, DEFER or REJECT.");
+        }
+        // Serialise with any other change to this advance.
+        cashAdvanceRepository.findByIdForUpdate(advanceId);
+        CashAdvance entity = findEntity(advanceId);
+        validateApproverAuthorization(entity, approverId);
+        if (entity.getRequestedAmount() == null) {
+            entity.setRequestedAmount(entity.getAmount());
+        }
+        String decision = request.decision().trim().toUpperCase();
+        String justification = request.justification() == null ? "" : request.justification().trim();
+        String statusUpper = entity.getStatus() == null ? "" : entity.getStatus().toUpperCase();
+
+        switch (decision) {
+            case "APPROVE_FULL" -> {
+                requireManagerStage(statusUpper);
+                CashAdvanceExposure.Result exposure = exposureFor(entity);
+                if (exposure.exceedsLimit()) {
+                    requireText(justification, "The employee's exposure is "
+                            + exposure.potential() + " against a limit of " + exposure.limit()
+                            + ". Enter a justification for the exception.");
+                    recordExposureException(entity, approverId, justification);
+                }
+                recordDecision(entity, "FULL_ADVANCE", approverId, justification);
+                cashAdvanceRepository.save(entity);
+                return approve(advanceId, approverId);
+            }
+            case "APPROVE_REDUCED" -> {
+                requireManagerStage(statusUpper);
+                BigDecimal reduced = request.approvedAmount();
+                requireText(justification, "Explain why the amount is reduced.");
+                if (reduced == null || reduced.signum() <= 0) {
+                    throw new BusinessRuleViolationException("Enter the reduced amount to approve.");
+                }
+                if (entity.getAmount() != null && reduced.compareTo(entity.getAmount()) >= 0) {
+                    throw new BusinessRuleViolationException("A reduced amount must be less than the requested " + entity.getAmount() + ".");
+                }
+                validateRoundAmount(reduced);
+                CashAdvanceExposure.Result exposure = exposureFor(entity, reduced);
+                if (exposure.exceedsLimit()) {
+                    recordExposureException(entity, approverId, justification);
+                }
+                entity.setAmount(reduced);
+                entity.setRecommendedAmount(reduced);
+                recordDecision(entity, "REDUCED", approverId, justification);
+                cashAdvanceRepository.save(entity);
+                return approve(advanceId, approverId);
+            }
+            case "SET_OFF" -> {
+                requireManagerStage(statusUpper);
+                requireText(justification, "Explain the set-off recommendation for Finance.");
+                UUID sourceId = request.setOffSourceAdvanceId();
+                BigDecimal setOff = request.setOffAmount();
+                if (sourceId == null || setOff == null || setOff.signum() <= 0) {
+                    throw new BusinessRuleViolationException("Choose the earlier advance and the amount to set off.");
+                }
+                if (sourceId.equals(advanceId)) {
+                    throw new BusinessRuleViolationException("An advance cannot be set off against itself.");
+                }
+                CashAdvance source = findEntity(sourceId);
+                if (source.getEmployeeId() == null || !source.getEmployeeId().equals(entity.getEmployeeId())) {
+                    throw new BusinessRuleViolationException("The set-off source must belong to the same employee.");
+                }
+                BigDecimal owed = ledgerOutstanding(source);
+                if (setOff.compareTo(owed) > 0) {
+                    throw new BusinessRuleViolationException("The set-off (" + setOff + ") is more than the source's outstanding balance (" + owed + ").");
+                }
+                if (entity.getAmount() != null && setOff.compareTo(entity.getAmount()) > 0) {
+                    throw new BusinessRuleViolationException("The set-off cannot be more than the advance being approved.");
+                }
+                CashAdvanceExposure.Result exposure = exposureFor(entity);
+                if (exposure.exceedsLimit()) {
+                    recordExposureException(entity, approverId, justification);
+                }
+                entity.setRecommendedTreatment("SET_OFF");
+                entity.setRecommendedSourceAdvanceId(sourceId.toString());
+                entity.setRecommendedSetOffAmount(setOff);
+                recordDecision(entity, "SET_OFF", approverId, justification);
+                cashAdvanceRepository.save(entity);
+                return approve(advanceId, approverId);
+            }
+            case "DEFER" -> {
+                requireManagerStage(statusUpper);
+                requireText(justification, "Give the reason for deferring this request.");
+                entity.setStatus("DEFERRED");
+                entity.setDeferredReason(justification);
+                entity.setDeferredAt(LocalDateTime.now());
+                recordDecision(entity, "DEFERRED", approverId, justification);
+                CashAdvance saved = cashAdvanceRepository.save(entity);
+                auditLogRepository.save(AuditLog.builder()
+                        .entityName("CashAdvance").entityId(saved.getAdvanceId())
+                        .action("CASH_ADVANCE_DEFERRED")
+                        .oldValue(statusUpper).newValue("DEFERRED")
+                        .performedBy(approverId).performedAt(LocalDateTime.now()).reason(justification)
+                        .build());
+                return cashAdvanceMapper.toResponse(saved);
+            }
+            case "REJECT" -> {
+                requireText(justification, "A reason is required to reject.");
+                return reject(advanceId, approverId, justification);
+            }
+            default -> throw new BusinessRuleViolationException("Unknown decision: " + request.decision());
+        }
+    }
+
+    private void requireManagerStage(String statusUpper) {
+        if (!MANAGER_STAGE_STATUSES.contains(statusUpper)) {
+            throw new BusinessRuleViolationException("The manager decision applies only while the request is waiting for the manager. Current status: " + statusUpper);
+        }
+    }
+
+    private static void requireText(String value, String message) {
+        if (value == null || value.isBlank()) {
+            throw new BusinessRuleViolationException(message);
+        }
+    }
+
+    private CashAdvanceExposure.Result exposureFor(CashAdvance entity) {
+        return exposureFor(entity, entity.getAmount());
+    }
+
+    private CashAdvanceExposure.Result exposureFor(CashAdvance entity, BigDecimal requested) {
+        BigDecimal outstanding = BigDecimal.ZERO;
+        for (CashAdvance other : cashAdvanceRepository.findByEmployeeIdAndStatusIn(entity.getEmployeeId(), OPEN_BALANCE_STATUSES)) {
+            if (!other.getAdvanceId().equals(entity.getAdvanceId())) {
+                outstanding = outstanding.add(ledgerOutstanding(other));
+            }
+        }
+        return evaluateExposure(entity.getEmployeeId(), entity.getAdvanceId(), outstanding,
+                committedAmount(entity.getEmployeeId(), entity.getAdvanceId()), requested);
+    }
+
+    private void recordExposureException(CashAdvance entity, String approverId, String justification) {
+        entity.setExposureExceptionJustification(justification);
+        entity.setExposureExceptionBy(approverId);
+        entity.setExposureExceptionAt(LocalDateTime.now());
+    }
+
+    private void recordDecision(CashAdvance entity, String treatment, String approverId, String justification) {
+        entity.setRecommendedTreatment(treatment);
+        entity.setManagerJustification(justification);
+        entity.setManagerDecidedBy(approverId);
+        entity.setManagerDecidedAt(LocalDateTime.now());
+    }
+
+    /** Statuses in which an advance can still owe the employee or the company a balance. */
+    private static final List<String> OPEN_BALANCE_STATUSES = List.of(
+            "DISBURSED", "IN_PROGRESS", "EXPENSE_SUBMITTED", "EXPENSE_VERIFIED",
+            "SETTLEMENT_PENDING", "PARTIALLY_ADJUSTED", "PARTIALLY_SETTLED", "AWAITING_REIMBURSEMENT");
+
+    /** Open balances plus OVERDUE, so an overdue balance still counts toward what the employee owes. */
+    private static final List<String> OUTSTANDING_DISPLAY_STATUSES =
+            java.util.stream.Stream.concat(OPEN_BALANCE_STATUSES.stream(), java.util.stream.Stream.of("OVERDUE")).toList();
+
+    /** What the employee owes and what a request of this type covers. Read from the ledger, never from the request. */
+    private static final class Allocation {
+        final BigDecimal openOutstanding;
+        final BigDecimal eligibleOutstanding;
+        final BigDecimal total;
+        final boolean justificationRequired;
+
+        Allocation(BigDecimal openOutstanding, BigDecimal eligibleOutstanding, BigDecimal total, boolean justificationRequired) {
+            this.openOutstanding = openOutstanding;
+            this.eligibleOutstanding = eligibleOutstanding;
+            this.total = total;
+            this.justificationRequired = justificationRequired;
+        }
+
+        BigDecimal openOutstanding() { return openOutstanding; }
+        BigDecimal eligibleOutstanding() { return eligibleOutstanding; }
+        BigDecimal total() { return total; }
+        boolean justificationRequired() { return justificationRequired; }
+    }
+
+    private Allocation allocationFor(String employeeId, CashAdvanceRequestType type, BigDecimal amount) {
+        BigDecimal open = BigDecimal.ZERO;
+        BigDecimal eligible = BigDecimal.ZERO;
+        for (CashAdvance advance : cashAdvanceRepository.findByEmployeeIdAndStatusIn(employeeId, OUTSTANDING_DISPLAY_STATUSES)) {
+            BigDecimal owed = ledgerOutstanding(advance);
+            if (owed.signum() <= 0) {
+                continue;
+            }
+            open = open.add(owed);
+            if (CashAdvanceAllocationRules.rolloverEligible(advance.getStatus())) {
+                eligible = eligible.add(owed);
+            }
+        }
+        if (type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING && eligible.signum() <= 0) {
+            throw new BusinessRuleViolationException(
+                    "You have no outstanding balance that can be included. Choose Complete New Cash Advance instead.");
+        }
+        return new Allocation(open, eligible,
+                CashAdvanceAllocationRules.totalAllocation(type, eligible, amount),
+                CashAdvanceAllocationRules.justificationRequired(type, open));
+    }
+
+    /** Validates the request type and its amounts, then stores the calculation on the advance. Called on create and update. */
+    void applyAllocationRules(CashAdvance entity, CashAdvanceRequest request) {
+        CashAdvanceRequestType type = CashAdvanceAllocationRules.typeOrDefault(request.requestType());
+        BigDecimal amount = request.amount();
+        if (type == CashAdvanceRequestType.COMPLETE_NEW && request.additionalAmount() != null) {
+            throw new BusinessRuleViolationException("An additional amount applies only to Cash Advance + Outstanding.");
+        }
+        if (type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING
+                && request.additionalAmount() != null && request.additionalAmount().compareTo(amount) != 0) {
+            throw new BusinessRuleViolationException("The additional amount must match the amount required.");
+        }
+        Allocation allocation = allocationFor(entity.getEmployeeId(), type, amount);
+        String justification = CashAdvanceAllocationRules.validJustification(
+                allocation.justificationRequired(), request.employeeJustification());
+        entity.setRequestType(type.name());
+        entity.setAdditionalAmountRequested(type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING ? amount : null);
+        entity.setOutstandingAmountSnapshot(allocation.openOutstanding());
+        entity.setTotalAdvanceAllocation(allocation.total());
+        entity.setEmployeeJustification(justification);
+    }
+
+    @Override
+    public CashAdvancePreviewResponse preview(CashAdvancePreviewRequest request) {
+        validateRoundAmount(request.amount());
+        String employeeId = currentUserService.getEmployeeId();
+        CashAdvanceRequestType type = CashAdvanceAllocationRules.typeOrDefault(request.requestType());
+        Allocation allocation = allocationFor(employeeId, type, request.amount());
+        CashAdvanceExposure.Result exposure =
+                evaluateExposure(employeeId, null, allocation.openOutstanding(), committedAmount(employeeId, null), request.amount());
+        String currencyCode = request.currencyId() == null ? null : findCurrency(request.currencyId()).getCurrencyCode();
+        return new CashAdvancePreviewResponse(
+                type,
+                currencyCode,
+                allocation.openOutstanding(),
+                type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING ? allocation.eligibleOutstanding() : BigDecimal.ZERO,
+                request.amount(),
+                allocation.total(),
+                allocation.justificationRequired(),
+                exposure.limit(),
+                exposure.potential(),
+                exposure.exceedsLimit(),
+                exposure.excessOverLimit());
+    }
+
+    @Override
+    public EmployeeProfileResponse myProfile() {
+        String employeeId = currentUserService.getEmployeeId();
+        EmployeeCache me = employeeCacheRepository.findByEmployeeId(employeeId).orElse(null);
+        String managerId = me == null ? null : me.getManagerEmployeeId();
+        String managerName = managerId == null ? null
+                : employeeCacheRepository.findByEmployeeId(managerId).map(m -> joinName(m.getFirstName(), m.getLastName())).orElse(null);
+        return new EmployeeProfileResponse(
+                employeeId,
+                me == null ? null : joinName(me.getFirstName(), me.getLastName()),
+                managerId,
+                managerName,
+                null,   // department name: the cache holds only an ID, so it is not shown until a name lookup exists
+                null);  // designation name: same
+    }
+
+    private static String joinName(String first, String last) {
+        String name = ((first == null ? "" : first.trim()) + " " + (last == null ? "" : last.trim())).trim();
+        return name.isEmpty() ? null : name;
+    }
+
     private void assertCanView(CashAdvance advance) {
         if (isFinanceCaller() || isAdminCaller()) {
             return;
@@ -1972,7 +2490,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     // ============================================================
 
     private void checkOverdueAdvances(
-            String employeeId) {
+            String employeeId, UUID exemptAdvanceId) {
 
         if (employeeId == null
                 || employeeId.isBlank()) {
@@ -1999,12 +2517,13 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
         for (CashAdvance advance : activeAdvances) {
 
+            if (advance.getAdvanceId().equals(exemptAdvanceId)) {
+                continue;
+            }
             if ("OVERDUE".equalsIgnoreCase(
                     advance.getStatus()
             )
-                    && advance.getOutstandingBalance() != null
-                    && advance.getOutstandingBalance()
-                            .compareTo(BigDecimal.ZERO) > 0) {
+                    && balanceCalculator.outstanding(advance).compareTo(BigDecimal.ZERO) > 0) {
 
                 throw new BusinessRuleViolationException(
                         "Cannot request or submit a new cash advance when you have overdue unsettled advances (Advance ID: "
@@ -2017,9 +2536,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                     && advance.getSettlementDueDate()
                             .isBefore(LocalDate.now())) {
 
-                if (advance.getOutstandingBalance() != null
-                        && advance.getOutstandingBalance()
-                                .compareTo(BigDecimal.ZERO) > 0) {
+                if (balanceCalculator.outstanding(advance).compareTo(BigDecimal.ZERO) > 0) {
 
                     throw new BusinessRuleViolationException(
                             "Cannot request or submit a new cash advance when you have overdue unsettled advances (Advance ID: "

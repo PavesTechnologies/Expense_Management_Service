@@ -185,6 +185,11 @@ public class ExpenseLineItem {
     @Column(name = "client_billable")
     private Boolean clientBillable;
 
+    /** How the employee originally paid (cash, personal card, UPI, company card, other). Required before the report is submitted. */
+    @Enumerated(EnumType.STRING)
+    @Column(name = "employee_payment_method", length = 32)
+    private com.expense_management_service.enums.EmployeePaymentMethod employeePaymentMethod;
+
     /**
      * Frozen snapshot of the RMS client resolved for {@link #project} at the moment this line
      * item was last saved with {@code clientBillable = true} — deliberately independent of

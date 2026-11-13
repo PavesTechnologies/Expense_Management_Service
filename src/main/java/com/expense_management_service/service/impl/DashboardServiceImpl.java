@@ -1,5 +1,6 @@
 package com.expense_management_service.service.impl;
 
+import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.dto.response.CashAdvanceResponse;
 import com.expense_management_service.dto.response.DashboardResponse;
 import com.expense_management_service.dto.response.DashboardResponse.Budget;
@@ -78,6 +79,8 @@ public class DashboardServiceImpl implements DashboardService {
     private final DelegationService delegationService;
     private final com.expense_management_service.service.TaxReportService taxReportService;
     private final CashAdvanceService cashAdvanceService;
+    private final CashAdvanceRepository cashAdvanceRepository;
+    private final CashAdvanceBalanceCalculator balanceCalculator;
 
     @Value("${exchange.rate.base-currency}")
     private String baseCurrencyCode;
@@ -106,19 +109,122 @@ public class DashboardServiceImpl implements DashboardService {
         LocalDate trendStart = firstMonth(TREND_MONTHS).atDay(1);
         List<Object[]> lines = em.createQuery("""
                         select l.expenseDate, l.baseAmount, c.categoryName from ExpenseLineItem l left join l.category c
-                        where l.report.employeeId = :me and l.expenseDate >= :start
+                        where l.report.employeeId = :me
                           and l.report.reportStatus not in :notSubmitted
                         """, Object[].class)
-                .setParameter("me", me).setParameter("start", trendStart).setParameter("notSubmitted", NOT_SUBMITTED)
+                .setParameter("me", me).setParameter("notSubmitted", NOT_SUBMITTED)
                 .getResultList();
         BigDecimal claimed = lines.stream().map(row -> amount(row[1])).reduce(BigDecimal.ZERO, BigDecimal::add);
 
-        List<Kpi> kpis = List.of(
-                new Kpi("claimed", "Claimed (6 months)", claimed, "money", "Submitted expenses", "indigo"),
-                new Kpi("inProgress", "In progress", BigDecimal.valueOf(inApproval + atFinance), "count", "With approvers or Finance", "blue"),
-                new Kpi("needsAction", "Needs your action", BigDecimal.valueOf(needsAction), "count", "Sent back or queried", needsAction > 0 ? "amber" : "gray"),
-                new Kpi("awaiting", "Awaiting reimbursement", awaitingReimbursement, "money", withAp + " report(s) with AP", "indigo"),
-                new Kpi("reimbursed", "Reimbursed", reimbursed, "money", paid + " report(s) paid", "emerald"));
+        // One flow, one unit: every report sits in exactly one stage, and each stage is the report total in the base
+        // currency. The stages therefore add up to everything claimed in the period.
+        Map<String, BigDecimal> stageTotals = new java.util.LinkedHashMap<>();
+        Map<String, Long> stageCounts = new java.util.LinkedHashMap<>();
+        for (String key : List.of("draft", "action", "approvals", "finance", "payment", "settled", "paid")) {
+            stageTotals.put(key, BigDecimal.ZERO);
+            stageCounts.put(key, 0L);
+        }
+        for (ExpenseReport r : reports) {
+            String stage = employeeStage(r);
+            if (stage == null) continue;
+            stageTotals.merge(stage, amounts.getOrDefault(r.getReportId(), BigDecimal.ZERO), BigDecimal::add);
+            stageCounts.merge(stage, 1L, Long::sum);
+        }
+        // Open balance from the authoritative calculator (records, not the cached column), one batch for all of them.
+        List<com.expense_management_service.entity.CashAdvance> openAdvances = cashAdvanceRepository.findByEmployeeIdAndStatusIn(
+                me, List.of("DISBURSED", "IN_PROGRESS", "SETTLEMENT_PENDING", "AWAITING_REIMBURSEMENT"));
+        BigDecimal openAdvanceBalance = balanceCalculator.rawOutstandingFor(openAdvances).values().stream()
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        // ---- Cash advance flow for the employee: requested -> approved -> disbursed -> settled -> outstanding.
+        // Only advances that are live (not draft, rejected or cancelled) count. Outstanding comes from the calculator.
+        List<com.expense_management_service.entity.CashAdvance> myAdvances = cashAdvanceRepository.findByEmployeeId(me).stream()
+                .filter(a -> a.getStatus() != null && !List.of("DRAFT", "REJECTED", "CANCELLED").contains(a.getStatus().toUpperCase()))
+                .toList();
+        BigDecimal caRequested = BigDecimal.ZERO;
+        BigDecimal caApproved = BigDecimal.ZERO;
+        BigDecimal caDisbursed = BigDecimal.ZERO;
+        BigDecimal caSettled = BigDecimal.ZERO;
+        List<com.expense_management_service.entity.CashAdvance> disbursedAdvances = new java.util.ArrayList<>();
+        for (com.expense_management_service.entity.CashAdvance a : myAdvances) {
+            BigDecimal requested = a.getRequestedAmount() != null ? a.getRequestedAmount() : nz(a.getAmount());
+            caRequested = caRequested.add(requested);
+            boolean approved = a.getApprovedAmount() != null || a.getDisbursedAt() != null || "APPROVED".equalsIgnoreCase(a.getStatus());
+            if (approved) {
+                caApproved = caApproved.add(a.getApprovedAmount() != null ? a.getApprovedAmount() : nz(a.getAmount()));
+            }
+            if (a.getDisbursedAt() != null) {
+                disbursedAdvances.add(a);
+                caDisbursed = caDisbursed.add(a.getDisbursedAmount() != null ? a.getDisbursedAmount() : nz(a.getAmount()));
+            }
+        }
+        Map<UUID, BigDecimal> owedByAdvance = balanceCalculator.rawOutstandingFor(disbursedAdvances);
+        BigDecimal caOutstanding = BigDecimal.ZERO;
+        for (com.expense_management_service.entity.CashAdvance a : disbursedAdvances) {
+            BigDecimal owed = nz(owedByAdvance.get(a.getAdvanceId()));
+            caOutstanding = caOutstanding.add(owed);
+            BigDecimal disbursed = a.getDisbursedAmount() != null ? a.getDisbursedAmount() : nz(a.getAmount());
+            caSettled = caSettled.add(disbursed.subtract(owed).max(BigDecimal.ZERO));
+        }
+
+        // ---- Expense reimbursement flow: claimed -> approved -> advance offset -> waiting for AP -> paid.
+        // Ledger: approved = covered by advance + payable; payable = not yet sent to AP + waiting for AP + paid.
+        BigDecimal erApproved = BigDecimal.ZERO;
+        BigDecimal erAdvanceOffset = BigDecimal.ZERO;
+        BigDecimal erToSendAp = BigDecimal.ZERO;
+        BigDecimal erPendingAp = BigDecimal.ZERO;
+        BigDecimal erPaid = BigDecimal.ZERO;
+        for (ExpenseReport r : reports) {
+            BigDecimal gross = amounts.getOrDefault(r.getReportId(), BigDecimal.ZERO);
+            boolean approved = r.getReportStatus() == ReportStatus.APPROVED || r.getReportStatus() == ReportStatus.REIMBURSED
+                    || r.getReportStatus() == ReportStatus.CLOSED;
+            if (approved) {
+                erApproved = erApproved.add(gross);
+                if (r.getReimbursableAmount() != null) {
+                    erAdvanceOffset = erAdvanceOffset.add(gross.subtract(r.getReimbursableAmount()).max(BigDecimal.ZERO));
+                }
+            }
+            PaymentRoutingStatus routing = r.getPaymentRoutingStatus();
+            if (routing == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) {
+                // waiting for AP: what is still owed; the part AP already paid is shown as paid
+                erPendingAp = erPendingAp.add(remainingPayable(owedOf(r, amounts), r.getPaidAmount()));
+                erPaid = erPaid.add(nz(r.getPaidAmount()));
+            } else if (routing == PaymentRoutingStatus.PAYMENT_COMPLETED) {
+                erPaid = erPaid.add(payments.getOrDefault(r.getReportId(), BigDecimal.ZERO));
+            } else if (approved) {
+                // approved but not yet with AP
+                erToSendAp = erToSendAp.add(owedOf(r, amounts));
+            }
+        }
+        BigDecimal erPayable = erToSendAp.add(erPendingAp).add(erPaid);
+        BigDecimal erNotApproved = claimed.subtract(erApproved).max(BigDecimal.ZERO);
+
+        List<Kpi> kpis = new java.util.ArrayList<>();
+        // Claimed is every submitted line, so it matches the category donut (closed and paid reports included).
+        BigDecimal totalClaimed = claimed;
+        kpis.add(new Kpi("claimed", "Total claimed", totalClaimed, "money", reports.size() + " report(s), all stages", "indigo"));
+        kpis.add(new Kpi("draft", "Draft", stageTotals.get("draft"), "money", stageCounts.get("draft") + " report(s), not yet submitted", "gray"));
+        kpis.add(new Kpi("action", "Needs your action", stageTotals.get("action"), "money", stageCounts.get("action") + " report(s) sent back", stageCounts.get("action") > 0 ? "amber" : "gray"));
+        kpis.add(new Kpi("approvals", "With approvers", stageTotals.get("approvals"), "money", stageCounts.get("approvals") + " report(s)", "blue"));
+        kpis.add(new Kpi("finance", "With Finance", stageTotals.get("finance"), "money", stageCounts.get("finance") + " report(s)", "blue"));
+        kpis.add(new Kpi("payment", "Awaiting payment", stageTotals.get("payment"), "money", stageCounts.get("payment") + " report(s) with AP", "indigo"));
+        kpis.add(new Kpi("settled", "Settled, nothing due", stageTotals.get("settled"), "money", stageCounts.get("settled") + " report(s) covered by advance", "gray"));
+        kpis.add(new Kpi("paid", "Paid to you", stageTotals.get("paid"), "money", stageCounts.get("paid") + " report(s) paid", "emerald"));
+        kpis.add(new Kpi("advanceBalance", "Open cash advance balance", openAdvanceBalance, "money", "Still owed against your advances", openAdvanceBalance.signum() > 0 ? "amber" : "gray"));
+        // Flow figures for the employee dashboard: each step reads the one before it (see the dashboard's flow rows).
+        kpis.add(new Kpi("caRequested", "Requested", caRequested, "money", myAdvances.size() + " advance(s)", "indigo"));
+        kpis.add(new Kpi("caApproved", "Approved", caApproved, "money", "Amount your manager and Finance approved", "blue"));
+        kpis.add(new Kpi("caDisbursed", "Disbursed", caDisbursed, "money", disbursedAdvances.size() + " advance(s) paid to you", "blue"));
+        kpis.add(new Kpi("caSettled", "Settled", caSettled, "money", "Used on reports, repaid or carried forward", "emerald"));
+        kpis.add(new Kpi("caOutstanding", "Outstanding", caOutstanding, "money", "Still to be settled", caOutstanding.signum() > 0 ? "amber" : "gray"));
+        kpis.add(new Kpi("erClaimed", "Claimed", claimed, "money", "All reports you have submitted", "indigo"));
+        kpis.add(new Kpi("erNotApproved", "Not approved yet", erNotApproved, "money", "Pending, returned or rejected", "gray"));
+        kpis.add(new Kpi("erApproved", "Approved", erApproved, "money", "Approved for reimbursement", "blue"));
+        kpis.add(new Kpi("erAdvanceOffset", "Covered by advance", erAdvanceOffset, "money", "Verified expenses settled against your advances", "gray"));
+        kpis.add(new Kpi("erPayable", "Payable to you", erPayable, "money", "Approved less covered by advance", "blue"));
+        kpis.add(new Kpi("erToSendAp", "Not yet with AP", erToSendAp, "money", "Approved, waiting to be sent to AP", "gray"));
+        kpis.add(new Kpi("erPendingAp", "Waiting for AP", erPendingAp, "money", "Sent to AP, not paid yet", erPendingAp.signum() > 0 ? "amber" : "gray"));
+        kpis.add(new Kpi("erPaid", "Paid to you", erPaid, "money", "Reimbursement already paid", "emerald"));
 
         List<Stage> pipeline = List.of(
                 new Stage("draft", "Draft", drafts),
@@ -145,8 +251,8 @@ public class DashboardServiceImpl implements DashboardService {
         return new DashboardResponse("employee", baseCurrencyCode, kpis,
                 "Your monthly spend", monthlyAmounts(lines, TREND_MONTHS),
                 pipeline,
+                "Reimbursement by category", categoryRanking(lines, 8),
                 "Your reports by status", statusSlices(reports, amounts),
-                "Spend by category (6 months)", categoryRanking(lines, 5),
                 List.of(), List.of(), attention, activity);
     }
 
@@ -402,9 +508,13 @@ public class DashboardServiceImpl implements DashboardService {
         paid.forEach(r -> ids.add(r.getReportId()));
         List<ExpenseReport> all = new ArrayList<>(toPay);
         all.addAll(paid);
-        Map<UUID, BigDecimal> amounts = paymentAmounts(all, baseAmountsByReport(ids));
+        Map<UUID, BigDecimal> gross = baseAmountsByReport(ids);
+        Map<UUID, BigDecimal> amounts = paymentAmounts(all, gross);
+        // Amount to pay: only what is still unpaid on each report (owed less confirmed batch allocations).
+        Map<UUID, BigDecimal> payable = new java.util.HashMap<>();
+        toPay.forEach(r -> payable.put(r.getReportId(), remainingPayable(owedOf(r, gross), r.getPaidAmount())));
 
-        BigDecimal toPayValue = sum(toPay, amounts, r -> true);
+        BigDecimal toPayValue = sum(toPay, payable, r -> true);
         List<ExpenseReport> paidThisMonth = paid.stream().filter(r -> !r.getPaymentCompletedAt().isBefore(monthStart)).toList();
         BigDecimal paidThisMonthValue = sum(paidThisMonth, amounts, r -> true);
         List<ExpenseReport> paid90 = paid.stream()
@@ -436,13 +546,13 @@ public class DashboardServiceImpl implements DashboardService {
         toPay.forEach(r -> {
             String name = r.getCostCenter() != null ? r.getCostCenter().getCostCenterName() : "No cost center";
             Slice s = byCostCenter.getOrDefault(name, new Slice(name, name, 0, BigDecimal.ZERO));
-            byCostCenter.put(name, new Slice(name, name, s.count() + 1, s.amount().add(amounts.getOrDefault(r.getReportId(), BigDecimal.ZERO))));
+            byCostCenter.put(name, new Slice(name, name, s.count() + 1, s.amount().add(payable.getOrDefault(r.getReportId(), BigDecimal.ZERO))));
         });
 
         List<Item> attention = toPay.stream()
                 .sorted(Comparator.comparing(ExpenseReport::getApprovedAt, Comparator.nullsLast(Comparator.naturalOrder())))
                 .limit(LIST_SIZE)
-                .map(r -> item(r, amounts, r.getApprovedAt(), "Approved " + daysSince(r.getApprovedAt(), now) + "d ago"))
+                .map(r -> item(r, payable, r.getApprovedAt(), "Approved " + daysSince(r.getApprovedAt(), now) + "d ago"))
                 .toList();
         List<Item> activity = paid.stream()
                 .sorted(Comparator.comparing(ExpenseReport::getPaymentCompletedAt).reversed())
@@ -555,6 +665,22 @@ public class DashboardServiceImpl implements DashboardService {
 
     // ------------------------------------------------------------------ helpers
 
+    /** The one flow stage a report is in, for the employee dashboard. */
+    private static String employeeStage(ExpenseReport r) {
+        ReportStatus status = r.getReportStatus();
+        if (status == null) return null;
+        if (status == ReportStatus.DRAFT) return "draft";
+        if (NEEDS_EMPLOYEE_ACTION.contains(status)) return "action";
+        if (status == ReportStatus.PENDING_APPROVAL) return "approvals";
+        if (status == ReportStatus.PENDING_FINANCE_VERIFICATION) return "finance";
+        if (status == ReportStatus.APPROVED) {
+            if (r.getPaymentRoutingStatus() == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) return "payment";
+            if (r.getPaymentRoutingStatus() == PaymentRoutingStatus.PAYMENT_COMPLETED) return "paid";
+            return "settled";
+        }
+        return null;
+    }
+
     private Map<UUID, BigDecimal> baseAmountsByReport(Collection<UUID> reportIds) {
         if (reportIds.isEmpty()) return Map.of();
         List<Object[]> rows = em.createQuery(
@@ -577,6 +703,26 @@ public class DashboardServiceImpl implements DashboardService {
             result.put(r.getReportId(), value);
         }
         return result;
+    }
+
+    private static BigDecimal nz(BigDecimal value) {
+        return value == null ? BigDecimal.ZERO : value;
+    }
+
+    /** What the employee is owed on a report before any payment: reimbursable, else the gross claim. */
+    static BigDecimal owedOf(ExpenseReport report, Map<UUID, BigDecimal> gross) {
+        return report.getReimbursableAmount() != null ? report.getReimbursableAmount()
+                : gross.getOrDefault(report.getReportId(), BigDecimal.ZERO);
+    }
+
+    /**
+     * Still payable: owed less what has already been paid, never below zero. Paid amounts are subtracted once, here, and
+     * nowhere else. A fully paid report gives zero, and an unpaid report gives its full owed amount.
+     */
+    static BigDecimal remainingPayable(BigDecimal owed, BigDecimal paid) {
+        BigDecimal remaining = (owed == null ? BigDecimal.ZERO : owed)
+                .subtract(paid == null ? BigDecimal.ZERO : paid);
+        return remaining.signum() < 0 ? BigDecimal.ZERO : remaining;
     }
 
     private long countByRouting(PaymentRoutingStatus status) {

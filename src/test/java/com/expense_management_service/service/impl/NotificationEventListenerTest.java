@@ -59,7 +59,7 @@ class NotificationEventListenerTest {
 
     @BeforeEach
     void setUp() {
-        listener = new NotificationEventListener(notificationService, notificationRepository, expenseReportRepository,
+        listener = new NotificationEventListener(notificationService, TestBalanceCalculators.storedCache(), notificationRepository, expenseReportRepository,
                 expenseLineItemRepository, approvalAssignmentRepository, employeeCacheRepository,
                 apPaymentEmailService, approvalReminderEmailService);
         ReflectionTestUtils.setField(listener, "baseCurrencyCode", "INR");

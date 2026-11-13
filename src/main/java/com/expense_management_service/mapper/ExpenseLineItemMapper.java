@@ -24,6 +24,7 @@ public class ExpenseLineItemMapper {
                 .taxAmount(request.taxAmount())
                 .clientBillable(request.clientBillable())
                 .allocationReason(trimToNull(request.allocationReason()))
+                .employeePaymentMethod(request.employeePaymentMethod())
                 .build();
     }
 
@@ -35,6 +36,7 @@ public class ExpenseLineItemMapper {
         entity.setTaxAmount(request.taxAmount());
         entity.setClientBillable(request.clientBillable());
         entity.setAllocationReason(trimToNull(request.allocationReason()));
+        entity.setEmployeePaymentMethod(request.employeePaymentMethod());
     }
 
     private static String trimToNull(String value) {

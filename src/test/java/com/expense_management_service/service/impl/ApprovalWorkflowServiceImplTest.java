@@ -110,7 +110,7 @@ class ApprovalWorkflowServiceImplTest {
     void setUp() {
         service = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
-                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
+                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
@@ -618,7 +618,7 @@ class ApprovalWorkflowServiceImplTest {
 
         ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
-                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
+                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
@@ -667,7 +667,7 @@ class ApprovalWorkflowServiceImplTest {
 
         ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
-                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
+                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
@@ -712,7 +712,7 @@ class ApprovalWorkflowServiceImplTest {
 
         ApprovalWorkflowServiceImpl serviceWithFinance = new ApprovalWorkflowServiceImpl(expenseReportRepository, approvalLevelInstanceRepository,
                 approvalAssignmentRepository, approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
-                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
+                new com.expense_management_service.service.impl.CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 approvalFlowResolutionService, approverSourceResolver, chainCorrectnessService, budgetEncumbranceService, delegationService,
                 policyEvaluationGateway, approvalEventPublisher, slaPolicyService,
                 new com.expense_management_service.mapper.PolicyViolationMapper(),
@@ -882,7 +882,48 @@ class ApprovalWorkflowServiceImplTest {
 
         assertThatThrownBy(() -> service.recall(reportId, submitterId))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("already completed");
+                .hasMessageContaining("already been reviewed");
+    }
+
+    @Test
+    void recall_blocked_afterApproverFlagsALine() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId,
+                new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "Attach the itemised bill"));
+
+        assertThatThrownBy(() -> service.recall(reportId, submitterId))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("already been reviewed");
+    }
+
+    @Test
+    void cancel_blocked_afterApproverFlagsALine() {
+        submittedReport();
+        service.reviewLineItem(reportId, lineItemId, approverId,
+                new LineItemReviewRequest(LineItemReviewStatus.NEEDS_CORRECTION, "Attach the itemised bill"));
+
+        assertThatThrownBy(() -> service.cancel(reportId, submitterId))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("already been reviewed");
+    }
+
+    @Test
+    void cancel_allowed_whilePendingApproval_andNoApproverHasReviewed() {
+        submittedReport();
+
+        ExpenseReportResponse response = service.cancel(reportId, submitterId);
+
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.CANCELLED.name());
+    }
+
+    @Test
+    void reviewLineItem_blocked_forTheReportsOwner() {
+        submittedReport();
+
+        assertThatThrownBy(() -> service.reviewLineItem(reportId, lineItemId, submitterId,
+                new LineItemReviewRequest(LineItemReviewStatus.APPROVED, null)))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class)
+                .hasMessageContaining("your own expense report");
     }
 
     @Test

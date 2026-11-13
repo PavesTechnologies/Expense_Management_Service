@@ -80,6 +80,25 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error("Invalid value for '" + ex.getName() + "': expected " + expected));
     }
 
+    /**
+     * A body that cannot be read: malformed JSON, or a value the endpoint does not accept (such as an unknown enum value).
+     * A client error, so it is a 400 with a generic message rather than an unhandled 500.
+     */
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    public ResponseEntity<ApiResponse<Void>> handleUnreadableBody(
+            org.springframework.http.converter.HttpMessageNotReadableException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error("The request body is not valid. Check the values you entered."));
+    }
+
+    /** A required multipart part (such as the file) left off - a client error, not an unhandled 500. */
+    @ExceptionHandler(org.springframework.web.multipart.support.MissingServletRequestPartException.class)
+    public ResponseEntity<ApiResponse<Void>> handleMissingPart(
+            org.springframework.web.multipart.support.MissingServletRequestPartException ex) {
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(ApiResponse.error("Required part '" + ex.getRequestPartName() + "' is missing"));
+    }
+
     /** A required query parameter left off - a client error, not an unhandled 500. */
     @ExceptionHandler(MissingServletRequestParameterException.class)
     public ResponseEntity<ApiResponse<Void>> handleMissingParameter(MissingServletRequestParameterException ex) {

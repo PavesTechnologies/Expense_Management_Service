@@ -26,7 +26,8 @@ import org.springframework.web.bind.annotation.RequestParam;
 
 /**
  * Carry-forward of a cash advance's unspent balance to another advance. Proposal is open to the employee and Finance;
- * approval, rejection and reversal are Finance only, and the server refuses approval by the requester.
+ * approval and rejection are open to the source advance's manager and Finance; reversal is Finance only. The server
+ * refuses approval by the requester and approval by anyone other than the source's manager or Finance.
  * The feature is off until {@code expense.carry-forward.enabled=true}.
  */
 @RestController
@@ -63,6 +64,21 @@ public class CashAdvanceCarryForwardController {
         return ApiResponse.success("Ready carry-forward cancelled", carryForwardService.cancelReady(advanceId, reason));
     }
 
+    @PostMapping(value = "/{carryForwardId}/compensation", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @PreAuthorize("hasRole('FINANCE_EXECUTIVE')")
+    public ApiResponse<CashAdvanceCarryForwardResponse> proposeCompensation(@PathVariable UUID carryForwardId,
+                                                                            @Valid @RequestBody CarryForwardDecisionRequest request) {
+        return ApiResponse.success("Compensation proposed", carryForwardService.proposeCompensation(carryForwardId, request.reason()));
+    }
+
+    /** A second Finance executive approves a compensation. The proposer cannot approve their own. */
+    @PostMapping(value = "/compensations/{compensationId}/approve", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @PreAuthorize("hasRole('FINANCE_EXECUTIVE')")
+    public ApiResponse<CashAdvanceCarryForwardResponse> approveCompensation(@PathVariable UUID compensationId,
+                                                                            @Valid @RequestBody CarryForwardDecisionRequest request) {
+        return ApiResponse.success("Compensation approved", carryForwardService.approveCompensation(compensationId, request.reason()));
+    }
+
     @GetMapping("/{carryForwardId}")
     @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE')")
     public ApiResponse<CashAdvanceCarryForwardResponse> get(@PathVariable UUID carryForwardId) {
@@ -70,14 +86,14 @@ public class CashAdvanceCarryForwardController {
     }
 
     @PostMapping(value = "/{carryForwardId}/approve", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
     public ApiResponse<CashAdvanceCarryForwardResponse> approve(@PathVariable UUID carryForwardId,
                                                                 @Valid @RequestBody CarryForwardDecisionRequest request) {
         return ApiResponse.success("Carry-forward approved and applied", carryForwardService.approve(carryForwardId, request));
     }
 
     @PostMapping(value = "/{carryForwardId}/reject", consumes = MediaType.APPLICATION_JSON_VALUE)
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE')")
+    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
     public ApiResponse<CashAdvanceCarryForwardResponse> reject(@PathVariable UUID carryForwardId,
                                                                @Valid @RequestBody CarryForwardDecisionRequest request) {
         return ApiResponse.success("Carry-forward rejected", carryForwardService.reject(carryForwardId, request));

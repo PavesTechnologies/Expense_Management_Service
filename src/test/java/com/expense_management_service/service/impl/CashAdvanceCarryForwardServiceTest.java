@@ -72,8 +72,8 @@ class CashAdvanceCarryForwardServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new CashAdvanceCarryForwardService(cashAdvanceRepository, carryForwardRepository,
-                new CashAdvanceBalanceLedger(auditLogRepository, org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)), currentUserService);
+        service = new CashAdvanceCarryForwardService(cashAdvanceRepository, TestBalanceCalculators.storedCache(), carryForwardRepository,
+                new CashAdvanceBalanceLedger(auditLogRepository, TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)), currentUserService);
         ReflectionTestUtils.setField(service, "enabled", true);
 
         inr = Currency.builder().currencyCode("INR").decimalPlaces(2).build();
@@ -329,7 +329,7 @@ class CashAdvanceCarryForwardServiceTest {
 
         assertThatThrownBy(() -> service.approve(allocation.getCarryForwardId(), new CarryForwardDecisionRequest(GOOD_REASON)))
                 .isInstanceOf(BusinessRuleViolationException.class)
-                .hasMessageContaining("Only Finance");
+                .hasMessageContaining("manager or Finance");
     }
 
     @Test
@@ -516,18 +516,17 @@ class CashAdvanceCarryForwardServiceTest {
     }
 
     @Test
-    void applyReady_appliesCappedAtTheDestinationAmount_andLeavesTheRestReady() {
+    void applyReady_proposesCappedAtTheDestinationAmount_andMovesNothingUntilApproved() {
         source.setCarryForwardReadyAmount(new BigDecimal("800.00"));
         lenient().when(cashAdvanceRepository.findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(EMPLOYEE))
                 .thenReturn(List.of(source));
 
         service.applyReadyForDestination(destination);
 
-        assertThat(destination.getCarriedInAmount()).isEqualByComparingTo("500.00");
-        assertThat(source.getOutstandingBalance()).isEqualByComparingTo("500.00");
-        assertThat(source.getCarriedOutAmount()).isEqualByComparingTo("500.00");
-        assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("300.00");
-        verify(carryForwardRepository).save(argThat(cf -> CashAdvanceCarryForward.APPLIED.equals(cf.getStatus())
+        assertThat(destination.getCarriedInAmount()).isNull();
+        assertThat(source.getOutstandingBalance()).isEqualByComparingTo("1000.00");
+        assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("800.00");
+        verify(carryForwardRepository).save(argThat(cf -> CashAdvanceCarryForward.PROPOSED.equals(cf.getStatus())
                 && cf.getAmount().compareTo(new BigDecimal("500.00")) == 0));
     }
 
@@ -542,9 +541,45 @@ class CashAdvanceCarryForwardServiceTest {
 
         service.applyReadyForDestination(destination);
 
-        assertThat(older.getCarryForwardReadyAmount()).isNull();
-        assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("200.00");
-        assertThat(destination.getCarriedInAmount()).isEqualByComparingTo("500.00");
+        verify(carryForwardRepository).save(argThat(cf -> cf.getSourceAdvance() == older
+                && CashAdvanceCarryForward.PROPOSED.equals(cf.getStatus())
+                && cf.getAmount().compareTo(new BigDecimal("300.00")) == 0));
+        assertThat(older.getCarryForwardReadyAmount()).isEqualByComparingTo("300.00");
+        assertThat(destination.getCarriedInAmount()).isNull();
+    }
+
+    private CashAdvanceCarryForward proposedRow(BigDecimal amount) {
+        return CashAdvanceCarryForward.builder().carryForwardId(UUID.randomUUID())
+                .sourceAdvance(source).destinationAdvance(destination).employeeId(EMPLOYEE)
+                .currencyCode("INR").amount(amount).status(CashAdvanceCarryForward.PROPOSED)
+                .reason("Automatic proposal from a ready balance").requestedBy("SYSTEM").build();
+    }
+
+    @Test
+    void managerOfTheSourceAdvance_canApproveTheProposal() {
+        source.setManagerId("MGR-1");
+        CashAdvanceCarryForward row = proposedRow(new BigDecimal("300.00"));
+        lenient().when(carryForwardRepository.findByIdForUpdate(row.getCarryForwardId())).thenReturn(Optional.of(row));
+        actAs("MGR-1", "MANAGER");
+
+        var response = service.approve(row.getCarryForwardId(), new CarryForwardDecisionRequest("Manager confirmed the cancelled trip"));
+
+        assertThat(response.status()).isEqualTo("APPLIED");
+        assertThat(destination.getCarriedInAmount()).isEqualByComparingTo("300.00");
+    }
+
+    @Test
+    void anotherManager_cannotApproveOrRejectTheProposal() {
+        source.setManagerId("MGR-1");
+        CashAdvanceCarryForward row = proposedRow(new BigDecimal("300.00"));
+        lenient().when(carryForwardRepository.findByIdForUpdate(row.getCarryForwardId())).thenReturn(Optional.of(row));
+        actAs("MGR-2", "MANAGER");
+
+        assertThatThrownBy(() -> service.approve(row.getCarryForwardId(), new CarryForwardDecisionRequest("Not my team's advance")))
+                .hasMessageContaining("manager or Finance");
+        assertThatThrownBy(() -> service.reject(row.getCarryForwardId(), new CarryForwardDecisionRequest("Not my team's advance")))
+                .hasMessageContaining("manager or Finance");
+        assertThat(destination.getCarriedInAmount()).isNull();
     }
 
     @Test

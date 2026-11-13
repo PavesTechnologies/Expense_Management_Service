@@ -35,6 +35,8 @@ public class ExpenseReportMapper {
                 .tripEndDate(request.tripEndDate())
                 .reportingPeriodStart(request.reportingPeriodStart())
                 .reportingPeriodEnd(request.reportingPeriodEnd())
+                .projectId(request.projectId())
+                .clientId(request.clientId())
                 .build();
     }
 
@@ -46,6 +48,8 @@ public class ExpenseReportMapper {
         entity.setTripEndDate(request.tripEndDate());
         entity.setReportingPeriodStart(request.reportingPeriodStart());
         entity.setReportingPeriodEnd(request.reportingPeriodEnd());
+        entity.setProjectId(request.projectId());
+        entity.setClientId(request.clientId());
     }
 
     /** Convenience overload for call sites that don't (yet) have policy warning counts on hand — defaults to zero. */

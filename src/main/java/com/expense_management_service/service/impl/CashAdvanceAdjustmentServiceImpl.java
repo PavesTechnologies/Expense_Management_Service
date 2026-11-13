@@ -59,6 +59,7 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
     private final CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
 
     @Override
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
     public CashAdvanceAdjustmentResponse create(CashAdvanceAdjustmentRequest request) {
         if (!isFinanceCaller() && !isAdminCaller()) {
             throw new BusinessRuleViolationException("Only Finance Executives can process cash advance settlements");
@@ -83,6 +84,8 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
             }
         }
 
+        // Lock the advance first: two offsets on one advance run one at a time, and the balance read below is current.
+        cashAdvanceRepository.findByIdForUpdate(request.advanceId());
         CashAdvance advance = findCashAdvance(request.advanceId());
 
         List<String> allowedStatuses = List.of(
@@ -111,20 +114,16 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         }
 
         List<CashAdvanceAdjustment> existingAdjustments = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId());
-        boolean duplicate = existingAdjustments.stream().anyMatch(adj -> adj.getReport() != null && adj.getReport().getReportId().equals(report.getReportId()));
+        boolean duplicate = existingAdjustments.stream().anyMatch(adj -> adj.isActive() && adj.getReport() != null && adj.getReport().getReportId().equals(report.getReportId()));
         if (duplicate) {
             throw new BusinessRuleViolationException("Expense report " + report.getReportId() + " has already been adjusted against cash advance " + advance.getAdvanceId());
         }
+        // A reversed offset does not block a new one: the reversed row stays as history and the new row is active.
+        // The database also refuses a second active row for the same advance and report (active_offset_key).
 
-        // The balance comes from the records (amount, offsets, repayments), so a stored value that drifted is corrected here.
-        BigDecimal offsetsSoFar = existingAdjustments.stream()
-                .map(CashAdvanceAdjustment::getAdjustedAmount)
-                .filter(java.util.Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        BigDecimal repaidSoFar = advance.getRepayments() == null ? BigDecimal.ZERO : advance.getRepayments().stream()
-                .map(com.expense_management_service.entity.CashAdvanceRepayment::getAmount)
-                .filter(java.util.Objects::nonNull)
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
+        // The balance comes from the records (amount, active offsets, repayments), so a stored value that drifted is corrected here.
+        BigDecimal offsetsSoFar = CashAdvanceBalanceCalculator.activeOffsets(existingAdjustments);
+        BigDecimal repaidSoFar = CashAdvanceBalanceCalculator.repaymentTotal(advance.getRepayments());
         BigDecimal currentBalance = CashAdvanceBalanceRules.ledgerBalance(advance, offsetsSoFar, repaidSoFar);
 
         BigDecimal adjustedAmount = request.adjustedAmount();
@@ -197,49 +196,78 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
 
     @Override
     public void delete(UUID adjustmentId) {
+        reverse(adjustmentId, "Reversed by Finance (no reason given)");
+    }
+
+    @Override
+    @Transactional(isolation = org.springframework.transaction.annotation.Isolation.READ_COMMITTED)
+    public CashAdvanceAdjustmentResponse reverse(UUID adjustmentId, String reason) {
+        if (!isFinanceCaller() && !isAdminCaller()) {
+            throw new BusinessRuleViolationException("Only Finance Executives can reverse cash advance settlements");
+        }
+        if (reason == null || reason.isBlank()) {
+            throw new BusinessRuleViolationException("A reason is required to reverse an offset.");
+        }
+        // Lock order is always advance first, then adjustment. The adjustment is loaded only AFTER the advance lock is
+        // held, so a concurrent reversal that committed first is seen here (reversed = true) and refused cleanly.
+        UUID advanceId = cashAdvanceAdjustmentRepository.findAdvanceIdOf(adjustmentId)
+                .orElseThrow(() -> new ResourceNotFoundException("CashAdvanceAdjustment not found with id: " + adjustmentId));
+        cashAdvanceRepository.findByIdForUpdate(advanceId);
         CashAdvanceAdjustment entity = findEntity(adjustmentId);
+        if (!entity.isActive()) {
+            throw new BusinessRuleViolationException("This offset is already reversed.");
+        }
         assertNotPaid(entity.getReport());
+
         CashAdvance advance = entity.getCashAdvance();
         String actingUser = currentUserService.getEmployeeId();
-        if (advance != null && entity.getAdjustedAmount() != null) {
-            BigDecimal currentBalance = advance.getOutstandingBalance() != null ? advance.getOutstandingBalance() : BigDecimal.ZERO;
-            BigDecimal restoredBalance = currentBalance.add(entity.getAdjustedAmount());
-            if (restoredBalance.compareTo(advance.getAmount()) > 0) {
-                restoredBalance = advance.getAmount();
-            }
-            advance.setOutstandingBalance(restoredBalance);
-            cashAdvanceBudgetMovements.reverseOffset(advance, entity.getAdjustedAmount(), entity.getReport());
-            if (restoredBalance.compareTo(advance.getAmount()) == 0) {
-                advance.setStatus("IN_PROGRESS");
-            } else {
-                advance.setStatus("SETTLEMENT_PENDING");
-            }
-            cashAdvanceRepository.save(advance);
-        }
-        auditLogRepository.save(AuditLog.builder()
-                .entityName("CashAdvanceAdjustment")
-                .entityId(entity.getAdjustmentId())
-                .action("ADJUSTMENT_DELETED")
-                .oldValue(advance != null ? "Adjusted: " + entity.getAdjustedAmount() + ", Advance: " + advance.getAdvanceId() : null)
-                .newValue("Adjustment removed; balance restored on the advance")
-                .performedBy(actingUser)
-                .performedAt(LocalDateTime.now())
-                .reason("Adjustment deleted by " + actingUser)
-                .build());
-        cashAdvanceAdjustmentRepository.delete(entity);
-        if (entity.getReport() != null) {
-            refreshReimbursable(entity.getReport());
-        }
 
+        entity.setReversed(true);
+        entity.setReversedAt(LocalDateTime.now());
+        entity.setReversedBy(actingUser);
+        entity.setReversalReason(reason.trim());
+        cashAdvanceAdjustmentRepository.save(entity);
+
+        if (advance != null) {
+            // Recompute from the remaining active offsets and repayments rather than adding the amount back.
+            List<CashAdvanceAdjustment> all = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId());
+            BigDecimal offsets = CashAdvanceBalanceCalculator.activeOffsets(all);
+            BigDecimal repaid = CashAdvanceBalanceCalculator.repaymentTotal(advance.getRepayments());
+            int decimals = advance.getCurrency() != null ? advance.getCurrency().getDecimalPlaces() : 2;
+            BigDecimal restored = CashAdvanceBalanceRules.requireNonNegative(
+                    CashAdvanceBalanceRules.ledgerBalance(advance, offsets, repaid), decimals);
+            BigDecimal previousBalance = advance.getOutstandingBalance();
+            advance.setOutstandingBalance(restored);
+            advance.setStatus(cashAdvanceBalanceLedger.statusFor(advance, restored, decimals));
+            cashAdvanceRepository.save(advance);
+            if (entity.getAdjustedAmount() != null) {
+                cashAdvanceBudgetMovements.reverseOffset(advance, entity.getAdjustedAmount(), entity.getReport());
+            }
+            auditLogRepository.save(AuditLog.builder()
+                    .entityName("CashAdvance")
+                    .entityId(advance.getAdvanceId())
+                    .action("ADJUSTMENT_REVERSED")
+                    .oldValue("Balance: " + previousBalance)
+                    .newValue("Balance: " + restored + ", Status: " + advance.getStatus())
+                    .performedBy(actingUser)
+                    .performedAt(LocalDateTime.now())
+                    .reason(reason.trim())
+                    .build());
+        }
+        if (entity.getReport() != null) {
+            refreshReimbursable(entity.getReport(), "Offset reversed: " + reason.trim(), actingUser);
+        }
         auditLogRepository.save(AuditLog.builder()
                 .entityName("CashAdvanceAdjustment")
                 .entityId(adjustmentId)
-                .action("ADJUSTMENT_DELETED")
-                .oldValue("Amount: " + entity.getAdjustedAmount())
-                .newValue("DELETED")
+                .action("ADJUSTMENT_REVERSED")
+                .oldValue("Amount: " + entity.getAdjustedAmount() + ", Advance: " + (advance != null ? advance.getAdvanceId() : null))
+                .newValue("Reversed")
                 .performedBy(actingUser)
                 .performedAt(LocalDateTime.now())
+                .reason(reason.trim())
                 .build());
+        return cashAdvanceAdjustmentMapper.toResponse(entity);
     }
 
         private boolean isFinanceCaller() {
@@ -288,10 +316,34 @@ private boolean isAdminCaller() {
 
     /** Reimbursable = gross less this report's cash advance adjustments (BR-TAX-013). */
     private void refreshReimbursable(ExpenseReport report) {
-        report.setReimbursableAmount(ReimbursementCalculator.reimbursable(report.getTotalAmount(),
-                cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId())));
+        refreshReimbursable(report, "Offsets changed", null);
+    }
+
+    /**
+     * Recalculates what the report still owes after an offset was created or reversed. If AP has not paid yet, the
+     * report stays APPROVED_FOR_PAYMENT (or returns to it), so AP pays the new amount. AP must confirm the amount that
+     * is owed now, because markPaymentCompleted refuses a mismatch. Every change is recorded on the report's audit trail.
+     */
+    private void refreshReimbursable(ExpenseReport report, String why, String actor) {
+        BigDecimal before = report.getReimbursableAmount();
+        PaymentRoutingStatus routingBefore = report.getPaymentRoutingStatus();
+        report.setReimbursableAmount(ReimbursementCalculator.payable(ReimbursementCalculator.reimbursable(report.getTotalAmount(),
+                cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()))));
         reconcilePaymentDue(report);
         expenseReportRepository.save(report);
+        if (before == null || before.compareTo(report.getReimbursableAmount()) != 0
+                || routingBefore != report.getPaymentRoutingStatus()) {
+            auditLogRepository.save(AuditLog.builder()
+                    .entityName("ExpenseReport")
+                    .entityId(report.getReportId())
+                    .action("REIMBURSEMENT_RECALCULATED")
+                    .oldValue("Owed: " + before + ", Routing: " + routingBefore)
+                    .newValue("Owed: " + report.getReimbursableAmount() + ", Routing: " + report.getPaymentRoutingStatus())
+                    .reason(why)
+                    .performedBy(actor != null ? actor : currentUserService.getEmployeeId())
+                    .performedAt(LocalDateTime.now())
+                    .build());
+        }
     }
 
     /**

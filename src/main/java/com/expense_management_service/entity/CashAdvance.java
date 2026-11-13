@@ -108,8 +108,96 @@ public class CashAdvance {
     @Column(name = "carry_forward_ready_amount", precision = 19, scale = 4)
     private BigDecimal carryForwardReadyAmount;
 
+    /**
+     * Amount frozen at final approval. Finance may not change it afterwards. Null on rows approved before this was stored.
+     */
     @Column(name = "approved_amount", precision = 19, scale = 4)
     private BigDecimal approvedAmount;
+
+    /**
+     * Cash actually paid out at disbursement (approved amount minus any carried-in balance). Kept separately from
+     * {@link #approvedAmount} so an audit can show whether Finance paid exactly what was approved.
+     */
+    @Column(name = "disbursed_amount", precision = 19, scale = 4)
+    private BigDecimal disbursedAmount;
+
+    /** The amount the employee asked for. Kept when the manager reduces the amount, so the change stays visible. */
+    @Column(name = "requested_amount", precision = 19, scale = 4)
+    private BigDecimal requestedAmount;
+
+    /** Manager's recommendation: FULL_ADVANCE, REDUCED or SET_OFF. Null until the manager decides. */
+    @Column(name = "recommended_treatment", length = 30)
+    private String recommendedTreatment;
+
+    @Column(name = "recommended_amount", precision = 19, scale = 4)
+    private BigDecimal recommendedAmount;
+
+    /** For SET_OFF: the earlier advance whose outstanding balance is recommended to be set off. */
+    @Column(name = "recommended_source_advance_id", length = 36)
+    private String recommendedSourceAdvanceId;
+
+    @Column(name = "recommended_set_off_amount", precision = 19, scale = 4)
+    private BigDecimal recommendedSetOffAmount;
+
+    @Column(name = "manager_justification", columnDefinition = "TEXT")
+    private String managerJustification;
+
+    @Column(name = "manager_decided_by", length = 255)
+    private String managerDecidedBy;
+
+    @Column(name = "manager_decided_at")
+    private LocalDateTime managerDecidedAt;
+
+    /** Set when the employee's exposure was above the configured limit and the manager approved anyway. */
+    @Column(name = "exposure_exception_justification", columnDefinition = "TEXT")
+    private String exposureExceptionJustification;
+
+    @Column(name = "exposure_exception_by", length = 255)
+    private String exposureExceptionBy;
+
+    @Column(name = "exposure_exception_at")
+    private LocalDateTime exposureExceptionAt;
+
+    /** Finance's authorization of the exception, recorded at final approval. */
+    @Column(name = "exposure_exception_authorized_by", length = 255)
+    private String exposureExceptionAuthorizedBy;
+
+    @Column(name = "exposure_exception_authorized_at")
+    private LocalDateTime exposureExceptionAuthorizedAt;
+
+    @Column(name = "deferred_reason", columnDefinition = "TEXT")
+    private String deferredReason;
+
+    @Column(name = "deferred_at")
+    private LocalDateTime deferredAt;
+
+    /** Reason given when the request was rejected. Shown to the employee. Cleared when the request is resubmitted. */
+    @Column(name = "rejection_reason", columnDefinition = "TEXT")
+    private String rejectionReason;
+
+    /** COMPLETE_NEW or ADVANCE_PLUS_OUTSTANDING. Null on rows created before request types, read as COMPLETE_NEW. */
+    @Column(name = "request_type", length = 40)
+    private String requestType;
+
+    /** Only for ADVANCE_PLUS_OUTSTANDING: the amount needed now, on top of the eligible outstanding balance. */
+    @Column(name = "additional_amount_requested", precision = 19, scale = 4)
+    private java.math.BigDecimal additionalAmountRequested;
+
+    /** Total outstanding across open advances when the request was made. Display only; never used for accounting. */
+    @Column(name = "outstanding_amount_snapshot", precision = 19, scale = 4)
+    private java.math.BigDecimal outstandingAmountSnapshot;
+
+    /** Eligible outstanding balance plus the amount needed now, as calculated when the request was made. */
+    @Column(name = "total_advance_allocation", precision = 19, scale = 4)
+    private java.math.BigDecimal totalAdvanceAllocation;
+
+    /** The employee's reason for a separate advance. Required when an outstanding balance exists and the type is COMPLETE_NEW. */
+    @Column(name = "employee_justification", columnDefinition = "TEXT")
+    private String employeeJustification;
+
+    /** Total balance rolled into this request from earlier advances, as authorised by Finance. Null until approved. */
+    @Column(name = "authorized_rollover_amount", precision = 19, scale = 4)
+    private java.math.BigDecimal authorizedRolloverAmount;
 
     /** Fiscal year whose budget this advance was charged to at final approval. Null if never charged. */
     @Column(name = "budget_fiscal_year", length = 10)

@@ -65,7 +65,7 @@ class CashAdvanceReconciliationServiceTest {
     @BeforeEach
     void setUp() {
         service = new CashAdvanceReconciliationService(cashAdvanceRepository, carryForwardRepository, repaymentRepository,
-                adjustmentRepository, runRepository, lineRepository, new CashAdvanceBalanceLedger(auditLogRepository, org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
+                adjustmentRepository, runRepository, lineRepository, new CashAdvanceBalanceLedger(auditLogRepository, TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 currentUserService);
         ReflectionTestUtils.setField(service, "financeYearStartMonth", 4);
 

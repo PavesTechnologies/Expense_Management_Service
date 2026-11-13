@@ -45,6 +45,23 @@ public interface ExpenseLineItemRepository extends JpaRepository<ExpenseLineItem
             String merchantName, LocalDate expenseDate, BigDecimal amount, UUID currencyId, String employeeId, ReportStatus reportStatus);
 
     /**
+     * Confirmed rule (an expense may not be claimed twice): lines of the same employee on OTHER reports that match
+     * this merchant (case-insensitive), date, amount and currency. Reports in {@code excludedStatuses} (drafts,
+     * cancelled and rejected reports) do not count as a claim.
+     */
+    @Query("select l from ExpenseLineItem l join l.report r "
+            + "where r.employeeId = :employeeId and r.reportId <> :reportId and r.reportStatus not in :excludedStatuses "
+            + "and lower(l.merchantName) = lower(:merchantName) and l.expenseDate = :expenseDate "
+            + "and l.amount = :amount and l.currency.currencyId = :currencyId")
+    List<ExpenseLineItem> findActiveClaimsDuplicating(@Param("employeeId") String employeeId,
+            @Param("reportId") UUID reportId,
+            @Param("merchantName") String merchantName,
+            @Param("expenseDate") LocalDate expenseDate,
+            @Param("amount") BigDecimal amount,
+            @Param("currencyId") UUID currencyId,
+            @Param("excludedStatuses") List<ReportStatus> excludedStatuses);
+
+    /**
      * The line item, locked for the rest of the transaction ({@code PESSIMISTIC_WRITE}), so two concurrent
      * invoice handoffs of the same line run one after the other and the second sees the first's record.
      */

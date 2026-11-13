@@ -48,10 +48,13 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.lenient;
 
 @MockitoSettings(strictness = Strictness.LENIENT)
 @ExtendWith(MockitoExtension.class)
 class ApPaymentServiceImplTest {
+    @org.mockito.Mock private com.expense_management_service.repository.ApPaymentBatchRepository apPaymentBatchRepository;
+    @org.mockito.Mock private com.expense_management_service.repository.ApPaymentAllocationRepository apPaymentAllocationRepository;
 
     @Mock private ExpenseReportRepository expenseReportRepository;
     @Mock private ExpenseLineItemService expenseLineItemService;
@@ -73,7 +76,7 @@ class ApPaymentServiceImplTest {
         var factory = new ExpenseReportResponseFactory(new com.expense_management_service.mapper.ExpenseReportMapper(), policyViolationRepository);
         service = new ApPaymentServiceImpl(expenseReportRepository, expenseLineItemService, approvalWorkflowService,
                 approvalEventPublisher, auditLogRepository, factory, costCenterBudgetService, budgetEncumbranceService,
-                cashAdvanceBalanceLedger, cashAdvanceRepository);
+                cashAdvanceBalanceLedger, cashAdvanceRepository, apPaymentBatchRepository, apPaymentAllocationRepository);
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
     }
 
@@ -108,6 +111,7 @@ class ApPaymentServiceImplTest {
     void markPaymentCompleted_succeeds_whenApprovedForPayment() {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
         ExpenseReportResponse response = service.markPaymentCompleted(reportId, payment(), "5100099");
@@ -131,6 +135,7 @@ class ApPaymentServiceImplTest {
         CashAdvance advance = CashAdvance.builder().advanceId(UUID.randomUUID()).outstandingBalance(BigDecimal.ZERO).build();
         report.setCashAdvance(advance);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
         service.markPaymentCompleted(reportId, payment(), "5100099");
@@ -143,6 +148,7 @@ class ApPaymentServiceImplTest {
     void markPaymentCompleted_leavesTheCashAdvanceAloneWhenTheReportHasNone() {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
         service.markPaymentCompleted(reportId, payment(), "5100099");
@@ -160,6 +166,7 @@ class ApPaymentServiceImplTest {
         report.setReimbursableAmount(new BigDecimal("9500.00")); // Finance offset a cash advance after AP opened it
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(new BigDecimal("12500.00")), "5100099"))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("doesn't match the 9500.00");
@@ -174,6 +181,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100001"))
                 .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
         verify(expenseReportRepository, never()).save(any());
@@ -184,6 +192,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
         report.setApprovedAt(java.time.LocalDateTime.now());
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         CompletePaymentRequest backdated = new CompletePaymentRequest("UTR1", PaymentMethod.UPI,
                 LocalDate.now().minusDays(3), new BigDecimal("12500.00"), null);
 
@@ -198,6 +207,7 @@ class ApPaymentServiceImplTest {
         report.setReimbursableAmount(BigDecimal.ZERO);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("nothing to pay");
@@ -207,6 +217,7 @@ class ApPaymentServiceImplTest {
     void markPaymentCompleted_writesAuditLogEntry() {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
         service.markPaymentCompleted(reportId, payment(), "5100099");
@@ -233,6 +244,7 @@ class ApPaymentServiceImplTest {
     void markPaymentCompleted_consumesBudget_exactlyOnce_withTheReportsCostCenterFiscalYearAndTotalAmount() {
         ExpenseReport report = approvedForPaymentReportWithBudgetFields();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
         service.markPaymentCompleted(reportId, payment(), "5100099");
@@ -245,6 +257,7 @@ class ApPaymentServiceImplTest {
     void markPaymentCompleted_rollsBackReportChanges_whenBudgetConsumptionFails() {
         ExpenseReport report = approvedForPaymentReportWithBudgetFields();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         doThrow(new IllegalStateException("concurrent budget update conflict"))
                 .when(costCenterBudgetService).consumeBudget(any(), any(), any());
 
@@ -267,6 +280,7 @@ class ApPaymentServiceImplTest {
     void markPaymentCompleted_calledTwice_consumesBudgetOnlyOnce_andSecondCallThrows() {
         ExpenseReport report = approvedForPaymentReportWithBudgetFields();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
 
         service.markPaymentCompleted(reportId, payment(), "5100099");
@@ -286,6 +300,7 @@ class ApPaymentServiceImplTest {
     void markPaymentCompleted_consumesViaEncumbrances_andSkipsTheFallbackDirectConsumeBudgetCall_whenAnyExist() {
         ExpenseReport report = approvedForPaymentReportWithBudgetFields();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
         when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(2);
         when(budgetEncumbranceService.consumeActiveForReport(reportId, 2)).thenReturn(true);
@@ -303,6 +318,7 @@ class ApPaymentServiceImplTest {
         // must still be consumed exactly once via the original, pre-Phase-3 direct path.
         ExpenseReport report = approvedForPaymentReportWithBudgetFields();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
         when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
         when(budgetEncumbranceService.consumeActiveForReport(reportId, 1)).thenReturn(false);
@@ -341,6 +357,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = splitReport("500.00", engineering, hr);
         report.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).build());
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
         when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
 
@@ -359,6 +376,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = splitReport("200.00", engineering, hr);
         report.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).build());
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
         when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
 
@@ -375,6 +393,7 @@ class ApPaymentServiceImplTest {
         CostCenter hr = CostCenter.builder().costCenterId(UUID.randomUUID()).costCenterCode("HR").build();
         ExpenseReport report = splitReport("500.00", engineering, hr);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseReportRepository.save(any(ExpenseReport.class))).thenAnswer(inv -> inv.getArgument(0));
         when(approvalWorkflowService.getCurrentSubmissionCycle(reportId)).thenReturn(1);
         when(budgetEncumbranceService.consumeActiveForReport(reportId, 1)).thenReturn(false);
@@ -394,6 +413,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.PAYMENT_COMPLETED);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
         verify(expenseReportRepository, never()).save(any());
@@ -405,6 +425,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.DRAFT, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -414,6 +435,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.PENDING_APPROVAL, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -423,6 +445,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.PENDING_FINANCE_VERIFICATION, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -432,6 +455,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.AWAITING_CORRECTION, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -441,6 +465,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -450,6 +475,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.INVOICE_HANDOFF_PENDING);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(IllegalArgumentException.class);
     }
@@ -458,6 +484,7 @@ class ApPaymentServiceImplTest {
     void markPaymentCompleted_throws_whenReportNotFound() {
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.empty());
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.markPaymentCompleted(reportId, payment(), "5100099"))
                 .isInstanceOf(ResourceNotFoundException.class);
     }
@@ -483,6 +510,7 @@ class ApPaymentServiceImplTest {
     void getPaymentDetails_returnsDetails_whenApprovedForPayment() {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseLineItemService.getAllForReport(reportId)).thenReturn(List.of());
         when(approvalWorkflowService.getApprovalStatus(reportId))
                 .thenReturn(new ApprovalStatusResponse(2, "Finance", "Finance", 2, false, false));
@@ -498,6 +526,7 @@ class ApPaymentServiceImplTest {
     void getPaymentDetails_returnsDetails_whenAlreadyPaymentCompleted() {
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.PAYMENT_COMPLETED);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseLineItemService.getAllForReport(reportId)).thenReturn(List.of());
         when(approvalWorkflowService.getApprovalStatus(reportId))
                 .thenReturn(new ApprovalStatusResponse(2, "Finance", "Finance", 2, false, false));
@@ -510,6 +539,7 @@ class ApPaymentServiceImplTest {
         ExpenseReport report = report(ReportStatus.PENDING_FINANCE_VERIFICATION, PaymentRoutingStatus.NONE);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
 
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         assertThatThrownBy(() -> service.getPaymentDetails(reportId))
                 .isInstanceOf(AccessDeniedException.class);
     }
@@ -520,6 +550,7 @@ class ApPaymentServiceImplTest {
         // must be viewable, not just APPROVED_FOR_PAYMENT/PAYMENT_COMPLETED.
         ExpenseReport report = report(ReportStatus.APPROVED, PaymentRoutingStatus.HANDOFF_FAILED);
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        lenient().when(expenseReportRepository.findByIdForUpdate(reportId)).thenReturn(Optional.of(report));
         when(expenseLineItemService.getAllForReport(reportId)).thenReturn(List.of());
         when(approvalWorkflowService.getApprovalStatus(reportId))
                 .thenReturn(new ApprovalStatusResponse(2, "Finance", "Finance", 2, false, false));

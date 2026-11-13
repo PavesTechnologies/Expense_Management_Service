@@ -337,6 +337,10 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
      */
     private FinanceActionContext resolveContext(UUID reportId, UUID lineItemId, String actingEmployeeId) {
         ExpenseReport report = findReport(reportId);
+        // Self-approval guard (confirmed requirement): Finance may not verify a report it submitted itself.
+        if (report.getEmployeeId() != null && report.getEmployeeId().equals(actingEmployeeId)) {
+            throw new org.springframework.security.access.AccessDeniedException("You cannot verify your own expense report");
+        }
         if (report.getReportStatus() != ReportStatus.PENDING_FINANCE_VERIFICATION) {
             throw new IllegalArgumentException(
                     "Report " + reportId + " has no Finance Verification level currently active");

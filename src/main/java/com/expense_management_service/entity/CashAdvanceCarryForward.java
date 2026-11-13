@@ -66,6 +66,24 @@ public class CashAdvanceCarryForward {
     @Column(name = "idempotency_key", unique = true, length = 255)
     private String idempotencyKey;
 
+    /** STANDARD, or OVERDUE_EXCEPTION when Finance authorised a rollover from an overdue advance. Null means STANDARD. */
+    @Column(name = "authorization_type", length = 30)
+    private String authorizationType;
+
+    /** Finance's reason for an overdue exception. Mandatory for OVERDUE_EXCEPTION. */
+    @Column(name = "exception_justification", columnDefinition = "TEXT")
+    private String exceptionJustification;
+
+    @Column(name = "exception_authorized_by", length = 255)
+    private String exceptionAuthorizedBy;
+
+    @Column(name = "exception_authorized_at")
+    private LocalDateTime exceptionAuthorizedAt;
+
+    /** For a compensation row: the rollover it reverses. Null for every other row. */
+    @Column(name = "reverses_carry_forward_id")
+    private UUID reversesCarryForwardId;
+
     @Column(name = "requested_by", nullable = false, length = 255)
     private String requestedBy;
 

@@ -223,6 +223,22 @@ class PolicyViolationServiceImplTest {
     }
 
     @Test
+    void justify_refusesMissingReceiptViolation() {
+        UUID violationId = UUID.randomUUID();
+        PolicyViolation missingReceipt = violation(violationId);
+        missingReceipt.setRuleType(com.expense_management_service.enums.PolicyRuleType.RECEIPT_REQUIRED);
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+        when(expenseLineItemRepository.findByLineItemIdAndReport_ReportId(lineItemId, reportId)).thenReturn(Optional.of(lineItem));
+        when(policyViolationRepository.findByViolationIdAndLineItem_LineItemId(violationId, lineItemId)).thenReturn(Optional.of(missingReceipt));
+
+        assertThatThrownBy(() -> policyViolationService.justify(reportId, lineItemId, violationId,
+                new PolicyJustificationRequest("Receipt was lost in transit")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cannot be justified");
+    }
+
+    @Test
     void justify_throwsIllegalArgument_whenTooShort() {
         UUID violationId = UUID.randomUUID();
         when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());

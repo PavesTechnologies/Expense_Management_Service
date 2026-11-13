@@ -120,7 +120,7 @@ class SalaryDeductionServiceTest {
         ReflectionTestUtils.setField(policy, "defaultPayrollReportEmail", payrollEmail);
         EmailOutboxService outbox = new EmailOutboxService(outboundEmailRepository, emailTransport);
         CashAdvancePayrollPosting posting = new CashAdvancePayrollPosting(cashAdvanceRepository, repaymentRepository,
-                budgetMovements, balanceLedger, storageService);
+                budgetMovements, balanceLedger, storageService, TestBalanceCalculators.storedCache());
         service = new SalaryDeductionService(cashAdvanceRepository, requestRepository, recoveryCaseRepository, posting,
                 new PayrollMonthPolicy(12, 0), outbox, balanceLedger, policy, umsClient, currentUserService);
     }

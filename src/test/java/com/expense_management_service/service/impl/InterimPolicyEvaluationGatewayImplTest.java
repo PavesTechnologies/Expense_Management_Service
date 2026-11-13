@@ -35,11 +35,12 @@ class InterimPolicyEvaluationGatewayImplTest {
     @Mock private com.expense_management_service.service.ReceiptDuplicateService receiptDuplicateService;
     @Mock private com.expense_management_service.service.CrossDepartmentAllocationService crossDepartmentAllocationService;
     @Mock private PolicyViolationRepository policyViolationRepository;
+    @Mock private com.expense_management_service.repository.ExpenseLineItemRepository expenseLineItemRepository;
 
     private InterimPolicyEvaluationGatewayImpl gateway;
 
     private ExpenseReport report(UUID reportId, ExpenseLineItem... items) {
-        return ExpenseReport.builder().reportId(reportId).expenseLineItems(List.of(items)).build();
+        return ExpenseReport.builder().reportId(reportId).clientId(UUID.randomUUID()).expenseLineItems(List.of(items)).build();
     }
 
     private PolicyViolation violation(PolicyEnforcementType enforcement, String justification) {
@@ -51,7 +52,8 @@ class InterimPolicyEvaluationGatewayImplTest {
 
     private PolicyDecision evaluateWith(PolicyViolation... violations) {
         UUID reportId = UUID.randomUUID();
-        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build();
+        ExpenseLineItem lineItem = ExpenseLineItem.builder().lineItemId(UUID.randomUUID())
+                .employeePaymentMethod(com.expense_management_service.enums.EmployeePaymentMethod.CASH).build();
         when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
         when(policyEvaluator.evaluate(any())).thenReturn(List.of(violations));
         when(policyViolationRepository.saveAll(any())).thenReturn(List.of(violations));
@@ -62,13 +64,102 @@ class InterimPolicyEvaluationGatewayImplTest {
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
         gateway = new InterimPolicyEvaluationGatewayImpl(policyEvaluator, policyViolationRepository, new PolicyViolationMapper(),
-                receiptDuplicateService, crossDepartmentAllocationService);
+                receiptDuplicateService, crossDepartmentAllocationService, expenseLineItemRepository);
+    }
+
+    @Test
+    void evaluate_blocksSubmission_whenTheTripHasNoProjectOrClient() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseReport noReference = ExpenseReport.builder().reportId(reportId).expenseLineItems(List.of(paidLine())).build();
+        stubNoViolations();
+
+        PolicyDecision decision = gateway.evaluate(noReference);
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason()).contains("project or client");
+    }
+
+    @Test
+    void evaluate_blocksSubmission_whenALineHasNoPaymentMethod() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseLineItem unpaidMethod = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build();
+        stubNoViolations();
+
+        PolicyDecision decision = gateway.evaluate(report(reportId, unpaidMethod));
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason()).contains("how you paid");
+    }
+
+    @Test
+    void evaluate_blocksSubmission_whenOtherPaymentHasNoExplanation() {
+        UUID reportId = UUID.randomUUID();
+        ExpenseLineItem other = ExpenseLineItem.builder().lineItemId(UUID.randomUUID())
+                .employeePaymentMethod(com.expense_management_service.enums.EmployeePaymentMethod.OTHER).build();
+        stubNoViolations();
+
+        PolicyDecision decision = gateway.evaluate(report(reportId, other));
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason()).contains("'Other'");
+    }
+
+    private ExpenseLineItem paidLine() {
+        return ExpenseLineItem.builder().lineItemId(UUID.randomUUID())
+                .employeePaymentMethod(com.expense_management_service.enums.EmployeePaymentMethod.CASH).build();
+    }
+
+    private void stubNoViolations() {
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+        when(policyViolationRepository.saveAll(any())).thenReturn(List.of());
+    }
+
+    @Test
+    void evaluate_blocksSubmission_whenMandatoryReceiptIsMissing() {
+        UUID reportId = UUID.randomUUID();
+        com.expense_management_service.entity.ExpenseCategory meals = com.expense_management_service.entity.ExpenseCategory.builder()
+                .categoryName("Meals").receiptRequired(true).build();
+        ExpenseLineItem line = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).category(meals)
+                .employeePaymentMethod(com.expense_management_service.enums.EmployeePaymentMethod.CASH)
+                .expenseDate(java.time.LocalDate.of(2026, 11, 5)).build();
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+        when(policyViolationRepository.saveAll(any())).thenReturn(List.of());
+
+        PolicyDecision decision = gateway.evaluate(report(reportId, line));
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason()).contains("mandatory receipt").contains("Meals");
+    }
+
+    @Test
+    void evaluate_blocksSubmission_whenTheSameExpenseIsAlreadyClaimedOnAnotherReport() {
+        UUID reportId = UUID.randomUUID();
+        UUID currencyId = UUID.randomUUID();
+        java.time.LocalDate date = java.time.LocalDate.of(2026, 11, 5);
+        ExpenseLineItem line = ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).merchantName("Taj Hotel")
+                .employeePaymentMethod(com.expense_management_service.enums.EmployeePaymentMethod.CASH)
+                .expenseDate(date).amount(new java.math.BigDecimal("2500.00"))
+                .currency(com.expense_management_service.entity.Currency.builder().currencyId(currencyId).build()).build();
+        when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
+        when(policyEvaluator.evaluate(any())).thenReturn(List.of());
+        when(policyViolationRepository.saveAll(any())).thenReturn(List.of());
+        when(expenseLineItemRepository.findActiveClaimsDuplicating(any(), eq(reportId), eq("Taj Hotel"), eq(date),
+                eq(new java.math.BigDecimal("2500.00")), eq(currencyId), any()))
+                .thenReturn(List.of(ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build()));
+
+        PolicyDecision decision = gateway.evaluate(report(reportId, line));
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason()).contains("already claimed").contains("Taj Hotel");
     }
 
     @Test
     void evaluate_blocksSubmission_whenAReceiptWasAlreadyClaimed_evenWithNoPolicyViolations() {
         UUID reportId = UUID.randomUUID();
-        ExpenseReport report = report(reportId, ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build());
+        ExpenseReport report = report(reportId, ExpenseLineItem.builder().lineItemId(UUID.randomUUID())
+                .employeePaymentMethod(com.expense_management_service.enums.EmployeePaymentMethod.CASH).build());
         when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
         when(policyEvaluator.evaluate(any())).thenReturn(List.of());
         when(policyViolationRepository.saveAll(any())).thenReturn(List.of());
@@ -91,7 +182,8 @@ class InterimPolicyEvaluationGatewayImplTest {
     @Test
     void evaluate_blocksSubmission_whenACrossDepartmentChargeHasNoReason() {
         UUID reportId = UUID.randomUUID();
-        ExpenseReport report = report(reportId, ExpenseLineItem.builder().lineItemId(UUID.randomUUID()).build());
+        ExpenseReport report = report(reportId, ExpenseLineItem.builder().lineItemId(UUID.randomUUID())
+                .employeePaymentMethod(com.expense_management_service.enums.EmployeePaymentMethod.CASH).build());
         when(policyViolationRepository.findByLineItem_LineItemId(any())).thenReturn(List.of());
         when(policyEvaluator.evaluate(any())).thenReturn(List.of());
         when(policyViolationRepository.saveAll(any())).thenReturn(List.of());

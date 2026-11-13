@@ -359,12 +359,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     public ExpenseReportResponse recall(UUID reportId, String actingEmployeeId) {
         ExpenseReport report = findReport(reportId);
         assertOwner(report, actingEmployeeId);
-        if (report.getReportStatus() != ReportStatus.PENDING_APPROVAL && report.getReportStatus() != ReportStatus.AWAITING_CORRECTION) {
-            throw new IllegalArgumentException("Only a report Pending Approval or Awaiting Correction may be recalled");
-        }
-        if (blocksRecall(report)) {
-            throw new IllegalArgumentException(
-                    "Cannot recall - at least one approval level has already completed, or Finance Verification is already active");
+        if (!isWithdrawable(report)) {
+            throw new IllegalArgumentException(withdrawalBlockedMessage(report));
         }
 
         cancelAllOpenInstances(report, currentSubmissionCycle(reportId));
@@ -380,12 +376,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     public ExpenseReportResponse cancel(UUID reportId, String actingEmployeeId) {
         ExpenseReport report = findReport(reportId);
         assertOwner(report, actingEmployeeId);
-        if (report.getReportStatus() == ReportStatus.APPROVED || report.getReportStatus() == ReportStatus.REJECTED
-                || report.getReportStatus() == ReportStatus.CANCELLED) {
-            throw new IllegalArgumentException("Cannot cancel a report that already reached a final outcome");
-        }
-        if (hasAnyLevelApproved(report)) {
-            throw new IllegalArgumentException("Cannot recall or cancel - at least one approval level has already completed");
+        if (!isCancelEligible(report)) {
+            throw new IllegalArgumentException(withdrawalBlockedMessage(report));
         }
 
         if (report.getReportStatus() != ReportStatus.DRAFT) {
@@ -405,6 +397,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     @Override
     public ExpenseReportResponse reviewLineItem(UUID reportId, UUID lineItemId, String actingEmployeeId, LineItemReviewRequest request) {
+        assertNotOwnReport(findReport(reportId), actingEmployeeId);
         if (request.decision() == LineItemReviewStatus.PENDING) {
             throw new IllegalArgumentException("decision must be APPROVED or NEEDS_CORRECTION");
         }
@@ -485,6 +478,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     @Override
     public ExpenseReportResponse reviewSplit(UUID reportId, UUID splitId, String actingEmployeeId, LineItemReviewRequest request) {
+        assertNotOwnReport(findReport(reportId), actingEmployeeId);
         if (request.decision() == LineItemReviewStatus.PENDING) {
             throw new IllegalArgumentException("decision must be APPROVED or NEEDS_CORRECTION");
         }
@@ -552,6 +546,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     @Override
     public ExpenseReportResponse rejectReport(UUID reportId, String actingEmployeeId, RejectReportRequest request) {
+        assertNotOwnReport(findReport(reportId), actingEmployeeId);
         ExpenseReport report = findReport(reportId);
         int cycle = currentSubmissionCycle(reportId);
         ApprovalLevelInstance activeInstance = approvalLevelInstanceRepository
@@ -674,6 +669,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     @Override
     public ExpenseReportResponse bulkApprove(UUID reportId, String actingEmployeeId) {
+        assertNotOwnReport(findReport(reportId), actingEmployeeId);
         if (!policyViolationRepository.findByLineItem_Report_ReportId(reportId).isEmpty()) {
             throw new IllegalArgumentException("Report " + reportId + " has policy violations and is not eligible for bulk approval");
         }
@@ -1468,7 +1464,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     private void updateCashAdvanceStatusForReportSubmission(ExpenseReport report) {
         if (cashAdvanceAdjustmentRepository == null || cashAdvanceRepository == null || report == null) return;
-        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId());
+        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream()
+                .filter(CashAdvanceAdjustment::isActive).toList();
         if (adjustments == null || adjustments.isEmpty()) return;
         for (CashAdvanceAdjustment adjustment : adjustments) {
             CashAdvance advance = adjustment.getCashAdvance();
@@ -1484,7 +1481,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     private void updateCashAdvanceStatusForReportReview(ExpenseReport report) {
         if (cashAdvanceAdjustmentRepository == null || cashAdvanceRepository == null || report == null) return;
-        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId());
+        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream()
+                .filter(CashAdvanceAdjustment::isActive).toList();
         if (adjustments == null || adjustments.isEmpty()) return;
         for (CashAdvanceAdjustment adjustment : adjustments) {
             CashAdvance advance = adjustment.getCashAdvance();
@@ -1524,6 +1522,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
         BigDecimal approved = report.getTotalAmount() != null ? report.getTotalAmount() : BigDecimal.ZERO;
         BigDecimal offsetsSoFar = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId()).stream()
+                .filter(CashAdvanceAdjustment::isActive)
                 .map(CashAdvanceAdjustment::getAdjustedAmount)
                 .filter(Objects::nonNull)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
@@ -1564,9 +1563,14 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
      * computed (always 0) - so approval reset every adjustment to 0 and advances never settled.
      */
     private void processCashAdvanceAdjustmentsForReport(ExpenseReport report) {
-        BigDecimal gross = report.getTotalAmount() != null ? report.getTotalAmount() : BigDecimal.ZERO;
+        // Company-card lines are excluded from what the employee is owed (Stage 1, S1-12); null falls back to the total.
+        BigDecimal reimbursableGross = expenseReportRepository.sumReimbursableBaseAmount(report.getReportId(),
+                com.expense_management_service.enums.EmployeePaymentMethod.COMPANY_CARD);
+        BigDecimal gross = reimbursableGross != null ? reimbursableGross
+                : (report.getTotalAmount() != null ? report.getTotalAmount() : BigDecimal.ZERO);
         List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository == null ? List.of()
-                : cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId());
+                : cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream()
+                        .filter(CashAdvanceAdjustment::isActive).toList();
         if (adjustments == null) {
             adjustments = List.of();
         }
@@ -1585,7 +1589,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
             }
             remaining = remaining.subtract(applied);
         }
-        report.setReimbursableAmount(ReimbursementCalculator.reimbursable(gross, adjustments));
+        // Under the write-off threshold nothing is paid: the amount becomes zero, so the report settles with no payment.
+        report.setReimbursableAmount(ReimbursementCalculator.payable(ReimbursementCalculator.reimbursable(gross, adjustments)));
         expenseReportRepository.save(report);
         if (cashAdvanceRepository == null) return;
 
@@ -1596,6 +1601,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
             List<CashAdvanceAdjustment> allAdjustments = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advance.getAdvanceId());
             BigDecimal totalAdjusted = allAdjustments.stream()
+                    .filter(CashAdvanceAdjustment::isActive)
                     .map(a -> a.getAdjustedAmount() != null ? a.getAdjustedAmount() : java.math.BigDecimal.ZERO)
                     .reduce(java.math.BigDecimal.ZERO, java.math.BigDecimal::add);
 
@@ -1735,52 +1741,66 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         }
     }
 
+    /** Self-approval guard (confirmed requirement): nobody may review, approve, reject or bulk-approve their own report. */
+    private void assertNotOwnReport(ExpenseReport report, String actingEmployeeId) {
+        if (Objects.equals(report.getEmployeeId(), actingEmployeeId)) {
+            throw new AccessDeniedException("You cannot review or approve your own expense report");
+        }
+    }
+
     private void assertOwner(ExpenseReport report, String actingEmployeeId) {
         if (!Objects.equals(report.getEmployeeId(), actingEmployeeId)) {
             throw new AccessDeniedException("Only the report's owner may recall or cancel it");
         }
     }
 
-    /** Recall/Cancel's one unified restriction (§6): blocked once any level has already approved. Shared with §status's canRecall/canCancel so the two never drift apart. */
-    private boolean hasAnyLevelApproved(ExpenseReport report) {
-        if (report.getReportStatus() == ReportStatus.DRAFT) {
-            return false;
-        }
-        int cycle = currentSubmissionCycle(report.getReportId());
-        return approvalLevelInstanceRepository
-                .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), cycle)
-                .stream().anyMatch(i -> i.getStatus() == LevelInstanceStatus.COMPLETED);
+    /**
+     * Employee withdrawal rule (Stage 1, S1-02 to S1-05, client-confirmed): a submitted report may be
+     * withdrawn only while it is PENDING_APPROVAL and no approver has taken any action on it in the
+     * current cycle. Recall (back to DRAFT) and cancel (to CANCELLED) share this one restriction.
+     * Once an approver has approved, flagged for correction or rejected a line, or split-reviewed,
+     * the employee must use the correction and resubmission process instead.
+     */
+    private boolean isWithdrawable(ExpenseReport report) {
+        return report.getReportStatus() == ReportStatus.PENDING_APPROVAL && !hasAnyApproverAction(report);
     }
 
+    /** Recall eligibility is the shared withdrawal rule. */
     private boolean isRecallEligible(ExpenseReport report) {
-        boolean statusOk = report.getReportStatus() == ReportStatus.PENDING_APPROVAL || report.getReportStatus() == ReportStatus.AWAITING_CORRECTION;
-        return statusOk && !blocksRecall(report);
+        return isWithdrawable(report);
     }
 
     /**
-     * Recall's restriction (§6), extended for Finance Verification (spec §40): blocked once any
-     * level has completed (unchanged), OR once a FINANCE_VERIFICATION level has ever gone ACTIVE in
-     * the current cycle - "managerial/business justification has already progressed into financial
-     * verification," so recall should not be able to undo that even while the report is currently
-     * AWAITING_CORRECTION from a Finance query. Cancel is deliberately NOT subject to this extra
-     * check (spec §40: cancel remains a permitted withdrawal) - see {@link #hasAnyLevelApproved}.
+     * Cancel eligibility is the shared withdrawal rule for a submitted report. A DRAFT has never been
+     * submitted, so it may still be cancelled (existing behaviour; the employee may also delete it).
      */
-    private boolean blocksRecall(ExpenseReport report) {
-        if (report.getReportStatus() == ReportStatus.DRAFT) {
-            return false;
-        }
+    private boolean isCancelEligible(ExpenseReport report) {
+        return report.getReportStatus() == ReportStatus.DRAFT || isWithdrawable(report);
+    }
+
+    /** True once any approver has acted in the current cycle: a level completed, a line reviewed, or a split reviewed. */
+    private boolean hasAnyApproverAction(ExpenseReport report) {
         int cycle = currentSubmissionCycle(report.getReportId());
         return approvalLevelInstanceRepository
                 .findByReport_ReportIdAndSubmissionCycleOrderByLevelOrderAsc(report.getReportId(), cycle)
                 .stream()
-                .anyMatch(i -> i.getStatus() == LevelInstanceStatus.COMPLETED
-                        || (i.getLevelType() == LevelType.FINANCE_VERIFICATION && i.getStatus() == LevelInstanceStatus.ACTIVE));
+                .anyMatch(instance -> instance.getStatus() == LevelInstanceStatus.COMPLETED
+                        || approvalLineItemReviewRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                                .anyMatch(review -> review.getStatus() != LineItemReviewStatus.PENDING)
+                        || approvalAssignmentRepository.findByLevelInstance_InstanceId(instance.getInstanceId()).stream()
+                                .flatMap(assignment -> approvalSplitReviewRepository
+                                        .findByAssignment_AssignmentId(assignment.getAssignmentId()).stream())
+                                .anyMatch(split -> split.getStatus() != LineItemReviewStatus.PENDING));
     }
 
-    private boolean isCancelEligible(ExpenseReport report) {
-        boolean statusOk = report.getReportStatus() != ReportStatus.APPROVED && report.getReportStatus() != ReportStatus.REJECTED
-                && report.getReportStatus() != ReportStatus.CANCELLED;
-        return statusOk && !hasAnyLevelApproved(report);
+    /** The message shown when a withdrawal or cancellation is refused. */
+    private String withdrawalBlockedMessage(ExpenseReport report) {
+        if (report.getReportStatus() == ReportStatus.PENDING_APPROVAL
+                || report.getReportStatus() == ReportStatus.AWAITING_CORRECTION) {
+            return "This report has already been reviewed by an approver, so it can no longer be withdrawn or cancelled. "
+                    + "Correct the flagged lines and resubmit instead.";
+        }
+        return "A report in status " + report.getReportStatus() + " cannot be withdrawn or cancelled.";
     }
 
     private void assertCanViewLineItemReviews(ExpenseReport report, String actingEmployeeId) {

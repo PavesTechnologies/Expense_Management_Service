@@ -26,6 +26,7 @@ import java.util.UUID;
 public class CashAdvanceBalanceLedger {
 
     private final AuditLogRepository auditLogRepository;
+    private final CashAdvanceBalanceCalculator balanceCalculator;
     private final ExpenseReportRepository expenseReportRepository;
 
     /**
@@ -33,6 +34,11 @@ public class CashAdvanceBalanceLedger {
      * the employee a reimbursement. Every path that changes an advance's status goes through this rule.
      */
     public String statusFor(CashAdvance advance, BigDecimal balance, int decimals) {
+        // Overdue is derived from the records, not stored as a one-off flag. An open balance after the expense window has
+        // ended is OVERDUE on every recompute, so a later balance change cannot silently clear it.
+        if (balance != null && balance.signum() > 0 && CashAdvanceExpenseWindow.isLocked(advance, LocalDateTime.now())) {
+            return "OVERDUE";
+        }
         return CashAdvanceBalanceRules.statusAfterBalance(balance, decimals, hasUnpaidReimbursement(advance));
     }
 
@@ -50,10 +56,11 @@ public class CashAdvanceBalanceLedger {
      * a reimbursement is paid, so an advance waiting on that payment closes once the last one is paid.
      */
     public void refreshStatus(CashAdvance advance, String actor, String reason) {
-        if (advance == null || advance.getOutstandingBalance() == null) {
+        if (advance == null) {
             return;
         }
-        applyBalance(advance, advance.getOutstandingBalance(), "CASH_ADVANCE_STATUS_RECHECKED", actor, reason);
+        // Recompute from the records. The stored column is only a cache and must not drive the status.
+        applyBalance(advance, balanceCalculator.outstanding(advance), "CASH_ADVANCE_STATUS_RECHECKED", actor, reason);
     }
 
     /**

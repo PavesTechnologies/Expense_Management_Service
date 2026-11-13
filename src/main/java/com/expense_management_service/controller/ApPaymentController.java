@@ -61,6 +61,17 @@ public class ApPaymentController {
                 apPaymentService.markPaymentCompleted(reportId, request, currentUserService.getEmployeeId()));
     }
 
+    /**
+     * AP records one bank payment covering several reports (Decision 3). The total must equal the sum of the allocations,
+     * and each allocation must fit the report's remaining payable amount. The bank reference must be new.
+     */
+    @PostMapping("/batches")
+    public ApiResponse<com.expense_management_service.dto.response.ApPaymentBatchResponse> recordBatchPayment(
+            @RequestBody com.expense_management_service.dto.request.ApPaymentBatchRequest request) {
+        return ApiResponse.success("Batch payment recorded",
+                apPaymentService.recordBatchPayment(request, currentUserService.getEmployeeId()));
+    }
+
     /** History tabs (Payment Completed / Handoff Failed) - APPROVED_FOR_PAYMENT is not a valid value here, use {@link #getApQueue}. */
     @GetMapping("/history")
     public ApiResponse<PageResponse<ApPaymentQueueItemResponse>> getApHistory(

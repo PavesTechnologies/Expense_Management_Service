@@ -18,5 +18,9 @@ public interface CashAdvanceAdjustmentService {
 
     List<CashAdvanceAdjustmentResponse> getAll();
 
+    /** Reverses an offset. The row is kept for audit; the balance is restored from the remaining active offsets. */
+    CashAdvanceAdjustmentResponse reverse(UUID adjustmentId, String reason);
+
+    /** Kept for existing callers: reverses the offset with a generic reason. Financial history is never deleted. */
     void delete(UUID adjustmentId);
 }

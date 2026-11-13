@@ -15,6 +15,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
+import com.expense_management_service.security.RoleConstants;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -37,6 +38,9 @@ import com.expense_management_service.dto.response.CarryForwardReadyResponse;
  * A Finance user other than the requester approves it. The combined active allocations from one source stay within
  * its verified outstanding balance. The destination must be APPROVED and not yet disbursed. A carry-forward never
  * clears an OVERDUE status or changes a deadline, so an overdue source is refused. Circular allocations are refused.
+ *
+ * <p>Approval: the source advance's manager or Finance (never the requester) approves or rejects a proposal. An
+ * automatic proposal from a ready balance waits for that decision; no balance moves until it is approved.
  *
  * <p>Balance movement: approval reduces the source balance through {@link CashAdvanceBalanceLedger} and adds the
  * amount to the destination's {@code carriedInAmount}. The destination's obligation includes that amount when it is
@@ -63,6 +67,7 @@ public class CashAdvanceCarryForwardService {
     private static final List<String> ACTIVE = List.of(CashAdvanceCarryForward.PROPOSED, CashAdvanceCarryForward.APPLIED);
 
     private final CashAdvanceRepository cashAdvanceRepository;
+    private final CashAdvanceBalanceCalculator balanceCalculator;
     private final CashAdvanceCarryForwardRepository carryForwardRepository;
     private final CashAdvanceBalanceLedger balanceLedger;
     private final CurrentUserService currentUserService;
@@ -137,7 +142,6 @@ public class CashAdvanceCarryForwardService {
     @Transactional
     public CashAdvanceCarryForwardResponse approve(UUID carryForwardId, CarryForwardDecisionRequest decision) {
         requireEnabled();
-        requireFinance();
         String approver = currentUserService.getEmployeeId();
         String reason = requireReason(decision.reason());
 
@@ -146,6 +150,7 @@ public class CashAdvanceCarryForwardService {
             return toResponse(allocation);
         }
         requireStatus(allocation, CashAdvanceCarryForward.PROPOSED, "approved");
+        requireApprover(allocation);
 
         if (approver == null || approver.equals(allocation.getRequestedBy())) {
             throw new BusinessRuleViolationException("The requester cannot approve their own carry-forward.");
@@ -166,6 +171,12 @@ public class CashAdvanceCarryForwardService {
         }
 
         applyBalances(source, destination, allocation.getAmount(), approver, reason);
+        // The approved part is no longer waiting to be carried forward.
+        if (source.getCarryForwardReadyAmount() != null) {
+            BigDecimal left = source.getCarryForwardReadyAmount().subtract(allocation.getAmount());
+            source.setCarryForwardReadyAmount(left.signum() > 0 ? left : null);
+            cashAdvanceRepository.save(source);
+        }
 
         LocalDateTime now = LocalDateTime.now();
         allocation.setStatus(CashAdvanceCarryForward.APPLIED);
@@ -234,10 +245,10 @@ public class CashAdvanceCarryForwardService {
     }
 
     /**
-     * Applies the carry-forwards that are ready for this employee and currency to a destination advance that has just
-     * been approved, oldest ready source first. Each amount is capped at the source's outstanding balance and at what the
-     * destination can still carry (its carried-in balance never exceeds its amount). Anything not applied stays ready on
-     * its source. Does nothing while the feature is disabled.
+     * Proposes the carry-forwards that are ready for this employee and currency against a destination advance that has
+     * just been approved, oldest ready source first. Each proposal is capped at the source's unallocated balance and at
+     * what the destination can still carry, counting proposals already waiting on it. Nothing moves until the source
+     * advance's manager or Finance approves the proposal. Does nothing while the feature is disabled.
      */
     public void applyReadyForDestination(CashAdvance destination) {
         if (!enabled || destination.getEmployeeId() == null) {
@@ -250,12 +261,17 @@ public class CashAdvanceCarryForwardService {
                 continue;
             }
             BigDecimal readyAmount = source.getCarryForwardReadyAmount();
-            BigDecimal canCarry = destination.getAmount().subtract(CashAdvanceBalanceRules.carriedIn(destination));
-            BigDecimal amount = readyAmount.min(outstanding(source)).min(canCarry);
+            if (proposalExists(source.getAdvanceId(), destination.getAdvanceId())) {
+                continue;
+            }
+            BigDecimal canCarry = destination.getAmount()
+                    .subtract(CashAdvanceBalanceRules.carriedIn(destination))
+                    .subtract(pendingInto(destination.getAdvanceId()));
+            BigDecimal unallocated = outstanding(source).subtract(allocatedFrom(source.getAdvanceId()));
+            BigDecimal amount = readyAmount.min(unallocated).min(canCarry);
             if (amount.signum() <= 0 || !canApply(source, destination)) {
                 continue;
             }
-            applyBalances(source, destination, amount, AUTO_ACTOR, AUTO_REASON);
             LocalDateTime now = LocalDateTime.now();
             CashAdvanceCarryForward row = carryForwardRepository.save(CashAdvanceCarryForward.builder()
                     .sourceAdvance(source)
@@ -263,20 +279,37 @@ public class CashAdvanceCarryForwardService {
                     .employeeId(source.getEmployeeId())
                     .currencyCode(currency)
                     .amount(amount)
-                    .status(CashAdvanceCarryForward.APPLIED)
+                    .status(CashAdvanceCarryForward.PROPOSED)
                     .reason(AUTO_REASON)
                     .requestedBy(AUTO_ACTOR)
                     .requestedAt(now)
-                    .approvedBy(AUTO_ACTOR)
-                    .approvedAt(now)
-                    .appliedAt(now)
                     .build());
-            BigDecimal left = readyAmount.subtract(amount);
-            source.setCarryForwardReadyAmount(left.signum() > 0 ? left : null);
-            cashAdvanceRepository.save(source);
-            balanceLedger.recordChange("CashAdvanceCarryForward", row.getCarryForwardId(), "CARRY_FORWARD_APPLIED",
-                    "Status: READY", "Status: APPLIED, Amount: " + amount, AUTO_ACTOR, AUTO_REASON);
+            balanceLedger.recordChange("CashAdvanceCarryForward", row.getCarryForwardId(), "CARRY_FORWARD_PROPOSED",
+                    null, "Status: PROPOSED, Amount: " + amount, AUTO_ACTOR, AUTO_REASON);
         }
+    }
+
+    /**
+     * Refuses disbursement while a carry-forward proposal into this advance is still waiting for its manager or Finance
+     * decision. Paying the full cash before that decision would pay the carried-in part twice.
+     */
+    @Transactional(readOnly = true)
+    public void assertNoPendingProposalInto(UUID destinationAdvanceId) {
+        if (pendingInto(destinationAdvanceId).signum() > 0) {
+            throw new BusinessRuleViolationException("A carry-forward into this advance is waiting for approval by the "
+                    + "employee's manager or Finance. Resolve it before disbursement.");
+        }
+    }
+
+    private boolean proposalExists(UUID sourceId, UUID destinationId) {
+        return carryForwardRepository.findBySourceAdvance_AdvanceIdAndStatusIn(sourceId, List.of(CashAdvanceCarryForward.PROPOSED))
+                .stream().anyMatch(cf -> cf.getDestinationAdvance().getAdvanceId().equals(destinationId));
+    }
+
+    /** Sum of proposals into this advance that are still waiting for a decision. */
+    private BigDecimal pendingInto(UUID destinationId) {
+        return sum(carryForwardRepository.findByDestinationAdvance_AdvanceIdAndStatusIn(
+                destinationId, List.of(CashAdvanceCarryForward.PROPOSED)));
     }
 
     private boolean canApply(CashAdvance source, CashAdvance destination) {
@@ -299,12 +332,12 @@ public class CashAdvanceCarryForwardService {
     @Transactional
     public CashAdvanceCarryForwardResponse reject(UUID carryForwardId, CarryForwardDecisionRequest decision) {
         requireEnabled();
-        requireFinance();
         String actor = currentUserService.getEmployeeId();
         String reason = requireReason(decision.reason());
 
         CashAdvanceCarryForward allocation = lockAllocation(carryForwardId);
         requireStatus(allocation, CashAdvanceCarryForward.PROPOSED, "rejected");
+        requireApprover(allocation);
 
         allocation.setStatus(CashAdvanceCarryForward.REJECTED);
         allocation.setRejectedBy(actor);
@@ -398,6 +431,273 @@ public class CashAdvanceCarryForwardService {
                 "CarriedIn: " + oldCarried, "CarriedIn: " + newCarried, actor, reason);
     }
 
+
+    // ---------------------------------------------------------------- rollover (Cash Advance + Outstanding)
+
+    /** An overdue advance Finance has chosen to roll from, with the amount and the reason. Only a FINANCE_EXECUTIVE may give one. */
+    public record OverdueException(UUID sourceAdvanceId, BigDecimal amount, String justification) {
+    }
+
+    /** One source's share of a rollover. */
+    private record RolloverTake(CashAdvance source, BigDecimal amount, boolean overdue) {
+    }
+
+    /** Statuses a rollover may draw from: the eligible ones, and OVERDUE (only with an explicit exception). */
+    static final List<String> ROLLOVER_LOOKUP_STATUSES = List.of(
+            "DISBURSED", "IN_PROGRESS", "SETTLEMENT_PENDING", "PARTIALLY_SETTLED", "PARTIALLY_ADJUSTED", "ADJUSTED", "OVERDUE");
+
+    /**
+     * Rolls the authorised amount into a destination request, oldest eligible advance first, and records one rollover row per
+     * source. Runs inside the caller's transaction, so the rows, the balance movements and the approval commit together or
+     * not at all. The destination's amount becomes cashAmount + rollover: the rolled-in balance is part of what the request
+     * covers, and disbursement pays only the cash part (amount minus carried-in). Returns the total rolled in.
+     *
+     * <p>Sources are locked, and their outstanding balance recalculated, under the lock. The destination must already be
+     * locked by the caller. Requires the carry-forward feature, which is off until its review-cycle rules are confirmed.
+     */
+    @Transactional
+    public BigDecimal applyRollover(CashAdvance destination, BigDecimal rolloverAmount, BigDecimal cashAmount,
+                                    OverdueException overdue, String approver, String reason, boolean financeExecutive) {
+        requireEnabled();
+        if (approver == null || approver.isBlank()) {
+            throw new BusinessRuleViolationException("A Finance approver is required to authorise a rollover.");
+        }
+        if (rolloverAmount == null || rolloverAmount.signum() <= 0) {
+            throw new BusinessRuleViolationException("Authorise a rollover amount greater than zero.");
+        }
+        if (cashAmount == null || cashAmount.signum() < 0) {
+            throw new BusinessRuleViolationException("The cash amount cannot be negative.");
+        }
+        if (destination.getDisbursedAt() != null) {
+            throw new BusinessRuleViolationException("The request has already been disbursed, so it cannot take a rollover.");
+        }
+        if (!carryForwardRepository.findByDestinationAdvance_AdvanceIdAndStatusIn(destination.getAdvanceId(), ACTIVE).isEmpty()) {
+            throw new BusinessRuleViolationException("This request already has a rollover. It cannot be applied twice.");
+        }
+        if (overdue != null) {
+            if (!financeExecutive) {
+                throw new BusinessRuleViolationException("Only a Finance executive can authorise a rollover from an overdue advance.");
+            }
+            if (overdue.justification() == null || overdue.justification().isBlank()) {
+                throw new BusinessRuleViolationException("Give the reason for rolling over an overdue advance.");
+            }
+            if (overdue.amount() == null || overdue.amount().signum() <= 0) {
+                throw new BusinessRuleViolationException("Authorise the amount to roll over from the overdue advance.");
+            }
+        }
+
+        String employeeId = destination.getEmployeeId();
+        String currency = currencyCode(destination);
+        List<CashAdvance> candidates = new java.util.ArrayList<>();
+        for (CashAdvance advance : cashAdvanceRepository.findByEmployeeIdAndStatusIn(employeeId, ROLLOVER_LOOKUP_STATUSES)) {
+            if (advance.getAdvanceId().equals(destination.getAdvanceId()) || !currency.equals(currencyCode(advance))) {
+                continue;
+            }
+            boolean overdueSource = overdue != null && overdue.sourceAdvanceId().equals(advance.getAdvanceId());
+            boolean overdueStatus = "OVERDUE".equalsIgnoreCase(advance.getStatus());
+            if (overdueStatus ? !overdueSource : !CashAdvanceAllocationRules.rolloverEligible(advance.getStatus())) {
+                continue;
+            }
+            candidates.add(advance);
+        }
+        if (overdue != null && candidates.stream().noneMatch(a -> a.getAdvanceId().equals(overdue.sourceAdvanceId()))) {
+            throw new BusinessRuleViolationException("The overdue advance is not an eligible source for this employee.");
+        }
+
+        // Lock the sources in id order, so concurrent rollovers and carry-forwards queue instead of deadlocking.
+        candidates.sort(java.util.Comparator.comparing(CashAdvance::getAdvanceId));
+        for (CashAdvance advance : candidates) {
+            lockAdvance(advance.getAdvanceId());
+        }
+
+        // First in, first out: the oldest advance gives its balance first.
+        candidates.sort(java.util.Comparator
+                .comparing(CashAdvance::getCreatedAt, java.util.Comparator.nullsLast(java.util.Comparator.naturalOrder()))
+                .thenComparing(CashAdvance::getAdvanceId));
+        List<RolloverTake> plan = new java.util.ArrayList<>();
+        BigDecimal remaining = rolloverAmount;
+        for (CashAdvance source : candidates) {
+            if (remaining.signum() <= 0) {
+                break;
+            }
+            boolean overdueSource = overdue != null && overdue.sourceAdvanceId().equals(source.getAdvanceId());
+            BigDecimal free = outstanding(source).subtract(allocatedFrom(source.getAdvanceId()));
+            if (overdueSource) {
+                free = free.min(overdue.amount());
+            }
+            if (free.signum() <= 0) {
+                continue;
+            }
+            BigDecimal take = free.min(remaining);
+            plan.add(new RolloverTake(source, take, overdueSource));
+            remaining = remaining.subtract(take);
+        }
+        if (remaining.signum() > 0) {
+            throw new BusinessRuleViolationException("Only " + rolloverAmount.subtract(remaining).toPlainString()
+                    + " of the authorised " + rolloverAmount.toPlainString() + " is available from the eligible advances.");
+        }
+        if (overdue != null && plan.stream().noneMatch(RolloverTake::overdue)) {
+            throw new BusinessRuleViolationException("The overdue advance is not needed for this rollover. Remove the overdue authorisation.");
+        }
+
+        destination.setAmount(cashAmount.add(rolloverAmount));
+        destination.setAuthorizedRolloverAmount(rolloverAmount);
+        cashAdvanceRepository.save(destination);
+
+        LocalDateTime now = LocalDateTime.now();
+        for (RolloverTake take : plan) {
+            carryForwardRepository.save(CashAdvanceCarryForward.builder()
+                    .sourceAdvance(take.source())
+                    .destinationAdvance(destination)
+                    .employeeId(employeeId)
+                    .currencyCode(currency)
+                    .amount(take.amount())
+                    .status(CashAdvanceCarryForward.APPLIED)
+                    .reason(reason)
+                    .idempotencyKey("rollover:" + destination.getAdvanceId() + ":" + take.source().getAdvanceId())
+                    .requestedBy(employeeId)
+                    .requestedAt(now)
+                    .approvedBy(approver)
+                    .approvedAt(now)
+                    .appliedAt(now)
+                    .authorizationType(take.overdue() ? "OVERDUE_EXCEPTION" : "STANDARD")
+                    .exceptionJustification(take.overdue() ? overdue.justification().trim() : null)
+                    .exceptionAuthorizedBy(take.overdue() ? approver : null)
+                    .exceptionAuthorizedAt(take.overdue() ? now : null)
+                    .build());
+            applyBalances(take.source(), destination, take.amount(), approver, reason);
+        }
+        return rolloverAmount;
+    }
+
+
+    // ---------------------------------------------------------------- compensating reversal after disbursement
+
+    /**
+     * Proposes a compensating reversal of an applied rollover whose request has already been disbursed. The original row is
+     * not changed until a second Finance executive approves the compensation. Needs no feature flag: rollovers that already
+     * exist must still be correctable if the feature is later switched off.
+     */
+    @Transactional
+    public CashAdvanceCarryForwardResponse proposeCompensation(UUID originalId, String reason) {
+        requireExecutive();
+        String actor = currentUserService.getEmployeeId();
+        String text = requireReason(reason);
+        CashAdvanceCarryForward original = lockAllocation(originalId);
+        if (!CashAdvanceCarryForward.APPLIED.equals(original.getStatus())) {
+            throw new BusinessRuleViolationException("Only an applied rollover can be compensated. Current status: " + original.getStatus());
+        }
+        CashAdvance destination = lockAdvance(original.getDestinationAdvance().getAdvanceId());
+        if (destination.getDisbursedAt() == null) {
+            throw new BusinessRuleViolationException("The request is not disbursed yet, so the rollover can be reversed directly instead.");
+        }
+        if (!carryForwardRepository.findByReversesCarryForwardIdAndStatusIn(originalId,
+                List.of(CashAdvanceCarryForward.PROPOSED, CashAdvanceCarryForward.APPLIED)).isEmpty()) {
+            throw new BusinessRuleViolationException("A compensation is already pending or applied for this rollover.");
+        }
+        LocalDateTime now = LocalDateTime.now();
+        CashAdvanceCarryForward compensation = carryForwardRepository.save(CashAdvanceCarryForward.builder()
+                .sourceAdvance(original.getSourceAdvance())
+                .destinationAdvance(destination)
+                .employeeId(original.getEmployeeId())
+                .currencyCode(original.getCurrencyCode())
+                .amount(original.getAmount())
+                .status(CashAdvanceCarryForward.PROPOSED)
+                .reason(text)
+                .idempotencyKey("compensation:" + originalId)
+                .requestedBy(actor)
+                .requestedAt(now)
+                .reversesCarryForwardId(originalId)
+                .build());
+        return toResponse(compensation);
+    }
+
+    /**
+     * Approves a compensation proposed by another Finance executive. Moves the rolled balance back to the source advance and
+     * takes it off the destination's obligation. The cash already paid on the destination is unchanged, and the original
+     * rollover is marked REVERSED with the compensation as its reference.
+     */
+    @Transactional
+    public CashAdvanceCarryForwardResponse approveCompensation(UUID compensationId, String reason) {
+        requireExecutive();
+        String approver = currentUserService.getEmployeeId();
+        String text = requireReason(reason);
+        CashAdvanceCarryForward compensation = lockAllocation(compensationId);
+        if (CashAdvanceCarryForward.APPLIED.equals(compensation.getStatus())) {
+            return toResponse(compensation);
+        }
+        requireStatus(compensation, CashAdvanceCarryForward.PROPOSED, "approved");
+        if (compensation.getRequestedBy() == null || approver == null || approver.equals(compensation.getRequestedBy())) {
+            throw new BusinessRuleViolationException("The person who proposed the compensation cannot approve it.");
+        }
+        CashAdvanceCarryForward original = lockAllocation(compensation.getReversesCarryForwardId());
+        if (!CashAdvanceCarryForward.APPLIED.equals(original.getStatus())) {
+            throw new BusinessRuleViolationException("The original rollover is no longer applied. Current status: " + original.getStatus());
+        }
+        CashAdvance[] advances = lockAdvancesInOrder(compensation);
+        CashAdvance source = advances[0];
+        CashAdvance destination = advances[1];
+        if (destination.getDisbursedAt() == null) {
+            throw new BusinessRuleViolationException("The request is not disbursed, so the rollover is reversed directly instead.");
+        }
+        reverseBalances(source, destination, compensation.getAmount(), approver, text);
+
+        LocalDateTime now = LocalDateTime.now();
+        original.setStatus(CashAdvanceCarryForward.REVERSED);
+        carryForwardRepository.save(original);
+        compensation.setStatus(CashAdvanceCarryForward.APPLIED);
+        compensation.setApprovedBy(approver);
+        compensation.setApprovedAt(now);
+        compensation.setAppliedAt(now);
+        CashAdvanceCarryForward saved = carryForwardRepository.save(compensation);
+        balanceLedger.recordChange("CashAdvanceCarryForward", saved.getCarryForwardId(), "CARRY_FORWARD_COMPENSATED",
+                "Status: PROPOSED", "Status: APPLIED, reverses " + original.getCarryForwardId(), approver, text);
+        return toResponse(saved);
+    }
+
+    /** Reverses a rollover's balance movement. The destination's cash is unchanged: only its obligation drops. */
+    private void reverseBalances(CashAdvance source, CashAdvance destination, BigDecimal amount, String actor, String reason) {
+        BigDecimal newCarried = CashAdvanceBalanceRules.carriedIn(destination).subtract(amount);
+        BigDecimal newAmount = destination.getAmount().subtract(amount);
+        if (newCarried.signum() < 0 || newAmount.signum() < 0) {
+            throw new BusinessRuleViolationException("The compensation would take more than the request carries.");
+        }
+        if (destination.getDisbursedAmount() != null
+                && newAmount.subtract(newCarried).compareTo(destination.getDisbursedAmount()) != 0) {
+            throw new BusinessRuleViolationException("The compensation would change the cash already paid on this request. Nothing was changed.");
+        }
+        int decimals = source.getCurrency() != null ? source.getCurrency().getDecimalPlaces() : 2;
+        BigDecimal newSourceBalance = CashAdvanceBalanceRules.requireNonNegative(outstanding(source).add(amount), decimals);
+        balanceLedger.applyBalance(source, newSourceBalance, "CASH_ADVANCE_CARRIED_FORWARD_COMPENSATED_OUT", actor, reason);
+        source.setCarriedOutAmount(CashAdvanceBalanceRules.carriedOut(source).subtract(amount));
+        cashAdvanceRepository.save(source);
+
+        BigDecimal oldAmount = destination.getAmount();
+        BigDecimal oldCarried = CashAdvanceBalanceRules.carriedIn(destination);
+        destination.setAmount(newAmount);
+        destination.setCarriedInAmount(newCarried);
+        if (destination.getAuthorizedRolloverAmount() != null) {
+            destination.setAuthorizedRolloverAmount(destination.getAuthorizedRolloverAmount().subtract(amount).max(BigDecimal.ZERO));
+        }
+        cashAdvanceRepository.save(destination);
+        balanceLedger.recordChange("CashAdvance", destination.getAdvanceId(), "CASH_ADVANCE_CARRIED_FORWARD_COMPENSATED_IN",
+                "Amount: " + oldAmount + ", CarriedIn: " + oldCarried, "Amount: " + newAmount + ", CarriedIn: " + newCarried,
+                actor, reason);
+    }
+
+    /** Only a Finance executive may propose or approve a compensation. Checked here, not only at the endpoint. */
+    private static void requireExecutive() {
+        org.springframework.security.core.Authentication auth = org.springframework.security.core.context.SecurityContextHolder
+                .getContext().getAuthentication();
+        boolean executive = auth != null && auth.getAuthorities().stream()
+                .anyMatch(a -> RoleConstants.ROLE_FINANCE_EXECUTIVE.equals(a.getAuthority()));
+        if (!executive) {
+            throw new org.springframework.security.access.AccessDeniedException(
+                    "Only a Finance executive can propose or approve a compensating reversal.");
+        }
+    }
+
+
     // ---------------------------------------------------------------- rules
 
     /** Locks the allocation row before any advance, so every operation takes locks in the same order. */
@@ -435,6 +735,20 @@ public class CashAdvanceCarryForwardService {
         if (!isFinanceCaller()) {
             throw new BusinessRuleViolationException("Only Finance can approve, reject or reverse a carry-forward.");
         }
+    }
+
+    /** Finance, or the manager recorded on the source advance. The requester is checked separately by the caller. */
+    private void requireApprover(CashAdvanceCarryForward allocation) {
+        if (isFinanceCaller()) {
+            return;
+        }
+        String actor = currentUserService.getEmployeeId();
+        String manager = allocation.getSourceAdvance().getManagerId();
+        if (isManagerCaller() && sameEmployee(actor, manager)) {
+            return;
+        }
+        throw new BusinessRuleViolationException(
+                "Only the source advance's manager or Finance can approve or reject a carry-forward.");
     }
 
     private void requireStatus(CashAdvanceCarryForward allocation, String expected, String verb) {
@@ -506,8 +820,9 @@ public class CashAdvanceCarryForwardService {
         return allocations.stream().map(CashAdvanceCarryForward::getAmount).reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
-    static BigDecimal outstanding(CashAdvance advance) {
-        return advance.getOutstandingBalance() != null ? advance.getOutstandingBalance() : advance.getAmount();
+    /** The authoritative balance from the records. The cached column is never used for capacity decisions. */
+    BigDecimal outstanding(CashAdvance advance) {
+        return balanceCalculator.outstanding(advance);
     }
 
     private CashAdvance findAdvance(UUID id) {
@@ -542,6 +857,11 @@ public class CashAdvanceCarryForwardService {
 
     private static String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    private static boolean isManagerCaller() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        return auth != null && auth.getAuthorities().stream().anyMatch(a -> "ROLE_MANAGER".equals(a.getAuthority()));
     }
 
     private static boolean isFinanceCaller() {

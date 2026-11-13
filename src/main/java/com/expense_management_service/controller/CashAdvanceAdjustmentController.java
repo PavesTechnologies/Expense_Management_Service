@@ -63,5 +63,13 @@ public class CashAdvanceAdjustmentController {
     public void delete(@PathVariable UUID adjustmentId) {
         cashAdvanceAdjustmentService.delete(adjustmentId);
     }
+
+    /** Reverses an offset with a required reason. Preferred over DELETE, which is kept for compatibility. */
+    @org.springframework.web.bind.annotation.PostMapping("/{adjustmentId}/reverse")
+    public CashAdvanceAdjustmentResponse reverse(
+            @PathVariable UUID adjustmentId,
+            @org.springframework.web.bind.annotation.RequestBody java.util.Map<String, String> body) {
+        return cashAdvanceAdjustmentService.reverse(adjustmentId, body == null ? null : body.get("reason"));
+    }
 }
 

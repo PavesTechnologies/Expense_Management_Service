@@ -25,6 +25,8 @@ public class CashAdvanceRecoveryCase {
 
     public static final String NOTICE_SENT = "NOTICE_SENT";
     public static final String RETURNED = "RETURNED";
+    /** Grace period ended. Finance reviews the case; payroll is contacted only after Finance confirms. */
+    public static final String PENDING_FINANCE_REVIEW = "PENDING_FINANCE_REVIEW";
     public static final String SENT_TO_PAYROLL = "SENT_TO_PAYROLL";
     /** Finance withdrew the notice before any payroll report included it. The advance keeps its balance. */
     public static final String CANCELLED = "CANCELLED";

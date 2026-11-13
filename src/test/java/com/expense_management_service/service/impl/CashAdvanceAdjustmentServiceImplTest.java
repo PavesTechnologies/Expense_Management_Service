@@ -79,6 +79,12 @@ class CashAdvanceAdjustmentServiceImplTest {
     @Mock private CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
 
     @BeforeEach
+    void stubAdvanceLookupForReversal() {
+        // reverse() resolves the advance id through this query before locking the advance
+        lenient().when(cashAdvanceAdjustmentRepository.findAdvanceIdOf(any())).thenAnswer(inv -> Optional.of(advanceId));
+    }
+
+    @BeforeEach
     void stubLedgerStatus() {
         // The real status rule, so the advance's status is still derived from its balance here
         lenient().when(cashAdvanceBalanceLedger.statusFor(any(), any(), anyInt()))

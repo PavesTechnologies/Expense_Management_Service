@@ -42,7 +42,7 @@ class CashAdvanceBalanceLedgerTest {
 
     @BeforeEach
     void setUp() {
-        ledger = new CashAdvanceBalanceLedger(auditLogRepository, expenseReportRepository);
+        ledger = new CashAdvanceBalanceLedger(auditLogRepository, TestBalanceCalculators.storedCache(), expenseReportRepository);
         Currency inr = Currency.builder().currencyId(UUID.randomUUID()).currencyCode("INR").decimalPlaces(2).build();
         advance = CashAdvance.builder()
                 .advanceId(UUID.randomUUID())

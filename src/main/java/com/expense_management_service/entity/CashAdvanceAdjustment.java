@@ -8,9 +8,10 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
-@Table(name = "cash_advance_adjustment", uniqueConstraints = {
-    @UniqueConstraint(name = "uk_advance_report", columnNames = {"advance_id", "report_id"})
-})
+// Uniqueness of ACTIVE offsets per (advance, report) is enforced by the database on the generated column
+// active_offset_key (see migration V39). Reversed rows keep the key NULL, so a reversed offset can be reapplied
+// as a new row while the original stays in place.
+@Table(name = "cash_advance_adjustment")
 @Getter
 @Setter
 @NoArgsConstructor
@@ -63,4 +64,33 @@ public class CashAdvanceAdjustment {
 
     @Column(name = "idempotency_key", length = 255, unique = true)
     private String idempotencyKey;
+
+    /**
+     * Set when the offset is reversed. The row is kept for audit and is never deleted. Reversed rows are excluded from
+     * every balance and verification total, via {@link #isActive()}.
+     */
+    @Column(name = "reversed", nullable = false)
+    @Builder.Default
+    private boolean reversed = false;
+
+    @Column(name = "reversed_at")
+    private LocalDateTime reversedAt;
+
+    @Column(name = "reversed_by", length = 255)
+    private String reversedBy;
+
+    @Column(name = "reversal_reason", length = 1000)
+    private String reversalReason;
+
+    /**
+     * Database-generated key: "advanceId:reportId" while the offset is active, NULL once reversed. Read-only here.
+     * The unique index on it prevents two active offsets for the same advance and report.
+     */
+    @Column(name = "active_offset_key", length = 80, insertable = false, updatable = false)
+    private String activeOffsetKey;
+
+    /** True when this offset still counts against the advance balance. */
+    public boolean isActive() {
+        return !reversed;
+    }
 }

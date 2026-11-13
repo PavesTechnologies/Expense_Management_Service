@@ -16,6 +16,24 @@ import java.util.UUID;
 
 public interface ExpenseReportRepository extends JpaRepository<ExpenseReport, UUID> {
 
+    /**
+     * Sum of the base-currency amounts of a report's lines that the employee reimburses: every line except those
+     * paid with {@code excluded} (the company card). A line with no payment method yet counts as reimbursable,
+     * because submission refuses such lines anyway.
+     */
+    @Query("select coalesce(sum(l.baseAmount), 0) from ExpenseLineItem l where l.report.reportId = :reportId "
+            + "and (l.employeePaymentMethod is null or l.employeePaymentMethod <> :excluded)")
+    java.math.BigDecimal sumReimbursableBaseAmount(@Param("reportId") UUID reportId,
+            @Param("excluded") com.expense_management_service.enums.EmployeePaymentMethod excluded);
+
+    /** True when some expense report already records this payment reference. */
+    boolean existsByPaymentReference(String paymentReference);
+
+    /** The report with a row lock (PESSIMISTIC_WRITE). Used where a payment or status change must not run twice. */
+    @org.springframework.data.jpa.repository.Lock(jakarta.persistence.LockModeType.PESSIMISTIC_WRITE)
+    @Query("select r from ExpenseReport r where r.reportId = :id")
+    Optional<ExpenseReport> findByIdForUpdate(@Param("id") UUID id);
+
     /** Duplicate-title validation — a title only needs to be unique for one employee within one fiscal period. */
     Optional<ExpenseReport> findByEmployeeIdAndFiscalYearAndTitleIgnoreCase(
             String employeeId, String fiscalYear, String title);

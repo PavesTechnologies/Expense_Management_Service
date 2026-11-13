@@ -36,6 +36,7 @@ import static com.expense_management_service.security.RoleConstants.ROLE_ADMIN;
 import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE;
 import static com.expense_management_service.security.RoleConstants.ROLE_GENERAL;
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
@@ -365,5 +366,99 @@ class CashAdvanceControllerTest {
                 .andExpect(jsonPath("$.success").value(true))
                 .andExpect(jsonPath("$.data.content[0].status").value("APPROVED"))
                 .andExpect(jsonPath("$.data.totalElements").value(1));
+    }
+
+    // ---------------------------------------------------------------- Slice 1: preview and profile
+
+    @Test
+    void preview_returns200_withTheServerCalculation() throws Exception {
+        com.expense_management_service.dto.response.CashAdvancePreviewResponse preview =
+                new com.expense_management_service.dto.response.CashAdvancePreviewResponse(
+                        com.expense_management_service.enums.CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING, "INR",
+                        new BigDecimal("4000"), new BigDecimal("4000"), new BigDecimal("4000"), new BigDecimal("8000"),
+                        false, null, new BigDecimal("8000"), false, BigDecimal.ZERO);
+        when(cashAdvanceService.preview(any())).thenReturn(preview);
+
+        mockMvc.perform(post("/xms/employee/cash-advances/preview")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"requestType\":\"ADVANCE_PLUS_OUTSTANDING\",\"amount\":4000,\"currencyId\":\"" + currencyId + "\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.requestType").value("ADVANCE_PLUS_OUTSTANDING"))
+                .andExpect(jsonPath("$.data.eligibleOutstanding").value(4000))
+                .andExpect(jsonPath("$.data.totalAdvanceAllocation").value(8000))
+                .andExpect(jsonPath("$.data.justificationRequired").value(false));
+    }
+
+    @Test
+    void preview_returns400_forAnAmountThatIsNotPositive() throws Exception {
+        mockMvc.perform(post("/xms/employee/cash-advances/preview")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"requestType\":\"COMPLETE_NEW\",\"amount\":-5}"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(cashAdvanceService);
+    }
+
+    @Test
+    void preview_returns400_forAnUnknownRequestType() throws Exception {
+        mockMvc.perform(post("/xms/employee/cash-advances/preview")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
+                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                        .content("{\"requestType\":\"SOMETHING_ELSE\",\"amount\":4000}"))
+                .andExpect(status().isBadRequest());
+        verifyNoInteractions(cashAdvanceService);
+    }
+
+    @Test
+    void myProfile_returns200_withTheEmployeeIdentity_andNoRawIdAsDepartment() throws Exception {
+        com.expense_management_service.dto.response.EmployeeProfileResponse profile =
+                new com.expense_management_service.dto.response.EmployeeProfileResponse(
+                        "EMP001", "Ravi Menon", "MGR001", "Anita Rao", null, null);
+        when(cashAdvanceService.myProfile()).thenReturn(profile);
+
+        mockMvc.perform(get("/xms/employee/cash-advances/my-profile")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.employeeId").value("EMP001"))
+                .andExpect(jsonPath("$.data.fullName").value("Ravi Menon"))
+                .andExpect(jsonPath("$.data.managerName").value("Anita Rao"))
+                .andExpect(jsonPath("$.data.departmentName").doesNotExist());
+    }
+
+    @Test
+    void myProfile_isNotAvailableWithoutSignIn() throws Exception {
+        mockMvc.perform(get("/xms/employee/cash-advances/my-profile"))
+                .andExpect(status().isUnauthorized());
+        verifyNoInteractions(cashAdvanceService);
+    }
+
+    // ---------------------------------------------------------------- Slice 3: Finance allocation approval
+
+    @Test
+    void approveAllocation_returns200_forFinance() throws Exception {
+        CashAdvanceResponse response = new CashAdvanceResponse(
+                advanceId, "EMP001", "MGR001", new BigDecimal("6000.00"), currencyId, "INR",
+                new BigDecimal("2000.00"), "Trip", "APPROVED", LocalDate.now().plusDays(7),
+                new BigDecimal("6000.00"), null, null);
+        when(currentUserService.getEmployeeId()).thenReturn("FIN1");
+        when(cashAdvanceService.approveAllocation(eq(advanceId), eq("FIN1"), any())).thenReturn(response);
+
+        mockMvc.perform(post("/xms/employee/cash-advances/{advanceId}/approve-allocation", advanceId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"rolloverAmount\":4000,\"approvedCashAmount\":2000}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("APPROVED"));
+    }
+
+    @Test
+    void approveAllocation_isNotAvailableToAnEmployee() throws Exception {
+        mockMvc.perform(post("/xms/employee/cash-advances/{advanceId}/approve-allocation", advanceId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isForbidden());
+        verifyNoInteractions(cashAdvanceService);
     }
 }

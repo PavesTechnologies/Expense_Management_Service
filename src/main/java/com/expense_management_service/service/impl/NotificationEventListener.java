@@ -51,6 +51,7 @@ public class NotificationEventListener {
     private static final Pattern COMMENT = Pattern.compile("comment=(.*)$");
 
     private final NotificationService notificationService;
+    private final CashAdvanceBalanceCalculator balanceCalculator;
     private final NotificationRepository notificationRepository;
     private final ExpenseReportRepository expenseReportRepository;
     private final ExpenseLineItemRepository expenseLineItemRepository;
@@ -173,7 +174,7 @@ public class NotificationEventListener {
                     String currency = advance.getCurrency() != null ? advance.getCurrency().getCurrencyCode() : "";
                     c.toRole(ROLE_FINANCE, NotificationCategory.ACTION_REQUIRED, "Choose what to do with the leftover on %s",
                             "%s spent less than the advance. %s %s is left to return: carry it forward or deduct it from salary.".formatted(
-                                    c.ownerName(), currency, advance.getOutstandingBalance().setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()),
+                                    c.ownerName(), currency, balanceCalculator.outstanding(advance).setScale(2, java.math.RoundingMode.HALF_UP).toPlainString()),
                             "Settlement pending", "Choose settlement",
                             "/expense-management/cash-advance/settlement/" + advance.getAdvanceId());
                 }

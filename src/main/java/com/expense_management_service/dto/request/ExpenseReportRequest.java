@@ -32,8 +32,20 @@ public record ExpenseReportRequest(
         /** Actual reporting period start. Optional. */
         LocalDate reportingPeriodStart,
         /** Actual reporting period end. Optional, but may not be in the future. */
-        LocalDate reportingPeriodEnd
+        LocalDate reportingPeriodEnd,
+        /** The internal project the trip is for. At least one of project or client is required before submission (Stage 1, S1-15). */
+        UUID projectId,
+        /** The RMS client the trip is for. At least one of project or client is required before submission (Stage 1, S1-15). */
+        UUID clientId
 ) {
+
+    /** Shape before the project and client reference were added: both are null. */
+    public ExpenseReportRequest(String title, String businessPurpose, UUID costCenterId, UUID currencyId, UUID cashAdvanceId,
+                                LocalDate tripStartDate, LocalDate tripEndDate, LocalDate reportingPeriodStart,
+                                LocalDate reportingPeriodEnd) {
+        this(title, businessPurpose, costCenterId, currencyId, cashAdvanceId, tripStartDate, tripEndDate,
+                reportingPeriodStart, reportingPeriodEnd, null, null);
+    }
 
     /** Report without a cash advance link or trip dates. */
     public ExpenseReportRequest(String title, String businessPurpose, UUID costCenterId, UUID currencyId) {

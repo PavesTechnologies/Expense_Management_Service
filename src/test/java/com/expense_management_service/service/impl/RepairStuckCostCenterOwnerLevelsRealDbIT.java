@@ -94,7 +94,7 @@ class RepairStuckCostCenterOwnerLevelsRealDbIT {
         ApprovalWorkflowServiceImpl service = new ApprovalWorkflowServiceImpl(
                 expenseReportRepository, approvalLevelInstanceRepository, approvalAssignmentRepository,
                 approvalLineItemReviewRepository, approvalSplitReviewRepository, policyViolationRepository,
-                new CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
+                new CashAdvanceBalanceLedger(org.mockito.Mockito.mock(com.expense_management_service.repository.AuditLogRepository.class), TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)),
                 mock(ApprovalFlowResolutionService.class), mock(ApproverSourceResolver.class),
                 mock(ChainCorrectnessService.class), mock(BudgetEncumbranceService.class),
                 mock(DelegationService.class), mock(PolicyEvaluationGateway.class),

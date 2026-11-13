@@ -48,6 +48,14 @@ public class CashAdvanceRecoveryController {
                 RecoveryCaseResponse.from(recoveryService.cancelNoticeCase(caseId, request.reason())));
     }
 
+    /** Finance confirms the salary deduction for a case awaiting review. This is the only step that contacts payroll. */
+    @PostMapping("/cases/{caseId}/send-to-payroll")
+    public ApiResponse<RecoveryCaseResponse> sendToPayroll(@PathVariable UUID caseId,
+                                                           @RequestBody RecoveryCaseActionRequest request) {
+        return ApiResponse.success("Salary deduction sent to payroll",
+                RecoveryCaseResponse.from(recoveryService.sendToPayroll(caseId, request.reason())));
+    }
+
     /** Runs the grace-period check now, for the same work the hourly schedule does. */
     @PostMapping("/escalate")
     public ApiResponse<Integer> escalateNow() {

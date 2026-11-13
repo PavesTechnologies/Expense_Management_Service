@@ -37,9 +37,11 @@ public class CashAdvancePayrollPosting {
     private final CashAdvanceBudgetMovements budgetMovements;
     private final CashAdvanceBalanceLedger balanceLedger;
     private final StorageService storageService;
+    private final CashAdvanceBalanceCalculator balanceCalculator;
 
-    public static BigDecimal currentBalance(CashAdvance advance) {
-        return advance.getOutstandingBalance() != null ? advance.getOutstandingBalance() : advance.getAmount();
+    /** The authoritative outstanding balance (from the records), never the cached column. */
+    public BigDecimal currentBalance(CashAdvance advance) {
+        return balanceCalculator.outstanding(advance);
     }
 
     public static int decimals(CashAdvance advance) {

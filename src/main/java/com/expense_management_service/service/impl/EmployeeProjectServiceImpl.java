@@ -63,8 +63,13 @@ public class EmployeeProjectServiceImpl implements EmployeeProjectService {
         }
         String projectName = detail.map(PmsProjectDetailResponse::name).orElse(pmsProject.name());
         cache.setProjectName(projectName != null ? projectName : cache.getProjectCode());
+        // Status decides whether the project appears in the picker. If the detail call failed, fall back to the status
+        // PMS already sent in the my-work summary, rather than leaving the project without a status and hiding it.
+        String status = detail.map(PmsProjectDetailResponse::status).orElse(pmsProject.status());
+        if (status != null) {
+            cache.setStatus(status);
+        }
         if (detail.isPresent()) {
-            cache.setStatus(detail.get().status());
             cache.setClientId(detail.get().clientId());
         }
         cache.setSyncedAt(LocalDateTime.now());

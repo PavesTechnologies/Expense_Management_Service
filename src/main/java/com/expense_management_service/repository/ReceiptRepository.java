@@ -16,4 +16,7 @@ public interface ReceiptRepository extends JpaRepository<Receipt, UUID> {
 
     /** Every receipt sharing this exact file hash, across every employee/report — advisory-only exact-file-reuse detection, see {@code ReceiptServiceImpl}. */
     List<Receipt> findByFileHash(String fileHash);
+
+    /** Late receipts waiting for Finance/AP review, oldest first. */
+    List<Receipt> findByAttachmentKindAndVerificationStatusOrderByUploadedAtAsc(String attachmentKind, String verificationStatus);
 }

@@ -64,7 +64,12 @@ public final class CashAdvanceExpenseWindow {
 
     /** Whole days left before the deadline (0 when already past or not started). */
     public static long daysLeft(CashAdvance advance, LocalDateTime now) {
-        LocalDateTime deadline = deadline(advance);
+        return daysLeft(advance, now, WINDOW_DAYS);
+    }
+
+    /** As {@link #daysLeft(CashAdvance, LocalDateTime)}, with the window length taken from configuration. */
+    public static long daysLeft(CashAdvance advance, LocalDateTime now, int windowDays) {
+        LocalDateTime deadline = deadline(advance, windowDays);
         if (deadline == null || now.isAfter(deadline)) {
             return 0;
         }
@@ -73,15 +78,25 @@ public final class CashAdvanceExpenseWindow {
 
     /** The date the reminder should go out: 7 days before the deadline. */
     public static LocalDateTime reminderDue(CashAdvance advance) {
-        LocalDateTime deadline = deadline(advance);
+        return reminderDue(advance, WINDOW_DAYS);
+    }
+
+    /** As {@link #reminderDue(CashAdvance)}, with the window length taken from configuration. */
+    public static LocalDateTime reminderDue(CashAdvance advance, int windowDays) {
+        LocalDateTime deadline = deadline(advance, windowDays);
         return deadline == null ? null : deadline.minusDays(REMINDER_DAYS_BEFORE_DEADLINE);
     }
 
     /** Short message for a disabled button, explaining why it is locked. */
     public static String lockedMessage(CashAdvance advance) {
-        LocalDateTime deadline = deadline(advance);
+        return lockedMessage(advance, WINDOW_DAYS);
+    }
+
+    /** As {@link #lockedMessage(CashAdvance)}, with the window length taken from configuration. */
+    public static String lockedMessage(CashAdvance advance, int windowDays) {
+        LocalDateTime deadline = deadline(advance, windowDays);
         LocalDate date = deadline == null ? null : deadline.toLocalDate();
-        return "The " + WINDOW_DAYS + "-day expense window for this advance ended"
+        return "The " + windowDays + "-day expense window for this advance ended"
                 + (date == null ? "" : " on " + date)
                 + ". Ask Finance to extend or reopen it.";
     }

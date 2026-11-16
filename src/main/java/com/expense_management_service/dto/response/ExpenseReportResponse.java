@@ -50,7 +50,11 @@ public record ExpenseReportResponse(
         /** Approved with nothing to pay the employee (e.g. fully covered by a cash advance) - never "paid". */
         boolean noPaymentDue,
         /** What AP recorded when confirming the actual payment; null until then. */
-        PaymentConfirmation paymentConfirmation
+        PaymentConfirmation paymentConfirmation,
+        /** The internal project the report is for (null when none is set). */
+        UUID projectId,
+        /** The RMS client the report is for (null when none is set). */
+        UUID clientId
 ) {
     public record PaymentConfirmation(
             LocalDateTime confirmedAt,
@@ -77,7 +81,7 @@ public record ExpenseReportResponse(
                 reportStatus, paymentRoutingStatus, invoiceHandoffStatus, currencyId, currencyCode, baseCurrencyCode,
                 totalAmount, reimbursableAmount, submittedAt, approvedAt, closedAt, createdAt, updatedAt,
                 lineItemCount, editable, deletable, policyWarningCount, policyUnjustifiedCount, cashAdvanceId,
-                null, null, null, 0, null, null, false, null);
+                null, null, null, 0, null, null, false, null, null, null);
     }
 
 
@@ -95,6 +99,6 @@ public record ExpenseReportResponse(
                 reportStatus, paymentRoutingStatus, invoiceHandoffStatus, currencyId, currencyCode, baseCurrencyCode,
                 totalAmount, reimbursableAmount, submittedAt, approvedAt, closedAt, createdAt, updatedAt,
                 lineItemCount, editable, deletable, policyWarningCount, policyUnjustifiedCount, null, null, null, null, 0,
-                null, null, false, null);
+                null, null, false, null, null, null);
     }
 }

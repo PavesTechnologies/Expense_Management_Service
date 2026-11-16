@@ -79,6 +79,62 @@ class InterimPolicyEvaluationGatewayImplTest {
         assertThat(decision.blockedReason()).contains("project or client");
     }
 
+    private ExpenseReport withProject(UUID reportId) {
+        return ExpenseReport.builder().reportId(reportId).projectId(UUID.randomUUID())
+                .expenseLineItems(List.of(paidLine())).build();
+    }
+
+    private ExpenseReport withNeitherProjectNorClient(UUID reportId) {
+        return ExpenseReport.builder().reportId(reportId).expenseLineItems(List.of(paidLine())).build();
+    }
+
+    private void requireProjectOrClient(boolean required) {
+        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "requireProjectOrClient", required);
+    }
+
+    @Test
+    void requirementOn_projectSelected_allowsSubmission() {
+        requireProjectOrClient(true);
+        stubNoViolations();
+
+        assertThat(gateway.evaluate(withProject(UUID.randomUUID())).allowed()).isTrue();
+    }
+
+    @Test
+    void requirementOn_clientSelected_allowsSubmission() {
+        requireProjectOrClient(true);
+        stubNoViolations();
+
+        assertThat(gateway.evaluate(report(UUID.randomUUID(), paidLine())).allowed()).isTrue();
+    }
+
+    @Test
+    void requirementOff_neitherSelected_allowsSubmission() {
+        requireProjectOrClient(false);
+        stubNoViolations();
+
+        PolicyDecision decision = gateway.evaluate(withNeitherProjectNorClient(UUID.randomUUID()));
+
+        assertThat(decision.allowed()).isTrue();
+        assertThat(decision.blockedReason()).isNull();
+    }
+
+    @Test
+    void requirementOff_projectOnly_allowsSubmission() {
+        requireProjectOrClient(false);
+        stubNoViolations();
+
+        assertThat(gateway.evaluate(withProject(UUID.randomUUID())).allowed()).isTrue();
+    }
+
+    @Test
+    void requirementOff_clientOnly_allowsSubmission() {
+        requireProjectOrClient(false);
+        stubNoViolations();
+
+        assertThat(gateway.evaluate(report(UUID.randomUUID(), paidLine())).allowed()).isTrue();
+    }
+
     @Test
     void evaluate_blocksSubmission_whenALineHasNoPaymentMethod() {
         UUID reportId = UUID.randomUUID();

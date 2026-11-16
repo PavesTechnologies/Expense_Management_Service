@@ -174,4 +174,22 @@ class EmployeeProjectServiceImplTest {
         assertThat(result.clientId()).isEqualTo(cachedClientId);
     }
 
+    @Test
+    void getAssignedProjects_usesTheSummaryStatus_whenTheProjectDetailCallFails() {
+        // Regression: a failed detail call left the status empty, so the picker (which shows only ACTIVE projects) hid
+        // a project that PMS had just listed as active.
+        when(currentUserService.getUmsUserId()).thenReturn(9008L);
+        when(pmsClient.getMyActiveProjects(9008L)).thenReturn(List.of(
+                new PmsProjectSummaryResponse(33L, "AP-333", "Beta Rollout", null, "ACTIVE")));
+        when(pmsClient.getProject(33L)).thenThrow(HttpServerErrorException.create(
+                org.springframework.http.HttpStatus.BAD_GATEWAY, "Bad Gateway", null, null, null));
+        when(projectCacheRepository.findByPmsProjectId(33L)).thenReturn(Optional.empty());
+        when(projectCacheRepository.save(any(ProjectCache.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        AssignedProjectResponse result = service.getAssignedProjects().get(0);
+
+        assertThat(result.status()).isEqualTo("ACTIVE");
+        assertThat(result.projectCode()).isEqualTo("AP-333");
+    }
+
 }

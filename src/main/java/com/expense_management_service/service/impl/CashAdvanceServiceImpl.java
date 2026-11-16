@@ -78,6 +78,12 @@ import org.springframework.beans.factory.annotation.Autowired;
 @Transactional
 public class CashAdvanceServiceImpl implements CashAdvanceService {
 
+    /**
+     * Length of the expense window in days. Bound to the same property as the nightly overdue sweep, so both use one value.
+     */
+    @org.springframework.beans.factory.annotation.Value("${expense.submission.deadline-days:30}")
+    private int overdueWindowDays = 30;
+
     /** The business clock: real time in the business zone, or the development override. Tests replace it. */
     @Autowired
     private Clock clock = Clock.systemDefaultZone();
@@ -1573,7 +1579,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
             // Overdue means: an open balance after the 30-day expense window (see CashAdvanceExpenseWindow), not the
             // user-entered settlement date. The ledger derives OVERDUE from the same rule, so the status is durable.
-            if (!CashAdvanceExpenseWindow.isLocked(advance, now)
+            if (!CashAdvanceExpenseWindow.isLocked(advance, now, overdueWindowDays)
                     || balanceCalculator.outstanding(advance).compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
@@ -1600,7 +1606,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             approvalEventPublisher.publish(
                     "CASH_ADVANCE_OVERDUE",
                     advance.getAdvanceId(),
-                    "windowEnded=" + CashAdvanceExpenseWindow.deadline(advance)
+                    "windowEnded=" + CashAdvanceExpenseWindow.deadline(advance, overdueWindowDays)
             );
         }
     }

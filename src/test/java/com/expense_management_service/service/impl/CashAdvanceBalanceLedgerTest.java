@@ -249,4 +249,33 @@ class CashAdvanceBalanceLedgerTest {
         assertEquals(action, row.getAction());
         assertEquals(actor, row.getPerformedBy());
     }
+
+    private CashAdvance openAdvanceDisbursedDaysAgo(int days, String balance) {
+        return CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId("EMP001")
+                .amount(new BigDecimal("1000.00")).outstandingBalance(new BigDecimal(balance))
+                .disbursedAt(java.time.LocalDateTime.now().minusDays(days)).status("DISBURSED")
+                .currency(Currency.builder().currencyCode("INR").decimalPlaces(2).build())
+                .build();
+    }
+
+    @Test
+    void overdue_isDerivedFromTheExpenseWindow_andStaysOverdueOnEveryRecompute() {
+        CashAdvance advance = openAdvanceDisbursedDaysAgo(40, "1000.00");
+
+        ledger.applyBalance(advance, new BigDecimal("600.00"), "PARTIAL_REPAYMENT", "EMP001", "partial repayment");
+        assertEquals("OVERDUE", advance.getStatus());
+
+        ledger.refreshStatus(advance, "SYSTEM", "nightly recheck");
+        assertEquals("OVERDUE", advance.getStatus());
+    }
+
+    @Test
+    void overdue_usesTheConfiguredWindowLength() {
+        CashAdvance advance = openAdvanceDisbursedDaysAgo(40, "500.00");
+        assertEquals("OVERDUE", ledger.statusFor(advance, new BigDecimal("500.00"), 2));
+
+        org.springframework.test.util.ReflectionTestUtils.setField(ledger, "overdueWindowDays", 45);
+
+        assertEquals("SETTLEMENT_PENDING", ledger.statusFor(advance, new BigDecimal("500.00"), 2));
+    }
 }

@@ -80,7 +80,8 @@ public class ExpenseLineItemMapper {
                 entity.getUpdatedAt(),
                 policyWarnings,
                 toTaxResponse(entity),
-                entity.getAllocationReason()
+                entity.getAllocationReason(),
+                entity.getEmployeePaymentMethod()
         );
     }
 

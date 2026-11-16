@@ -59,6 +59,9 @@ class ApprovalWorkflowControllerTest {
     private com.expense_management_service.service.PolicyViolationService policyViolationService;
 
     @MockitoBean
+    private com.expense_management_service.service.ApprovalRecordsService approvalRecordsService;
+
+    @MockitoBean
     private CurrentUserService currentUserService;
 
     @MockitoBean

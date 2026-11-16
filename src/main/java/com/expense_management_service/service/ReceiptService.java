@@ -1,9 +1,11 @@
 package com.expense_management_service.service;
 
+import com.expense_management_service.dto.response.LateReceiptResponse;
 import com.expense_management_service.dto.response.ReceiptResponse;
 import com.expense_management_service.dto.response.ReceiptUrlResponse;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.time.LocalDate;
 import java.util.List;
 import java.util.UUID;
 
@@ -43,4 +45,22 @@ public interface ReceiptService {
     ReceiptUrlResponse getDownloadUrl(UUID receiptId);
 
     void delete(UUID receiptId);
+
+    /**
+     * Attaches a receipt found after the report was approved, reimbursed or closed. It is linked to the original expense line
+     * and never changes the line's amount, status or payment. Requires the actual receipt date and a reason.
+     */
+    LateReceiptResponse attachLate(UUID lineItemId, MultipartFile file, LocalDate actualReceiptDate, String reason);
+
+    /** Late receipts on one report, visible to the owner, its approvers and Finance/AP. */
+    List<LateReceiptResponse> getLateForReport(UUID reportId);
+
+    /** Late receipts waiting for Finance/AP review, oldest first. */
+    List<LateReceiptResponse> getPendingLateReceipts();
+
+    /** Finance/AP verifies a late receipt. A note is required when the OCR total differs from the claimed amount. */
+    LateReceiptResponse verifyLate(UUID receiptId, String note);
+
+    /** Finance/AP rejects a late receipt. The receipt is kept as history; a note is required. */
+    LateReceiptResponse rejectLate(UUID receiptId, String note);
 }

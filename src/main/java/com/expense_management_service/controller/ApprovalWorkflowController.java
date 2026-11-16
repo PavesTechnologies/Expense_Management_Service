@@ -8,6 +8,11 @@ import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.dto.request.ApproverExceptionRequest;
 import com.expense_management_service.dto.request.LineItemReviewRequest;
 import com.expense_management_service.dto.request.RejectReportRequest;
+import com.expense_management_service.dto.response.ApprovalRecordResponse;
+import com.expense_management_service.service.ApprovalRecordsService;
+import java.util.Set;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.GrantedAuthority;
 import com.expense_management_service.dto.response.ApprovalQueueItemResponse;
 import com.expense_management_service.dto.response.ApprovalStatusResponse;
 import com.expense_management_service.dto.response.ExpenseReportResponse;
@@ -37,6 +42,7 @@ public class ApprovalWorkflowController {
     private final ApprovalWorkflowService approvalWorkflowService;
     private final PolicyViolationService policyViolationService;
     private final CurrentUserService currentUserService;
+    private final ApprovalRecordsService approvalRecordsService;
 
     @PostMapping("/{reportId}/submit")
     public ApiResponse<ExpenseReportResponse> submit(@PathVariable UUID reportId) {
@@ -119,5 +125,24 @@ public class ApprovalWorkflowController {
             @RequestParam(defaultValue = "0") int page, @RequestParam(defaultValue = "20") int size) {
         return ApiResponse.success(
                 approvalWorkflowService.getMyHistory(currentUserService.getEmployeeId(), outcome, PageRequest.of(page, size)));
+    }
+
+    /**
+     * The approver's expense reports and cash advances as one read-only list, newest first, paged on the server.
+     * Cash advances are included only for the roles the cash approvals list shows them to.
+     */
+    @GetMapping("/my-records")
+    public ApiResponse<PageResponse<ApprovalRecordResponse>> getMyRecords(
+            @RequestParam(defaultValue = "all") String tab,
+            @RequestParam(required = false) String search,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            Authentication authentication) {
+        Set<String> cashRoles = Set.of("ROLE_ADMIN", "ROLE_MANAGER", "ROLE_FINANCE", "ROLE_FINANCE_EXECUTIVE", "ROLE_GENERAL");
+        boolean includeCash = authentication.getAuthorities().stream()
+                .map(GrantedAuthority::getAuthority)
+                .anyMatch(cashRoles::contains);
+        return ApiResponse.success(approvalRecordsService.page(
+                currentUserService.getEmployeeId(), includeCash, tab, search, page, size));
     }
 }

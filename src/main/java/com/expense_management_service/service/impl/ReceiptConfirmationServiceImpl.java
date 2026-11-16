@@ -64,6 +64,9 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
     public ReceiptConfirmResponse confirm(UUID receiptId, ReceiptConfirmRequest request) {
         Receipt receipt = findReceipt(receiptId);
         assertOwnerOrAdmin(receipt.getEmployeeId());
+        if (Receipt.ATTACHMENT_LATE.equals(receipt.getAttachmentKind())) {
+            throw new BusinessRuleViolationException("A late receipt is already attached to its expense and can't be confirmed as a new one.");
+        }
 
         Optional<ReceiptOcr> latestOcr = receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receiptId)
                 .filter(ocr -> ocr.getProcessingStatus() == OcrStatus.OCR_COMPLETED);
@@ -194,7 +197,9 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
                 .orElseThrow(() -> new ResourceNotFoundException("ExpenseLineItem not found with id: " + lineItemId));
         List<Receipt> existingReceipts = receiptRepository.findByLineItem_LineItemId(lineItemId);
         for (Receipt existing : existingReceipts) {
-            if (!existing.getReceiptId().equals(receipt.getReceiptId())) {
+            // A late receipt stays attached to its expense: confirming another receipt onto the line must not unlink it.
+            if (!existing.getReceiptId().equals(receipt.getReceiptId())
+                    && !Receipt.ATTACHMENT_LATE.equals(existing.getAttachmentKind())) {
                 existing.setLineItem(null);
                 receiptRepository.save(existing);
             }

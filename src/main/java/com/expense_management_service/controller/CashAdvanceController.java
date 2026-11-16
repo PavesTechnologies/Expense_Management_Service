@@ -102,7 +102,8 @@ public class CashAdvanceController {
 
     @Operation(summary = "Get cash advance details by advance ID")
     @GetMapping("/{advanceId}")
-    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER')")
+    // Reporting Managers may open an advance only when it is assigned to them (see CashAdvanceReviewAccess).
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER') or (hasRole('REPORTING_MANAGER') and @cashAdvanceReviewAccess.isAssignedApprover(#advanceId))")
     public ApiResponse<CashAdvanceResponse> getById(@PathVariable UUID advanceId) {
         return ApiResponse.success(cashAdvanceService.getById(advanceId));
     }
@@ -143,7 +144,8 @@ public class CashAdvanceController {
 
     @Operation(summary = "Manager decision on a cash advance: full, reduced, set-off recommendation, defer or reject (Authorized Manager/Delegate/Admin)")
     @PostMapping("/{advanceId}/manager-decision")
-    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','FINANCE_EXECUTIVE','GENERAL') or hasAuthority('EXPENSE_APPROVE')")
+    // Reporting Managers may decide only on advances assigned to them (see CashAdvanceReviewAccess).
+    @PreAuthorize("hasAnyRole('ADMIN','MANAGER','FINANCE','FINANCE_EXECUTIVE','GENERAL') or hasAuthority('EXPENSE_APPROVE') or (hasRole('REPORTING_MANAGER') and @cashAdvanceReviewAccess.isAssignedApprover(#advanceId))")
     public ApiResponse<CashAdvanceResponse> managerDecision(
             @PathVariable UUID advanceId,
             @RequestBody com.expense_management_service.dto.request.CashAdvanceManagerDecisionRequest request) {

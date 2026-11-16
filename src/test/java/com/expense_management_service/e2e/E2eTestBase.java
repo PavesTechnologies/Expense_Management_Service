@@ -296,9 +296,10 @@ abstract class E2eTestBase {
         LocalDate today = LocalDate.now();
         String body = postJson("/xms/employee/expense-reports", employee, """
                 {"title":"Client visit %s","businessPurpose":"Client visit to review the rollout plan",
-                 "costCenterId":"%s","currencyId":"%s",%s
+                 "costCenterId":"%s","currencyId":"%s","clientId":"%s",%s
                  "tripStartDate":"%s","tripEndDate":"%s","reportingPeriodStart":"%s","reportingPeriodEnd":"%s"}
                 """.formatted(suffix(), costCenter.getCostCenterId(), inr.getCurrencyId(),
+                java.util.UUID.randomUUID(),
                 cashAdvanceId != null ? "\"cashAdvanceId\":\"" + cashAdvanceId + "\"," : "",
                 today, today, today.minusDays(5), today.minusDays(1)), 201);
         return read(body, "$.data.reportId");
@@ -313,7 +314,7 @@ abstract class E2eTestBase {
     protected String lineJson(ExpenseCategory category, String amount, String description, String extraJson) {
         return """
                 {"categoryId":"%s","expenseDate":"%s","merchantName":"City Cabs","description":"%s",
-                 "amount":%s,"currencyId":"%s","taxAmount":0%s}
+                 "amount":%s,"currencyId":"%s","taxAmount":0,"employeePaymentMethod":"CASH"%s}
                 """.formatted(category.getCategoryId(), LocalDate.now(), description, amount,
                 inr.getCurrencyId(), extraJson == null ? "" : "," + extraJson);
     }

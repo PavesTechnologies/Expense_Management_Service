@@ -3,6 +3,7 @@ package com.expense_management_service.entity;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -78,6 +79,39 @@ public class Receipt {
 
     @Column(name = "file_hash", length = 255)
     private String fileHash;
+
+    /** {@link #ATTACHMENT_ORIGINAL} for a receipt uploaded with its claim; {@link #ATTACHMENT_LATE} for one attached after approval. */
+    public static final String ATTACHMENT_ORIGINAL = "ORIGINAL";
+    public static final String ATTACHMENT_LATE = "LATE";
+
+    public static final String VERIFICATION_PENDING = "PENDING_REVIEW";
+    public static final String VERIFICATION_VERIFIED = "VERIFIED";
+    public static final String VERIFICATION_REJECTED = "REJECTED";
+
+    @Column(name = "attachment_kind", length = 20, nullable = false)
+    @Builder.Default
+    private String attachmentKind = ATTACHMENT_ORIGINAL;
+
+    /** The date printed on the late receipt, entered by the employee. Separate from the line's expense date and from {@link #uploadedAt}. */
+    @Column(name = "actual_receipt_date")
+    private LocalDate actualReceiptDate;
+
+    /** Why the receipt was submitted after the report was approved. Required for a late receipt. */
+    @Column(name = "late_reason", length = 500)
+    private String lateReason;
+
+    /** Finance/AP review of a late receipt: PENDING_REVIEW, VERIFIED or REJECTED. Null for an original receipt. */
+    @Column(name = "verification_status", length = 20)
+    private String verificationStatus;
+
+    @Column(name = "verified_by", length = 255)
+    private String verifiedBy;
+
+    @Column(name = "verified_at")
+    private LocalDateTime verifiedAt;
+
+    @Column(name = "verification_note", length = 500)
+    private String verificationNote;
 
     @OneToMany(mappedBy = "receipt", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default

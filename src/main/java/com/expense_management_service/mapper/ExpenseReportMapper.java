@@ -94,7 +94,9 @@ public class ExpenseReportMapper {
                 entity.getReportingPeriodStart(),
                 entity.getReportingPeriodEnd(),
                 Boolean.TRUE.equals(entity.getNoPaymentDue()),
-                toPaymentConfirmation(entity)
+                toPaymentConfirmation(entity),
+                entity.getProjectId(),
+                entity.getClientId()
         );
     }
 

@@ -55,6 +55,7 @@ import org.springframework.data.domain.Pageable;
 import java.time.LocalDateTime;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -148,6 +149,33 @@ class CashAdvanceServiceImplTest {
                 .currencyName("US Dollar")
                 .symbol("$")
                 .build();
+    }
+
+    @Test
+    void create_isNotRefusedBecauseAnEarlierAdvanceIsOverdue_itIsRoutedToFinanceInstead() {
+        CashAdvanceRequest request = new CashAdvanceRequest(
+                new BigDecimal("500.00"), currencyId, null, new BigDecimal("500.00"), "Travel expenses",
+                null, null, LocalDate.now().plusDays(10), LocalDate.now().plusDays(10), null, null,
+                com.expense_management_service.enums.CashAdvanceRequestType.COMPLETE_NEW, null,
+                "Client needs a separate trip while the earlier advance is being settled");
+        EmployeeCache employeeCache = EmployeeCache.builder().employeeId("EMP001").managerEmployeeId("MGR001").build();
+        CashAdvance overdue = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId("EMP001")
+                .amount(new BigDecimal("3000")).status("OVERDUE")
+                .settlementDueDate(LocalDate.now().minusDays(20)).build();
+
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(testCurrency));
+        when(currentUserService.getEmployeeId()).thenReturn("EMP001");
+        when(employeeCacheRepository.findByEmployeeId("EMP001")).thenReturn(Optional.of(employeeCache));
+        when(cashAdvanceRepository.findByEmployeeIdAndStatusIn(eq("EMP001"), anyList())).thenReturn(List.of(overdue));
+        when(balanceCalculator.outstanding(overdue)).thenReturn(new BigDecimal("3000"));
+        when(cashAdvanceRepository.save(any(CashAdvance.class))).thenAnswer(invocation -> {
+            CashAdvance saved = invocation.getArgument(0);
+            saved.setAdvanceId(advanceId);
+            return saved;
+        });
+
+        CashAdvanceResponse response = assertDoesNotThrow(() -> cashAdvanceService.create(request));
+        assertEquals("DRAFT", response.status());
     }
 
     @Test
@@ -292,6 +320,22 @@ class CashAdvanceServiceImplTest {
         when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
 
         assertThrows(BusinessRuleViolationException.class, () -> cashAdvanceService.approve(advanceId, "MGR001"));
+    }
+
+    @Test
+    void disburse_isRefused_whileACarryForwardProposalIntoTheAdvanceIsStillPending() {
+        CashAdvance advance = approvedAdvance();
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(advance));
+        doThrow(new BusinessRuleViolationException("A carry-forward into this advance is waiting for approval"))
+                .when(carryForwardService).assertNoPendingProposalInto(advanceId);
+
+        assertThrows(BusinessRuleViolationException.class,
+                () -> cashAdvanceService.disburse(advanceId, "FIN001", bankTransfer()));
+
+        verify(carryForwardService).assertNoPendingProposalInto(advanceId);
+        assertEquals("APPROVED", advance.getStatus());
+        assertNull(advance.getDisbursementMode());
+        verify(cashAdvanceRepository, never()).save(any(CashAdvance.class));
     }
 
     @Test
@@ -741,6 +785,26 @@ class CashAdvanceServiceImplTest {
         assertEquals("DISBURSED", inWindow.getStatus());
         verify(cashAdvanceBalanceLedger, never()).refreshStatus(any(), anyString(), anyString());
         verify(approvalEventPublisher, never()).publish(anyString(), any(), anyString());
+    }
+
+    @Test
+    void processOverdueAdvances_usesTheConfiguredExpenseWindow_notAFixedThirtyDays() {
+        org.springframework.test.util.ReflectionTestUtils.setField(cashAdvanceService, "overdueWindowDays", 45);
+        CashAdvance fortyDaysOut = CashAdvance.builder()
+                .advanceId(advanceId)
+                .employeeId("EMP001")
+                .amount(new BigDecimal("500.00"))
+                .outstandingBalance(new BigDecimal("500.00"))
+                .disbursedAt(LocalDateTime.now().minusDays(40))
+                .status("DISBURSED")
+                .build();
+
+        when(cashAdvanceRepository.findByStatusIn(anyList())).thenReturn(List.of(fortyDaysOut));
+
+        cashAdvanceService.processOverdueAdvances();
+
+        assertEquals("DISBURSED", fortyDaysOut.getStatus());
+        verify(cashAdvanceBalanceLedger, never()).refreshStatus(any(), anyString(), anyString());
     }
 
     @Test

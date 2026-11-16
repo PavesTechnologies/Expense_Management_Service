@@ -43,7 +43,9 @@ public record ExpenseLineItemResponse(
         /** The tax snapshot (code, components, source, status); null only for hand-built test fixtures. */
         LineTaxResponse tax,
         /** Why the expense is charged outside the employee's home department; null when not given. */
-        String allocationReason
+        String allocationReason,
+        /** How the employee paid for this line (CASH, PERSONAL_CARD, UPI, COMPANY_CARD, OTHER); null when not given. */
+        com.expense_management_service.enums.EmployeePaymentMethod employeePaymentMethod
 ) {
     public ExpenseLineItemResponse(UUID lineItemId, UUID reportId, String reportNumber, String reportStatus,
                                    UUID categoryId, String categoryName, boolean categoryActive, boolean receiptRequired,
@@ -59,6 +61,6 @@ public record ExpenseLineItemResponse(
                 categoryMaxLimit, expenseDate, merchantName, description, amount, currencyId, currencyCode, exchangeRate,
                 baseAmount, baseCurrencyCode, taxAmount, netAmount, costCenterId, costCenterName, projectId, projectName,
                 resolvedClientId, resolvedClientName, clientBillable, lineStatus, createdAt, updatedAt, policyWarnings,
-                tax, null);
+                tax, null, null);
     }
 }

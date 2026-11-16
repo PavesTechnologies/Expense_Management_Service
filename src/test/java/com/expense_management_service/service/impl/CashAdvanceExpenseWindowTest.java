@@ -88,6 +88,17 @@ class CashAdvanceExpenseWindowTest {
     }
 
     @Test
+    void reminderDueLockedMessageAndDaysLeft_followTheConfiguredWindow() {
+        CashAdvance advance = disbursed();
+
+        // Disbursed 2026-10-01 10:00 with a 45-day window: deadline 2026-11-15 10:00, reminder 2026-11-08 10:00.
+        assertEquals(LocalDateTime.of(2026, 11, 8, 10, 0), CashAdvanceExpenseWindow.reminderDue(advance, 45));
+        assertTrue(CashAdvanceExpenseWindow.lockedMessage(advance, 45).contains("45-day"));
+        assertTrue(CashAdvanceExpenseWindow.lockedMessage(advance, 45).contains("2026-11-15"));
+        assertEquals(2, CashAdvanceExpenseWindow.daysLeft(advance, LocalDateTime.of(2026, 11, 13, 10, 0), 45));
+    }
+
+    @Test
     void lockedMessageStatesTheWindowAndDate() {
         String message = CashAdvanceExpenseWindow.lockedMessage(disbursed());
 

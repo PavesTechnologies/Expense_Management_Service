@@ -15,6 +15,7 @@ import com.expense_management_service.service.ReceiptDuplicateService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -53,6 +54,14 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
     private final CrossDepartmentAllocationService crossDepartmentAllocationService;
     private final ExpenseLineItemRepository expenseLineItemRepository;
 
+    /**
+     * S1-15: a trip report must name a project or a client before it is submitted. On by default, so production enforces
+     * it. Environments that do not need it (for example local development) can switch it off with
+     * {@code expense.trip.require-project-or-client=false}.
+     */
+    @Value("${expense.trip.require-project-or-client:true}")
+    private boolean requireProjectOrClient = true;
+
     @Override
     public PolicyDecision evaluate(ExpenseReport report) {
         List<PolicyViolation> current = refreshViolations(report);
@@ -65,8 +74,9 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
             return new PolicyDecision(false, display, duplicateReceiptReason(duplicates));
         }
 
-        // Stage 1 (S1-15): a trip report must say which project or client it is for.
-        if (report.getProjectId() == null && report.getClientId() == null) {
+        // Stage 1 (S1-15): a trip report must say which project or client it is for, unless this environment has turned the
+        // requirement off through configuration.
+        if (requireProjectOrClient && report.getProjectId() == null && report.getClientId() == null) {
             return new PolicyDecision(false, display, "Enter the project or client for this trip before submitting.");
         }
 

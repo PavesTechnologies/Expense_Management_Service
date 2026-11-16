@@ -27,6 +27,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
@@ -103,7 +104,6 @@ class CashAdvanceCompensationTest {
         });
         when(balanceCalculator.outstanding(any(CashAdvance.class)))
                 .thenAnswer(inv -> ((CashAdvance) inv.getArgument(0)).getOutstandingBalance());
-        when(balanceLedger.applyBalance(any(), any(), any(), any(), any())).thenReturn(null);
     }
 
     @AfterEach
@@ -121,7 +121,7 @@ class CashAdvanceCompensationTest {
         var response = service.proposeCompensation(original.getCarryForwardId(), "Rollover was entered against the wrong advance");
 
         assertEquals(CashAdvanceCarryForward.PROPOSED, response.status());
-        assertEquals(original.getCarryForwardId(), response.reversesCarryForwardId());
+        assertEquals(original.getCarryForwardId(), rows.get(response.carryForwardId()).getReversesCarryForwardId());
         assertEquals(CashAdvanceCarryForward.APPLIED, original.getStatus(), "the original is not changed by a proposal");
     }
 
@@ -136,7 +136,7 @@ class CashAdvanceCompensationTest {
     void propose_needsAReason() {
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
         when(currentUserService.getEmployeeId()).thenReturn(EXEC_B);
-        assertThrows(BusinessRuleViolationException.class,
+        assertThrows(IllegalArgumentException.class,
                 () -> service.proposeCompensation(original.getCarryForwardId(), "  "));
     }
 
@@ -165,7 +165,7 @@ class CashAdvanceCompensationTest {
         when(carryForwardRepository.findByReversesCarryForwardIdAndStatusIn(eq(original.getCarryForwardId()), anyCollection()))
                 .thenReturn(List.of(CashAdvanceCarryForward.builder().status(CashAdvanceCarryForward.PROPOSED).build()));
         BusinessRuleViolationException ex = assertThrows(BusinessRuleViolationException.class,
-                () -> service.proposeCompensation(original.getCarryForwardId(), "Again"));
+                () -> service.proposeCompensation(original.getCarryForwardId(), "Proposing again for this rollover"));
         assertTrue(ex.getMessage().contains("already pending"), ex.getMessage());
     }
 
@@ -174,7 +174,7 @@ class CashAdvanceCompensationTest {
     private CashAdvanceCarryForward proposeAs(String proposer) {
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
         when(currentUserService.getEmployeeId()).thenReturn(proposer);
-        return rows.get(service.proposeCompensation(original.getCarryForwardId(), "Wrong advance").id());
+        return rows.get(service.proposeCompensation(original.getCarryForwardId(), "Wrong advance").carryForwardId());
     }
 
     @Test
@@ -188,8 +188,8 @@ class CashAdvanceCompensationTest {
         assertEquals(CashAdvanceCarryForward.APPLIED, response.status());
         assertEquals(CashAdvanceCarryForward.REVERSED, original.getStatus(), "the original rollover is kept, marked reversed");
         assertEquals(0, BigDecimal.ZERO.compareTo(source.getCarriedOutAmount()), "the source owes its balance again");
-        assertEquals(0, new BigDecimal("4000").compareTo(source.getOutstandingBalance().max(source.getOutstandingBalance())),
-                "the source's outstanding rose by the rolled amount");
+        verify(balanceLedger).applyBalance(eq(source),
+                argThat(b -> b.compareTo(new BigDecimal("4000")) == 0), eq("CASH_ADVANCE_CARRIED_FORWARD_COMPENSATED_OUT"), any(), any());
         assertEquals(0, new BigDecimal("2000").compareTo(destination.getAmount()), "the destination's obligation fell by 4,000");
         assertEquals(0, BigDecimal.ZERO.compareTo(destination.getCarriedInAmount()));
         assertEquals(0, BigDecimal.ZERO.compareTo(destination.getAuthorizedRolloverAmount()));
@@ -213,7 +213,7 @@ class CashAdvanceCompensationTest {
         signInAs(RoleConstants.ROLE_FINANCE);
         when(currentUserService.getEmployeeId()).thenReturn(EXEC_A);
         assertThrows(AccessDeniedException.class,
-                () -> service.approveCompensation(compensation.getCarryForwardId(), "Approve"));
+                () -> service.approveCompensation(compensation.getCarryForwardId(), "Second approval of compensation"));
     }
 
     @Test
@@ -224,7 +224,7 @@ class CashAdvanceCompensationTest {
         when(currentUserService.getEmployeeId()).thenReturn(EXEC_A);
 
         BusinessRuleViolationException ex = assertThrows(BusinessRuleViolationException.class,
-                () -> service.approveCompensation(compensation.getCarryForwardId(), "Approve"));
+                () -> service.approveCompensation(compensation.getCarryForwardId(), "Second approval of compensation"));
         assertTrue(ex.getMessage().contains("cash already paid"), ex.getMessage());
         assertEquals(CashAdvanceCarryForward.APPLIED, original.getStatus());
         assertEquals(0, new BigDecimal("6000").compareTo(destination.getAmount()));
@@ -237,7 +237,7 @@ class CashAdvanceCompensationTest {
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
         when(currentUserService.getEmployeeId()).thenReturn(EXEC_A);
         assertThrows(BusinessRuleViolationException.class,
-                () -> service.approveCompensation(compensation.getCarryForwardId(), "Approve"));
+                () -> service.approveCompensation(compensation.getCarryForwardId(), "Second approval of compensation"));
     }
 
     @Test
@@ -245,8 +245,8 @@ class CashAdvanceCompensationTest {
         CashAdvanceCarryForward compensation = proposeAs(EXEC_B);
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
         when(currentUserService.getEmployeeId()).thenReturn(EXEC_A);
-        service.approveCompensation(compensation.getCarryForwardId(), "First");
-        assertDoesNotThrow(() -> service.approveCompensation(compensation.getCarryForwardId(), "Retry"));
-        verify(balanceLedger, times(2)).applyBalance(any(), any(), any(), any(), any());
+        service.approveCompensation(compensation.getCarryForwardId(), "First approval of compensation");
+        assertDoesNotThrow(() -> service.approveCompensation(compensation.getCarryForwardId(), "Retrying the same approval"));
+        verify(balanceLedger, times(1)).applyBalance(any(), any(), any(), any(), any());
     }
 }

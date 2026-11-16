@@ -1,34 +1,46 @@
 package com.expense_management_service.service.impl;
 
 import java.io.IOException;
+import java.math.BigDecimal;
 import java.time.Duration;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
+import com.expense_management_service.dto.response.LateReceiptResponse;
 import com.expense_management_service.dto.response.ReceiptResponse;
 import com.expense_management_service.dto.response.ReceiptUrlResponse;
+import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.entity.ExpenseLineItem;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.Receipt;
+import com.expense_management_service.entity.ReceiptOcr;
 import com.expense_management_service.mapper.ReceiptMapper;
+import com.expense_management_service.enums.DuplicateReceiptStatus;
 import com.expense_management_service.enums.OcrStatus;
+import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.event.ReceiptUploadedEvent;
 import com.expense_management_service.repository.ApprovalAssignmentRepository;
+import com.expense_management_service.repository.AuditLogRepository;
 import com.expense_management_service.repository.ExpenseLineItemRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
+import com.expense_management_service.repository.ReceiptOcrRepository;
 import com.expense_management_service.repository.ReceiptRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import com.expense_management_service.security.RoleConstants;
 import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.ReceiptDuplicateService;
+import com.expense_management_service.service.ReceiptDuplicateService.DuplicateMatch;
 import com.expense_management_service.service.ReceiptService;
 import com.expense_management_service.storage.StorageException;
 import com.expense_management_service.storage.StorageService;
@@ -100,6 +112,16 @@ public class ReceiptServiceImpl implements ReceiptService {
     private final ApprovalAssignmentRepository approvalAssignmentRepository;
     private final DelegationService delegationService;
     private final ReceiptDuplicateService receiptDuplicateService;
+    private final ReceiptOcrRepository receiptOcrRepository;
+    private final AuditLogRepository auditLogRepository;
+
+    /** Post-approval states in which a receipt can still be attached to an expense without reopening its claim. */
+    private static final Set<ReportStatus> LATE_ATTACHABLE = EnumSet.of(ReportStatus.APPROVED, ReportStatus.REIMBURSED, ReportStatus.CLOSED);
+    /** Report states that are not a claim: a receipt filed there does not count as claimed. */
+    private static final Set<ReportStatus> NOT_CLAIMED = EnumSet.of(ReportStatus.DRAFT, ReportStatus.REJECTED, ReportStatus.CANCELLED);
+    private static final int MIN_REASON_LENGTH = 10;
+    private static final BigDecimal LATE_AMOUNT_TOLERANCE = new BigDecimal("0.01");
+    private static final Set<String> REVIEW_ROLES = Set.of(RoleConstants.FINANCE, RoleConstants.FINANCE_EXECUTIVE, RoleConstants.AP_EXECUTIVE);
 
     @Value("${receipt.max-file-size-bytes:10485760}")
     private long maxFileSizeBytes;
@@ -228,6 +250,244 @@ public class ReceiptServiceImpl implements ReceiptService {
         receiptRepository.delete(entity);
         receiptRepository.flush();
         log.info("Deleted receipt {}", receiptId);
+    }
+
+    @Override
+    public LateReceiptResponse attachLate(UUID lineItemId, MultipartFile file, LocalDate actualReceiptDate, String reason) {
+        ExpenseLineItem lineItem = findLineItem(lineItemId);
+        ExpenseReport report = lineItem.getReport();
+        assertOwnerOrAdmin(report);
+        if (!LATE_ATTACHABLE.contains(report.getReportStatus())) {
+            throw new BusinessRuleViolationException("A late receipt can be attached only after the report is approved, reimbursed or closed. "
+                    + "This report is " + report.getReportStatus() + ", so upload the receipt normally.");
+        }
+        if (actualReceiptDate == null) {
+            throw new IllegalArgumentException("Enter the date printed on the receipt.");
+        }
+        if (actualReceiptDate.isAfter(LocalDate.now())) {
+            throw new IllegalArgumentException("The receipt date cannot be in the future.");
+        }
+        String reasonText = requireReason(reason);
+        byte[] fileBytes = assertFileValid(file);
+        String fileHash = computeFileHash(fileBytes);
+        assertNotAlreadyClaimed(fileHash, lineItemId);
+
+        String originalFileName = extractBaseFileName(file.getOriginalFilename());
+        String storedFileName = UUID.randomUUID() + "-" + sanitizeForKey(originalFileName);
+        String objectKey = "receipts/" + report.getEmployeeId() + "/" + report.getReportId() + "/" + lineItemId + "/late/" + storedFileName;
+        storageService.upload(objectKey, file);
+
+        Receipt entity = Receipt.builder()
+                .report(report)
+                .lineItem(lineItem)
+                .employeeId(report.getEmployeeId())
+                .originalFileName(originalFileName)
+                .storedFileName(storedFileName)
+                .objectKey(objectKey)
+                .contentType(file.getContentType())
+                .fileSize((int) file.getSize())
+                .uploadedBy(currentUserService.getCurrentUser().employeeId())
+                .uploadedAt(LocalDateTime.now())
+                .ocrStatus(OcrStatus.UPLOADED.name())
+                .fileHash(fileHash)
+                .attachmentKind(Receipt.ATTACHMENT_LATE)
+                .actualReceiptDate(actualReceiptDate)
+                .lateReason(reasonText)
+                .verificationStatus(Receipt.VERIFICATION_PENDING)
+                .build();
+        try {
+            Receipt saved = receiptRepository.saveAndFlush(entity);
+            audit(saved, "LATE_RECEIPT_ATTACHED", "Expense " + lineItemId + " on report " + report.getReportNumber(), reasonText);
+            // Same event as a normal upload, so OCR runs automatically on the late receipt too.
+            applicationEventPublisher.publishEvent(new ReceiptUploadedEvent(saved.getReceiptId()));
+            return toLateResponse(saved);
+        } catch (RuntimeException ex) {
+            log.error("Late receipt metadata save failed after storage upload for report {} — deleting the orphaned file", report.getReportId(), ex);
+            safeDeleteFromStorage(objectKey);
+            throw ex;
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<LateReceiptResponse> getLateForReport(UUID reportId) {
+        ExpenseReport report = findReport(reportId);
+        assertViewable(report);
+        return receiptRepository.findByReport_ReportId(reportId).stream()
+                .filter(this::isLate)
+                .map(this::toLateResponse)
+                .toList();
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<LateReceiptResponse> getPendingLateReceipts() {
+        assertReviewer(null);
+        return receiptRepository.findByAttachmentKindAndVerificationStatusOrderByUploadedAtAsc(
+                        Receipt.ATTACHMENT_LATE, Receipt.VERIFICATION_PENDING).stream()
+                .map(this::toLateResponse)
+                .toList();
+    }
+
+    @Override
+    public LateReceiptResponse verifyLate(UUID receiptId, String note) {
+        Receipt receipt = findLateReceipt(receiptId);
+        assertReviewer(receipt);
+        assertPending(receipt);
+        String noteText = trimmedOrNull(note);
+
+        List<DuplicateMatch> blocking = receiptDuplicateService.findMatches(receipt).stream()
+                .filter(DuplicateMatch::blocking)
+                .toList();
+        if (!blocking.isEmpty()) {
+            throw new BusinessRuleViolationException(blocking.get(0).message() + " Reject this receipt instead.");
+        }
+
+        Optional<ReceiptOcr> ocr = receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receipt.getReceiptId())
+                .filter(o -> o.getProcessingStatus() == OcrStatus.OCR_COMPLETED);
+        if (noteText == null && ocr.isPresent() && totalDiffersFromClaim(ocr.get(), receipt.getLineItem())) {
+            throw new BusinessRuleViolationException("The receipt total is " + ocr.get().getAmount().toPlainString()
+                    + " but the claimed amount is " + receipt.getLineItem().getAmount().toPlainString()
+                    + ". Add a note explaining the difference to verify it.");
+        }
+
+        receipt.setVerificationStatus(Receipt.VERIFICATION_VERIFIED);
+        receipt.setVerifiedBy(currentUserService.getCurrentUser().employeeId());
+        receipt.setVerifiedAt(LocalDateTime.now());
+        receipt.setVerificationNote(noteText);
+        receiptRepository.save(receipt);
+        audit(receipt, "LATE_RECEIPT_VERIFIED", Receipt.VERIFICATION_VERIFIED, noteText);
+        return toLateResponse(receipt);
+    }
+
+    @Override
+    public LateReceiptResponse rejectLate(UUID receiptId, String note) {
+        Receipt receipt = findLateReceipt(receiptId);
+        assertReviewer(receipt);
+        assertPending(receipt);
+        String noteText = requireReason(note);
+
+        receipt.setVerificationStatus(Receipt.VERIFICATION_REJECTED);
+        receipt.setVerifiedBy(currentUserService.getCurrentUser().employeeId());
+        receipt.setVerifiedAt(LocalDateTime.now());
+        receipt.setVerificationNote(noteText);
+        receiptRepository.save(receipt);
+        audit(receipt, "LATE_RECEIPT_REJECTED", Receipt.VERIFICATION_REJECTED, noteText);
+        return toLateResponse(receipt);
+    }
+
+    /** A file already claimed on this line, or on another report that is still a claim, cannot be attached again. */
+    private void assertNotAlreadyClaimed(String fileHash, UUID lineItemId) {
+        for (Receipt other : receiptRepository.findByFileHash(fileHash)) {
+            ExpenseLineItem otherLine = other.getLineItem();
+            if (otherLine == null) {
+                continue;
+            }
+            if (otherLine.getLineItemId().equals(lineItemId)) {
+                throw new BusinessRuleViolationException("This receipt is already attached to this expense.");
+            }
+            if (!NOT_CLAIMED.contains(other.getReport().getReportStatus())) {
+                throw new BusinessRuleViolationException("This receipt has already been claimed on expense report "
+                        + other.getReport().getReportNumber() + ". The same receipt can't be claimed twice.");
+            }
+        }
+    }
+
+    private boolean totalDiffersFromClaim(ReceiptOcr ocr, ExpenseLineItem line) {
+        if (ocr.getAmount() == null || line.getAmount() == null) {
+            return false;
+        }
+        if (ocr.getCurrencyCode() != null && line.getCurrency() != null
+                && !ocr.getCurrencyCode().equalsIgnoreCase(line.getCurrency().getCurrencyCode())) {
+            return false;
+        }
+        return ocr.getAmount().subtract(line.getAmount()).abs().compareTo(LATE_AMOUNT_TOLERANCE) > 0;
+    }
+
+    /** Finance/AP only, and never the person who uploaded the receipt or whose expense it is. */
+    private void assertReviewer(Receipt receipt) {
+        CurrentUser caller = currentUserService.getCurrentUser();
+        boolean reviewer = caller.roles() != null && caller.roles().stream().anyMatch(REVIEW_ROLES::contains);
+        if (!reviewer) {
+            throw new AccessDeniedException("Only Finance or AP can review late receipts");
+        }
+        if (receipt != null && (caller.employeeId().equals(receipt.getUploadedBy())
+                || caller.employeeId().equals(receipt.getEmployeeId()))) {
+            throw new AccessDeniedException("You cannot review a receipt for your own expense");
+        }
+    }
+
+    private void assertPending(Receipt receipt) {
+        if (!Receipt.VERIFICATION_PENDING.equals(receipt.getVerificationStatus())) {
+            throw new BusinessRuleViolationException("This receipt has already been "
+                    + String.valueOf(receipt.getVerificationStatus()).toLowerCase(Locale.ROOT) + ".");
+        }
+    }
+
+    private Receipt findLateReceipt(UUID receiptId) {
+        Receipt receipt = findReceipt(receiptId);
+        if (!isLate(receipt)) {
+            throw new BusinessRuleViolationException("Only late receipts are reviewed here.");
+        }
+        return receipt;
+    }
+
+    private boolean isLate(Receipt receipt) {
+        return Receipt.ATTACHMENT_LATE.equals(receipt.getAttachmentKind());
+    }
+
+    private LateReceiptResponse toLateResponse(Receipt receipt) {
+        ExpenseLineItem line = receipt.getLineItem();
+        ExpenseReport report = receipt.getReport();
+        ReceiptDuplicateService.DuplicateSummary duplicate = receiptDuplicateService.summarize(receipt);
+        DuplicateReceiptStatus status = duplicate != null ? duplicate.status() : DuplicateReceiptStatus.NONE;
+        return new LateReceiptResponse(
+                receipt.getReceiptId(),
+                report.getReportId(),
+                report.getReportNumber(),
+                line != null ? line.getLineItemId() : null,
+                receipt.getEmployeeId(),
+                line != null ? line.getExpenseDate() : null,
+                line != null ? line.getAmount() : null,
+                receipt.getOriginalFileName(),
+                receipt.getUploadedBy(),
+                receipt.getUploadedAt(),
+                receipt.getActualReceiptDate(),
+                receipt.getLateReason(),
+                receipt.getOcrStatus(),
+                receipt.getVerificationStatus(),
+                receipt.getVerifiedBy(),
+                receipt.getVerifiedAt(),
+                receipt.getVerificationNote(),
+                status.name(),
+                duplicate != null ? duplicate.message() : null);
+    }
+
+    private void audit(Receipt receipt, String action, String newValue, String reason) {
+        auditLogRepository.save(AuditLog.builder()
+                .entityName("Receipt")
+                .entityId(receipt.getReceiptId())
+                .action(action)
+                .newValue(newValue)
+                .reason(reason)
+                .performedBy(currentUserService.getCurrentUser().employeeId())
+                .performedAt(LocalDateTime.now())
+                .build());
+    }
+
+    private static String requireReason(String value) {
+        String trimmed = trimmedOrNull(value);
+        if (trimmed == null || trimmed.length() < MIN_REASON_LENGTH) {
+            throw new IllegalArgumentException("Give a reason of at least " + MIN_REASON_LENGTH + " characters.");
+        }
+        return trimmed;
+    }
+
+    private static String trimmedOrNull(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        return value.trim();
     }
 
     private void safeDeleteFromStorage(String objectKey) {

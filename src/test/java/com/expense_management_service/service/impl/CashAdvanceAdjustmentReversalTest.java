@@ -81,7 +81,7 @@ class CashAdvanceAdjustmentReversalTest {
                 .reportId(reportId)
                 .employeeId("EMP001")
                 .reportNumber("ER-1")
-                .title("Trip")
+                .title("Trip").totalAmount(new BigDecimal("5000.00"))
                 .reportStatus(ReportStatus.APPROVED)
                 .paymentRoutingStatus(PaymentRoutingStatus.NONE)
                 .build();

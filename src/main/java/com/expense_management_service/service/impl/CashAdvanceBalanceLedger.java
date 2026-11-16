@@ -30,13 +30,19 @@ public class CashAdvanceBalanceLedger {
     private final ExpenseReportRepository expenseReportRepository;
 
     /**
+     * Length of the expense window in days. Bound to the same property as the nightly overdue sweep, so both use one value.
+     */
+    @org.springframework.beans.factory.annotation.Value("${expense.submission.deadline-days:30}")
+    private int overdueWindowDays = 30;
+
+    /**
      * The status an advance should have at this balance: closed only at zero and only when no linked report still owes
      * the employee a reimbursement. Every path that changes an advance's status goes through this rule.
      */
     public String statusFor(CashAdvance advance, BigDecimal balance, int decimals) {
         // Overdue is derived from the records, not stored as a one-off flag. An open balance after the expense window has
         // ended is OVERDUE on every recompute, so a later balance change cannot silently clear it.
-        if (balance != null && balance.signum() > 0 && CashAdvanceExpenseWindow.isLocked(advance, LocalDateTime.now())) {
+        if (balance != null && balance.signum() > 0 && CashAdvanceExpenseWindow.isLocked(advance, LocalDateTime.now(), overdueWindowDays)) {
             return "OVERDUE";
         }
         return CashAdvanceBalanceRules.statusAfterBalance(balance, decimals, hasUnpaidReimbursement(advance));

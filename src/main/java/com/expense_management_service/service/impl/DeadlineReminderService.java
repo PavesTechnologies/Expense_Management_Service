@@ -42,13 +42,17 @@ public class DeadlineReminderService {
     @Value("${expense.mail.app-base-url:}")
     private String appBaseUrl;
 
+    /** Length of the expense window in days, from expense.submission.deadline-days. Same property as the overdue rule. */
+    @Value("${expense.submission.deadline-days:30}")
+    private int deadlineDays = 30;
+
     /** Queues the reminders that are due at {@code now}. Returns how many were queued. */
     @Transactional
     public int sendDueReminders(LocalDateTime now) {
         int queued = 0;
         for (CashAdvance advance : cashAdvanceRepository.findByStatusInAndDeadlineReminderSentAtIsNull(OPEN_STATUSES)) {
-            LocalDateTime deadline = CashAdvanceExpenseWindow.deadline(advance);
-            LocalDateTime due = CashAdvanceExpenseWindow.reminderDue(advance);
+            LocalDateTime deadline = CashAdvanceExpenseWindow.deadline(advance, deadlineDays);
+            LocalDateTime due = CashAdvanceExpenseWindow.reminderDue(advance, deadlineDays);
             if (deadline == null || due == null || now.isBefore(due) || now.isAfter(deadline)) {
                 continue;
             }

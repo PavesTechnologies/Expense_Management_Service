@@ -307,6 +307,64 @@ class CashAdvanceRecoveryServiceTest {
     }
 
     @Test
+    void sendToPayroll_twice_isRefusedTheSecondTime_soPayrollIsContactedOnce() {
+        actAs("FIN001", "FINANCE");
+        CashAdvanceRecoveryCase due = openCase(advance, NOW.minusHours(1));
+        due.setStatus(CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW);
+        when(caseRepository.findById(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
+        when(cashAdvanceRepository.findByIdForUpdate(advanceId)).thenReturn(Optional.of(advance));
+        when(caseRepository.findByIdForUpdate(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
+        when(salaryDeductionService.initiateForRecoveryCase(eq(advance), eq(due.getRecoveryCaseId()), any(), any()))
+                .thenReturn(Optional.of(com.expense_management_service.entity.SalaryDeductionRequest.builder()
+                        .payrollRequestId("PR-2026-2027-CCCC3333").build()));
+
+        service.sendToPayroll(due.getRecoveryCaseId(), "Finance confirmed the deduction");
+
+        assertThatThrownBy(() -> service.sendToPayroll(due.getRecoveryCaseId(), "Finance confirmed again"))
+                .hasMessageContaining("Only a case awaiting Finance review");
+        verify(salaryDeductionService).initiateForRecoveryCase(any(), any(), any(), any());
+    }
+
+    @Test
+    void sendToPayroll_isRefused_whileTheCaseIsStillInTheNoticePeriod() {
+        actAs("FIN001", "FINANCE");
+        CashAdvanceRecoveryCase notYetDue = openCase(advance, NOW.plusDays(3));
+        when(caseRepository.findById(notYetDue.getRecoveryCaseId())).thenReturn(Optional.of(notYetDue));
+        when(cashAdvanceRepository.findByIdForUpdate(advanceId)).thenReturn(Optional.of(advance));
+        when(caseRepository.findByIdForUpdate(notYetDue.getRecoveryCaseId())).thenReturn(Optional.of(notYetDue));
+
+        assertThatThrownBy(() -> service.sendToPayroll(notYetDue.getRecoveryCaseId(), "Trying before the due time"))
+                .hasMessageContaining("Only a case awaiting Finance review");
+        verify(salaryDeductionService, never()).initiateForRecoveryCase(any(), any(), any(), any());
+    }
+
+    @Test
+    void sendToPayroll_isRefused_whenNothingIsStillOutstanding() {
+        actAs("FIN001", "FINANCE");
+        advance.setOutstandingBalance(BigDecimal.ZERO);
+        CashAdvanceRecoveryCase due = openCase(advance, NOW.minusHours(1));
+        due.setStatus(CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW);
+        when(caseRepository.findById(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
+        when(cashAdvanceRepository.findByIdForUpdate(advanceId)).thenReturn(Optional.of(advance));
+        when(caseRepository.findByIdForUpdate(due.getRecoveryCaseId())).thenReturn(Optional.of(due));
+
+        assertThatThrownBy(() -> service.sendToPayroll(due.getRecoveryCaseId(), "Finance confirmed the deduction"))
+                .hasMessageContaining("Nothing is outstanding");
+        verify(salaryDeductionService, never()).initiateForRecoveryCase(any(), any(), any(), any());
+    }
+
+    @Test
+    void sendToPayroll_isRefused_withoutAReason_beforeAnyLookup() {
+        actAs("FIN001", "FINANCE");
+        UUID caseId = UUID.randomUUID();
+
+        assertThatThrownBy(() -> service.sendToPayroll(caseId, "   "))
+                .hasMessageContaining("Enter the reason");
+        verify(caseRepository, never()).findById(any());
+        verify(salaryDeductionService, never()).initiateForRecoveryCase(any(), any(), any(), any());
+    }
+
+    @Test
     void repaymentInFull_closesTheOpenNotice_withoutWaitingForTheScheduledRun() {
         CashAdvanceRecoveryCase open = openCase(advance, NOW.plusHours(5));
         when(caseRepository.findByAdvance_AdvanceIdAndStatusIn(advanceId, List.of(CashAdvanceRecoveryCase.NOTICE_SENT)))

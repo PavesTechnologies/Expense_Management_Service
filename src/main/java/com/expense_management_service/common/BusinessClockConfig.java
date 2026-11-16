@@ -51,6 +51,9 @@ public class BusinessClockConfig {
         ZonedDateTime today = ZonedDateTime.ofInstant(now, zone);
         Instant target = day.atTime(today.toLocalTime()).atZone(zone).toInstant();
         log.warn("Business date overridden to {} for development. Keep expense.clock.override-enabled off outside development.", day);
-        return Clock.offset(Clock.system(zone), Duration.between(now, target)).withZone(zone);
+        // The shift must be measured from the same clock it is applied to. Measuring it from `now` gave the wrong date
+        // whenever `now` was not the current instant.
+        Clock system = Clock.system(zone);
+        return Clock.offset(system, Duration.between(system.instant(), target)).withZone(zone);
     }
 }

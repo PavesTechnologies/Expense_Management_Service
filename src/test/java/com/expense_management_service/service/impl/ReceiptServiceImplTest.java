@@ -67,6 +67,10 @@ class ReceiptServiceImplTest {
     private ApprovalAssignmentRepository approvalAssignmentRepository;
     @Mock
     private DelegationService delegationService;
+    @Mock
+    private com.expense_management_service.repository.ReceiptOcrRepository receiptOcrRepository;
+    @Mock
+    private com.expense_management_service.repository.AuditLogRepository auditLogRepository;
 
     private ReceiptServiceImpl receiptService;
 
@@ -80,7 +84,8 @@ class ReceiptServiceImplTest {
     void setUp() {
         receiptService = new ReceiptServiceImpl(receiptRepository, expenseReportRepository, expenseLineItemRepository,
                 storageService, currentUserService, new ReceiptMapper(), applicationEventPublisher,
-                approvalAssignmentRepository, delegationService, receiptDuplicateService);
+                approvalAssignmentRepository, delegationService, receiptDuplicateService,
+                receiptOcrRepository, auditLogRepository);
         org.mockito.Mockito.lenient().when(receiptDuplicateService.summarize(any()))
                 .thenReturn(com.expense_management_service.service.ReceiptDuplicateService.DuplicateSummary.NONE);
         ReflectionTestUtils.setField(receiptService, "maxFileSizeBytes", 10L * 1024 * 1024);

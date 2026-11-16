@@ -127,8 +127,19 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         BigDecimal currentBalance = CashAdvanceBalanceRules.ledgerBalance(advance, offsetsSoFar, repaidSoFar);
 
         BigDecimal adjustedAmount = request.adjustedAmount();
+        if (adjustedAmount.signum() <= 0) {
+            throw new BusinessRuleViolationException("An offset must be greater than zero.");
+        }
         if (adjustedAmount.compareTo(currentBalance) > 0) {
             throw new BusinessRuleViolationException("Adjusted amount (" + adjustedAmount + ") cannot exceed cash advance outstanding balance (" + currentBalance + ")");
+        }
+        // The report's remaining claim: its total less the active offsets already applied to it, from any advance.
+        // Without this, an offset could clear more than the report owes and pay the difference to nobody.
+        BigDecimal reportOpen = ReimbursementCalculator.reimbursable(report.getTotalAmount(),
+                cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()));
+        if (adjustedAmount.compareTo(reportOpen) > 0) {
+            throw new BusinessRuleViolationException("Offset " + adjustedAmount + " exceeds the amount still open on expense report "
+                    + report.getReportNumber() + " (" + reportOpen + ").");
         }
 
         int decimals = advance.getCurrency() != null ? advance.getCurrency().getDecimalPlaces() : 2;
@@ -170,16 +181,31 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         return cashAdvanceAdjustmentMapper.toResponse(saved);
     }
 
+    /**
+     * An offset is a financial record and is not edited in place. Editing its amount or links would bypass the balance,
+     * report-cap and audit rules that create() enforces. To change an offset, reverse it and create a new one. An update
+     * that repeats the stored values is accepted and changes nothing.
+     */
     @Override
     public CashAdvanceAdjustmentResponse update(UUID adjustmentId, CashAdvanceAdjustmentRequest request) {
+        if (!isFinanceCaller() && !isAdminCaller()) {
+            throw new BusinessRuleViolationException("Only Finance Executives can change cash advance settlements");
+        }
         CashAdvanceAdjustment entity = findEntity(adjustmentId);
+        if (!entity.isActive()) {
+            throw new BusinessRuleViolationException("This offset is reversed and cannot be changed.");
+        }
         assertNotPaid(entity.getReport());
-        ExpenseReport targetReport = findReport(request.reportId());
-        assertNotPaid(targetReport);
-        cashAdvanceAdjustmentMapper.updateEntity(entity, request);
-        entity.setCashAdvance(findCashAdvance(request.advanceId()));
-        entity.setReport(targetReport);
-        return cashAdvanceAdjustmentMapper.toResponse(cashAdvanceAdjustmentRepository.save(entity));
+        boolean sameAmount = entity.getAdjustedAmount() != null
+                && entity.getAdjustedAmount().compareTo(request.adjustedAmount()) == 0;
+        boolean sameAdvance = entity.getCashAdvance() != null
+                && entity.getCashAdvance().getAdvanceId().equals(request.advanceId());
+        boolean sameReport = entity.getReport() != null
+                && entity.getReport().getReportId().equals(request.reportId());
+        if (!(sameAmount && sameAdvance && sameReport)) {
+            throw new BusinessRuleViolationException("An offset's amount and links cannot be edited. Reverse it and create a new offset.");
+        }
+        return cashAdvanceAdjustmentMapper.toResponse(entity);
     }
 
     @Override

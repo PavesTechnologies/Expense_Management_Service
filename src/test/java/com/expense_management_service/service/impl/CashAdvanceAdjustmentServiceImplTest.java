@@ -113,6 +113,7 @@ class CashAdvanceAdjustmentServiceImplTest {
                 .reportId(reportId)
                 .employeeId("EMP001")
                 .title("Trip Expenses")
+                .totalAmount(new BigDecimal("2000.00"))
                 .reportStatus(ReportStatus.APPROVED)
                 .build();
     }
@@ -257,6 +258,83 @@ class CashAdvanceAdjustmentServiceImplTest {
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(testReport));
 
         assertThrows(BusinessRuleViolationException.class, () -> adjustmentService.create(request));
+    }
+
+    @Test
+    void create_refusesAnOffsetAboveWhatTheReportStillOwes_evenWhenTheAdvanceCoversIt() {
+        // Report total 2000 with 1800 already offset from another advance: only 200 is still open.
+        CashAdvanceAdjustment earlier = CashAdvanceAdjustment.builder().cashAdvance(testAdvance)
+                .report(testReport).adjustedAmount(new BigDecimal("1800.00")).reversed(false).build();
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(testAdvance));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(testReport));
+        when(cashAdvanceAdjustmentRepository.findByReport_ReportId(reportId)).thenReturn(List.of(earlier));
+
+        BusinessRuleViolationException ex = assertThrows(BusinessRuleViolationException.class, () ->
+                adjustmentService.create(new CashAdvanceAdjustmentRequest(advanceId, reportId, new BigDecimal("300.00"), "EMP001")));
+
+        assertTrue(ex.getMessage().contains("still open"));
+        verify(cashAdvanceAdjustmentRepository, never()).save(any(CashAdvanceAdjustment.class));
+        assertEquals(new BigDecimal("1000.00"), testAdvance.getOutstandingBalance());
+    }
+
+    @Test
+    void create_allowsAnOffsetUpToTheReportsRemainingClaim() {
+        CashAdvanceAdjustment earlier = CashAdvanceAdjustment.builder().cashAdvance(testAdvance)
+                .report(testReport).adjustedAmount(new BigDecimal("1800.00")).reversed(false).build();
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(testAdvance));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(testReport));
+        when(cashAdvanceAdjustmentRepository.findByReport_ReportId(reportId)).thenReturn(List.of(earlier));
+        when(cashAdvanceAdjustmentRepository.save(any(CashAdvanceAdjustment.class))).thenAnswer(inv -> inv.getArgument(0));
+
+        adjustmentService.create(new CashAdvanceAdjustmentRequest(advanceId, reportId, new BigDecimal("200.00"), "EMP001"));
+
+        assertEquals(new BigDecimal("800.00"), testAdvance.getOutstandingBalance());
+    }
+
+    @Test
+    void create_refusesAZeroOrNegativeOffset() {
+        when(cashAdvanceRepository.findById(advanceId)).thenReturn(Optional.of(testAdvance));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(testReport));
+
+        assertThrows(BusinessRuleViolationException.class, () ->
+                adjustmentService.create(new CashAdvanceAdjustmentRequest(advanceId, reportId, BigDecimal.ZERO, "EMP001")));
+        verify(cashAdvanceAdjustmentRepository, never()).save(any(CashAdvanceAdjustment.class));
+    }
+
+    @Test
+    void update_refusesChangingTheAmountOfAnExistingOffset() {
+        CashAdvanceAdjustment existing = CashAdvanceAdjustment.builder().adjustmentId(adjustmentId)
+                .cashAdvance(testAdvance).report(testReport).adjustedAmount(new BigDecimal("400.00")).reversed(false).build();
+        when(cashAdvanceAdjustmentRepository.findById(adjustmentId)).thenReturn(Optional.of(existing));
+
+        assertThrows(BusinessRuleViolationException.class, () ->
+                adjustmentService.update(adjustmentId, new CashAdvanceAdjustmentRequest(advanceId, reportId, new BigDecimal("500.00"), "EMP001")));
+        assertEquals(new BigDecimal("400.00"), existing.getAdjustedAmount());
+        verify(cashAdvanceAdjustmentRepository, never()).save(any(CashAdvanceAdjustment.class));
+    }
+
+    @Test
+    void update_refusesMovingAnOffsetToAnotherReport() {
+        CashAdvanceAdjustment existing = CashAdvanceAdjustment.builder().adjustmentId(adjustmentId)
+                .cashAdvance(testAdvance).report(testReport).adjustedAmount(new BigDecimal("400.00")).reversed(false).build();
+        when(cashAdvanceAdjustmentRepository.findById(adjustmentId)).thenReturn(Optional.of(existing));
+
+        assertThrows(BusinessRuleViolationException.class, () ->
+                adjustmentService.update(adjustmentId, new CashAdvanceAdjustmentRequest(advanceId, UUID.randomUUID(), new BigDecimal("400.00"), "EMP001")));
+        verify(cashAdvanceAdjustmentRepository, never()).save(any(CashAdvanceAdjustment.class));
+    }
+
+    @Test
+    void update_withTheStoredValues_changesNothing() {
+        CashAdvanceAdjustment existing = CashAdvanceAdjustment.builder().adjustmentId(adjustmentId)
+                .cashAdvance(testAdvance).report(testReport).adjustedAmount(new BigDecimal("400.00")).reversed(false).build();
+        when(cashAdvanceAdjustmentRepository.findById(adjustmentId)).thenReturn(Optional.of(existing));
+
+        CashAdvanceAdjustmentResponse response = adjustmentService.update(adjustmentId,
+                new CashAdvanceAdjustmentRequest(advanceId, reportId, new BigDecimal("400.00"), "EMP001"));
+
+        assertNotNull(response);
+        verify(cashAdvanceAdjustmentRepository, never()).save(any(CashAdvanceAdjustment.class));
     }
 
     @Test

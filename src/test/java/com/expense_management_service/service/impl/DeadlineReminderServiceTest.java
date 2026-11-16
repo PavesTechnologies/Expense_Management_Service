@@ -99,6 +99,19 @@ class DeadlineReminderServiceTest {
     }
 
     @Test
+    void theConfiguredWindowSetsTheReminderDate_notAFixedThirtyDays() {
+        ReflectionTestUtils.setField(service, "deadlineDays", 45);
+        // Trip ends 2026-10-20: with 45 days the deadline is 2026-12-04 and the reminder is due from 2026-11-27.
+        when(cashAdvanceRepository.findByStatusInAndDeadlineReminderSentAtIsNull(anyCollection())).thenReturn(List.of(advance()));
+        employeeHasMail("niharika@example.com");
+
+        // 2026-11-13 is inside the old 30-day window but before the 45-day reminder date.
+        assertThat(service.sendDueReminders(LocalDateTime.of(2026, 11, 13, 8, 0))).isZero();
+        // 2026-11-28 is after the 45-day reminder date and before the 45-day deadline.
+        assertThat(service.sendDueReminders(LocalDateTime.of(2026, 11, 28, 8, 0))).isEqualTo(1);
+    }
+
+    @Test
     void notYetDue_queuesNothing() {
         when(cashAdvanceRepository.findByStatusInAndDeadlineReminderSentAtIsNull(anyCollection())).thenReturn(List.of(advance()));
 

@@ -1,0 +1,44 @@
+# Local development: builds the image from source and runs it with the settings in .env.
+#
+#   docker compose -f docker-compose.local.yml up --build -d
+#   docker compose -f docker-compose.local.yml logs -f
+#   docker compose -f docker-compose.local.yml down
+#
+# Swagger UI: http://localhost:8081/xms/swagger-ui.html
+services:
+  xms-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: xms-service:local
+    container_name: xms-service-local
+    env_file:
+      - .env
+    environment:
+      SERVER_PORT: 8081
+      # Redpanda from docker-compose.cdc.yml, reached over the shared cdc-network.
+      # Start that stack first: docker compose -f docker-compose.cdc.yml up -d
+      KAFKA_BOOTSTRAP_SERVERS: redpanda:29092
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+    depends_on:
+      - redis
+    ports:
+      - "8081:8081"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - default
+      - cdc-network
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: xms-redis-local
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+networks:
+  cdc-network:
+    external: true

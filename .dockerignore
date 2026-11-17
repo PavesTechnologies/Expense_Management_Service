@@ -1,0 +1,14 @@
+target/
+.git/
+.github/
+.claude/
+.mvn/
+.scratch/
+docs/
+scripts/
+*.docx
+*.xlsx
+*.py
+.env
+Jenkinsfile*
+*.md

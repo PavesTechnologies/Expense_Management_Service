@@ -127,7 +127,31 @@ final class TaxExtractor {
 
         ExpenseField taxField = index.firstByType(FIELD_TAX);
         BigDecimal taxAmount = ReceiptFieldParsingUtils.parseAmount(textOf(taxField), FIELD_TAX);
-        return ExtractionResult.of(taxAmount, normalizedConfidenceOf(taxField));
+        if (taxAmount != null) {
+            return ExtractionResult.of(taxAmount, normalizedConfidenceOf(taxField));
+        }
+        return taxLabelledAsTax(index.allFields());
+    }
+
+    /**
+     * A tax line printed with a generic label such as "Tax / charges" or "Tax" when Textract did not type it as TAX.
+     * The label must start with the word Tax, so "Taxable amount" (the subtotal) and "Tax ID" style identifiers are not read.
+     */
+    private static final java.util.regex.Pattern GENERIC_TAX_LABEL =
+            java.util.regex.Pattern.compile("(?i)^\\s*tax\\b(?!able)");
+
+    private ExtractionResult<BigDecimal> taxLabelledAsTax(List<ExpenseField> allFields) {
+        for (ExpenseField field : allFields) {
+            String label = labelOf(field);
+            if (label == null || !GENERIC_TAX_LABEL.matcher(label).find() || !isTaxAmountField(field)) {
+                continue;
+            }
+            BigDecimal amount = ReceiptFieldParsingUtils.parseAmount(textOf(field), label);
+            if (amount != null) {
+                return ExtractionResult.of(amount, normalizedConfidenceOf(field));
+            }
+        }
+        return ExtractionResult.empty();
     }
 
     /** Indian GST receipts report CGST/SGST/IGST as separate label-matched OTHER-type fields rather than a single TAX line — their sum is the true tax, never just one component. */

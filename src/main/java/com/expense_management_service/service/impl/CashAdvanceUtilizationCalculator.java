@@ -164,11 +164,19 @@ public class CashAdvanceUtilizationCalculator {
     private Map<UUID, List<Receipt>> receiptsByLine(UUID reportId) {
         Map<UUID, List<Receipt>> byLine = new HashMap<>();
         for (Receipt receipt : receiptRepository.findByReport_ReportId(reportId)) {
-            if (receipt.getLineItem() != null) {
-                byLine.computeIfAbsent(receipt.getLineItem().getLineItemId(), k -> new ArrayList<>()).add(receipt);
+            if (receipt.getLineItem() == null || isRejectedLateReceipt(receipt)) {
+                // A late receipt Finance rejected is not proof of the expense, so it neither counts as a receipt
+                // nor is linked as one.
+                continue;
             }
+            byLine.computeIfAbsent(receipt.getLineItem().getLineItemId(), k -> new ArrayList<>()).add(receipt);
         }
         return byLine;
+    }
+
+    private static boolean isRejectedLateReceipt(Receipt receipt) {
+        return Receipt.ATTACHMENT_LATE.equals(receipt.getAttachmentKind())
+                && Receipt.VERIFICATION_REJECTED.equals(receipt.getVerificationStatus());
     }
 
     private Map<UUID, List<ApprovalLineItemReview>> reviewsByLine(UUID reportId) {

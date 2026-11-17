@@ -231,6 +231,10 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
         cashAdvanceMapper.updateEntity(entity, request);
         applyAllocationRules(entity, request);
+        // Same default as create: an edit that doesn't send baseAmount must not blank it.
+        if (entity.getBaseAmount() == null) {
+            entity.setBaseAmount(entity.getAmount());
+        }
         // Nothing has been paid out yet, so the balance is still the full requested amount. Keep it in step with the edit.
         if (entity.getDisbursedAt() == null) {
             entity.setOutstandingBalance(entity.getAmount());

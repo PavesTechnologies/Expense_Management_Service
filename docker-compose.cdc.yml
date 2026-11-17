@@ -46,7 +46,7 @@ services:
     ports:
       - "19092:19092"   # Kafka API - host access (spring.kafka.bootstrap-servers=localhost:19092)
       - "18082:18082"   # HTTP proxy (unused today)
-      - "8081:8081"     # Schema registry (unused - this contract has schemas.enable=false)
+      - "18081:8081"    # Schema registry (unused - this contract has schemas.enable=false). Host port 18081 so it doesn't clash with XMS on 8081.
     volumes:
       - redpanda-data:/var/lib/redpanda/data
     healthcheck:

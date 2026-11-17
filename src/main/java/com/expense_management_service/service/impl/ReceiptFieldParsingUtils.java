@@ -7,6 +7,7 @@ import java.math.RoundingMode;
 import java.time.LocalDate;
 import java.time.LocalTime;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 import java.util.List;
 import java.util.Locale;
@@ -52,13 +53,18 @@ final class ReceiptFieldParsingUtils {
             DateTimeFormatter.ofPattern("dd-MM-yyyy"),
             DateTimeFormatter.ofPattern("dd.MM.yyyy"),
             DateTimeFormatter.ofPattern("yyyy/MM/dd"),
-            DateTimeFormatter.ofPattern("MMM d, yyyy", Locale.ENGLISH),
-            DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.ENGLISH),
-            DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH),
-            DateTimeFormatter.ofPattern("d MMMM yyyy", Locale.ENGLISH),
-            DateTimeFormatter.ofPattern("d-MMM-yyyy", Locale.ENGLISH),
-            DateTimeFormatter.ofPattern("d.MMM.yyyy", Locale.ENGLISH)
+            // Month names are matched case-insensitively: receipts print "10 NOV 2026" as often as "10 Nov 2026".
+            caseInsensitive("MMM d, yyyy"),
+            caseInsensitive("MMMM d, yyyy"),
+            caseInsensitive("d MMM yyyy"),
+            caseInsensitive("d MMMM yyyy"),
+            caseInsensitive("d-MMM-yyyy"),
+            caseInsensitive("d.MMM.yyyy")
     );
+
+    private static DateTimeFormatter caseInsensitive(String pattern) {
+        return new DateTimeFormatterBuilder().parseCaseInsensitive().appendPattern(pattern).toFormatter(Locale.ENGLISH);
+    }
 
     private static final List<DateTimeFormatter> TIME_FORMATS = List.of(
             DateTimeFormatter.ofPattern("H:mm:ss"),

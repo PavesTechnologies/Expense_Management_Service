@@ -32,6 +32,10 @@ final class CategoryExtractor {
     private static final int MERCHANT_HIT_WEIGHT = 3;
     private static final int BODY_HIT_WEIGHT = 1;
     private static final int MIN_SCORE = 2;
+    /** A category the receipt prints itself, e.g. "Category: Office Supplies". */
+    private static final int LABEL_HIT_WEIGHT = 5;
+    private static final java.util.regex.Pattern PRINTED_CATEGORY =
+            java.util.regex.Pattern.compile("(?im)^\\s*category\\s*[:\\-]\\s*([^\\r\\n]+)");
 
     /** Declaration order breaks ties. */
     private static final Map<String, List<Pattern>> CATEGORY_KEYWORDS = new LinkedHashMap<>();
@@ -106,11 +110,42 @@ final class CategoryExtractor {
      * @param receiptText  the receipt's full text (any line separator), or {@code null}
      * @return the best category hint with a 0-1 confidence, or empty if nothing scored enough
      */
+    private static ExtractionResult<String> scoreCategory(String text, int weight) {
+        String best = null;
+        int bestScore = 0;
+        for (Map.Entry<String, List<Pattern>> entry : CATEGORY_KEYWORDS.entrySet()) {
+            int score = 0;
+            for (Pattern keyword : entry.getValue()) {
+                if (keyword.matcher(text).find()) {
+                    score += weight;
+                }
+            }
+            if (score > bestScore) {
+                best = entry.getKey();
+                bestScore = score;
+            }
+        }
+        if (best == null || bestScore < MIN_SCORE) {
+            return ExtractionResult.empty();
+        }
+        return ExtractionResult.of(best, BigDecimal.valueOf(Math.min(0.95, 0.5 + 0.1 * bestScore)).setScale(2, RoundingMode.HALF_UP));
+    }
+
     ExtractionResult<String> extractFromText(String merchantName, String receiptText) {
         String merchant = merchantName == null ? "" : merchantName;
         String body = receiptText == null ? "" : receiptText;
         if (merchant.isBlank() && body.isBlank()) {
             return ExtractionResult.empty();
+        }
+
+        // A category printed on the receipt ("Category: Office Supplies") is the best evidence. Score only that value, so
+        // a merchant name such as "METRO MART" cannot override it with a transport keyword.
+        java.util.regex.Matcher printed = PRINTED_CATEGORY.matcher(body);
+        if (printed.find()) {
+            ExtractionResult<String> fromLabel = scoreCategory(printed.group(1), LABEL_HIT_WEIGHT);
+            if (fromLabel.isPresent()) {
+                return fromLabel;
+            }
         }
 
         String best = null;

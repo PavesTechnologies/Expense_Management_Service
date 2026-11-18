@@ -58,6 +58,12 @@ public interface ReceiptService {
     /** Late receipts waiting for Finance/AP review, oldest first. */
     List<LateReceiptResponse> getPendingLateReceipts();
 
+    /**
+     * Late receipts for the Finance/AP page by review state: PENDING_REVIEW (oldest first, the work queue), or VERIFIED,
+     * REJECTED or ALL (newest first, the history). Null means PENDING_REVIEW.
+     */
+    List<LateReceiptResponse> getLateReceiptsForReview(String status);
+
     /** Finance/AP verifies a late receipt. A note is required when the OCR total differs from the claimed amount. */
     LateReceiptResponse verifyLate(UUID receiptId, String note);
 

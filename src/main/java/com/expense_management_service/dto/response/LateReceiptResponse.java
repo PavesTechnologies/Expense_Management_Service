@@ -34,6 +34,17 @@ public record LateReceiptResponse(
         String verificationNote,
         /** Warning or blocking duplicate state, from the same check used for claimed receipts. */
         String duplicateStatus,
-        String duplicateMessage
+        String duplicateMessage,
+        /** DIRECT when the report settles no cash advance, CASH_ADVANCE when it does. */
+        String expenseSource,
+        LocalDate tripStartDate,
+        LocalDate tripEndDate,
+        /** The total read from the receipt by OCR, once OCR has completed; null otherwise. */
+        BigDecimal receiptTotal,
+        /** The currency OCR read with that total, when it found one. */
+        String receiptCurrency
 ) {
+    public static final String SOURCE_DIRECT = "DIRECT";
+    public static final String SOURCE_CASH_ADVANCE = "CASH_ADVANCE";
+
 }

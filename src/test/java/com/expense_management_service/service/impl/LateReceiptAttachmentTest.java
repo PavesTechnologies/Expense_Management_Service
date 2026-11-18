@@ -106,6 +106,14 @@ class LateReceiptAttachmentTest {
     private void asCaller(String employeeId, String role) {
         when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(
                 UUID.randomUUID(), null, employeeId, employeeId + "@example.com", "Test User", List.of(role), List.of()));
+        lenient().when(currentUserService.getActorId()).thenReturn(employeeId);
+    }
+
+    /** A token with no employee_id claim, as some Finance accounts have; the actor falls back to the email. */
+    private void asCallerWithoutEmployeeId(String email, String role) {
+        when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(
+                UUID.randomUUID(), null, null, email, "Finance User", List.of(role), List.of()));
+        lenient().when(currentUserService.getActorId()).thenReturn(email);
     }
 
     private static MockMultipartFile pdf() {
@@ -190,6 +198,63 @@ class LateReceiptAttachmentTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cannot be in the future");
         verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void attach_isRefused_whenTheReceiptDateIsOutsideTheTrip() {
+        asCaller(EMPLOYEE, "GENERAL");
+        report.setTripStartDate(LocalDate.of(2026, 11, 3));
+        report.setTripEndDate(LocalDate.of(2026, 11, 7));
+        when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(line));
+
+        assertThatThrownBy(() -> service.attachLate(lineItemId, pdf(), LocalDate.of(2026, 10, 20), REASON))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("outside this trip");
+        assertThatThrownBy(() -> service.attachLate(lineItemId, pdf(), LocalDate.of(2026, 11, 9), REASON))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("outside this trip");
+        verify(storageService, never()).upload(anyString(), any());
+    }
+
+    @Test
+    void attach_acceptsADateWithinTheTrip_orOnTheClaimedExpenseDate_andReportsTheSourceAndTrip() {
+        report.setTripStartDate(LocalDate.of(2026, 11, 3));
+        report.setTripEndDate(LocalDate.of(2026, 11, 7));
+        // A flight booked before the trip was claimed on its booking date, so that date is accepted too.
+        line.setExpenseDate(LocalDate.of(2026, 10, 15));
+        for (LocalDate printed : List.of(LocalDate.of(2026, 11, 3), LocalDate.of(2026, 11, 7), LocalDate.of(2026, 10, 15))) {
+            asCaller(EMPLOYEE, "GENERAL");
+            when(expenseLineItemRepository.findById(lineItemId)).thenReturn(Optional.of(line));
+            when(receiptRepository.findByFileHash(anyString())).thenReturn(List.of());
+            stubSave();
+
+            LateReceiptResponse response = service.attachLate(lineItemId, pdf(), printed, REASON);
+
+            assertThat(response.expenseSource()).isEqualTo(LateReceiptResponse.SOURCE_DIRECT);
+            assertThat(response.tripStartDate()).isEqualTo(LocalDate.of(2026, 11, 3));
+            assertThat(response.tripEndDate()).isEqualTo(LocalDate.of(2026, 11, 7));
+        }
+    }
+
+    @Test
+    void reportView_showsTheReceiptTotalReadByOcr_andTheCashAdvanceSource() {
+        asCaller(EMPLOYEE, "GENERAL");
+        report.setCashAdvance(com.expense_management_service.entity.CashAdvance.builder().advanceId(UUID.randomUUID()).build());
+        Receipt receipt = lateReceipt(EMPLOYEE);
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));
+        when(receiptRepository.findByReport_ReportId(reportId)).thenReturn(List.of(receipt));
+        ReceiptOcr ocr = new ReceiptOcr();
+        ocr.setAmount(new BigDecimal("2000.00"));
+        ocr.setCurrencyCode("INR");
+        ocr.setProcessingStatus(OcrStatus.OCR_COMPLETED);
+        when(receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receipt.getReceiptId()))
+                .thenReturn(Optional.of(ocr));
+
+        LateReceiptResponse response = service.getLateForReport(reportId).get(0);
+
+        assertThat(response.expenseSource()).isEqualTo(LateReceiptResponse.SOURCE_CASH_ADVANCE);
+        assertThat(response.receiptTotal()).isEqualByComparingTo("2000.00");
+        assertThat(response.receiptCurrency()).isEqualTo("INR");
     }
 
     @Test
@@ -364,6 +429,91 @@ class LateReceiptAttachmentTest {
         assertThat(response.verificationStatus()).isEqualTo(Receipt.VERIFICATION_REJECTED);
         assertThat(receipt.getVerificationNote()).isEqualTo("Receipt total does not match the folio");
         verify(auditLogRepository).save(argThat((AuditLog a) -> "LATE_RECEIPT_REJECTED".equals(a.getAction())));
+        // The approving managers are told through an event, carrying the reviewer so they are not told of their own decision.
+        verify(applicationEventPublisher).publishEvent(new com.expense_management_service.event.LateReceiptRejectedEvent(
+                receipt.getReceiptId(), FINANCE_USER));
+    }
+
+    @Test
+    void reviewQueue_acceptsRolesAsTheTokenSpellsThem_inMixedCase() {
+        // UMS issues "Finance_Executive", "Finance", "AP_Executive"; the check must not depend on upper case.
+        for (String role : List.of("Finance_Executive", "Finance", "AP_Executive")) {
+            asCaller(FINANCE_USER, role);
+            assertThat(service.getPendingLateReceipts()).isNotNull();
+        }
+        asCaller(FINANCE_USER, "General");
+        assertThatThrownBy(() -> service.getPendingLateReceipts()).isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    void reject_andVerify_work_forAFinanceUserWhoseTokenHasNoEmployeeId() {
+        Receipt toReject = lateReceipt(EMPLOYEE);
+        Receipt toVerify = lateReceipt(EMPLOYEE);
+        when(receiptRepository.findById(toReject.getReceiptId())).thenReturn(Optional.of(toReject));
+        when(receiptRepository.findById(toVerify.getReceiptId())).thenReturn(Optional.of(toVerify));
+        asCallerWithoutEmployeeId("finance.user@example.com", "Finance_Executive");
+
+        LateReceiptResponse rejected = service.rejectLate(toReject.getReceiptId(), "The receipt is for a different trip");
+        LateReceiptResponse verified = service.verifyLate(toVerify.getReceiptId(), null);
+
+        assertThat(rejected.verificationStatus()).isEqualTo(Receipt.VERIFICATION_REJECTED);
+        assertThat(verified.verificationStatus()).isEqualTo(Receipt.VERIFICATION_VERIFIED);
+        // Recorded against the email instead of a null reviewer.
+        assertThat(toReject.getVerifiedBy()).isEqualTo("finance.user@example.com");
+        verify(auditLogRepository).save(argThat((AuditLog a) -> "LATE_RECEIPT_REJECTED".equals(a.getAction())
+                && "finance.user@example.com".equals(a.getPerformedBy())));
+    }
+
+    @Test
+    void reviewPage_listsTheQueue_orTheReviewedHistory_byStatus() {
+        asCaller(FINANCE_USER, "Finance_Executive");
+        Receipt verified = lateReceipt(EMPLOYEE);
+        verified.setVerificationStatus(Receipt.VERIFICATION_VERIFIED);
+        Receipt rejected = lateReceipt(EMPLOYEE);
+        rejected.setVerificationStatus(Receipt.VERIFICATION_REJECTED);
+        Receipt pending = lateReceipt(EMPLOYEE);
+        when(receiptRepository.findByAttachmentKindAndVerificationStatusOrderByUploadedAtAsc(Receipt.ATTACHMENT_LATE,
+                Receipt.VERIFICATION_PENDING)).thenReturn(List.of(pending));
+        when(receiptRepository.findByAttachmentKindAndVerificationStatusInOrderByUploadedAtDesc(Receipt.ATTACHMENT_LATE,
+                List.of(Receipt.VERIFICATION_REJECTED))).thenReturn(List.of(rejected));
+        when(receiptRepository.findByAttachmentKindAndVerificationStatusInOrderByUploadedAtDesc(Receipt.ATTACHMENT_LATE,
+                List.of(Receipt.VERIFICATION_PENDING, Receipt.VERIFICATION_VERIFIED, Receipt.VERIFICATION_REJECTED)))
+                .thenReturn(List.of(pending, verified, rejected));
+
+        assertThat(service.getLateReceiptsForReview(null)).extracting(LateReceiptResponse::verificationStatus)
+                .containsExactly(Receipt.VERIFICATION_PENDING);
+        assertThat(service.getLateReceiptsForReview("rejected")).extracting(LateReceiptResponse::verificationStatus)
+                .containsExactly(Receipt.VERIFICATION_REJECTED);
+        assertThat(service.getLateReceiptsForReview("ALL")).hasSize(3);
+        assertThatThrownBy(() -> service.getLateReceiptsForReview("SOMETHING"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void reviewedHistory_isOnlyForFinanceAndAp() {
+        asCaller(EMPLOYEE, "General");
+        assertThatThrownBy(() -> service.getLateReceiptsForReview("ALL")).isInstanceOf(AccessDeniedException.class);
+    }
+
+    @Test
+    void verify_acceptsAMixedCaseFinanceRole() {
+        Receipt receipt = lateReceipt(EMPLOYEE);
+        when(receiptRepository.findById(receipt.getReceiptId())).thenReturn(Optional.of(receipt));
+        asCaller(FINANCE_USER, "Finance_Executive");
+
+        assertThat(service.verifyLate(receipt.getReceiptId(), null).verificationStatus())
+                .isEqualTo(Receipt.VERIFICATION_VERIFIED);
+    }
+
+    @Test
+    void verify_doesNotNotifyTheManagers() {
+        Receipt receipt = lateReceipt(EMPLOYEE);
+        when(receiptRepository.findById(receipt.getReceiptId())).thenReturn(Optional.of(receipt));
+        asCaller(FINANCE_USER, "FINANCE");
+
+        service.verifyLate(receipt.getReceiptId(), null);
+
+        verify(applicationEventPublisher, never()).publishEvent(any(com.expense_management_service.event.LateReceiptRejectedEvent.class));
     }
 
     @Test

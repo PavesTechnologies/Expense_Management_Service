@@ -53,8 +53,10 @@ public class LateReceiptController {
 
     @GetMapping("/xms/finance/late-receipts")
     @PreAuthorize("hasAnyRole('FINANCE','FINANCE_EXECUTIVE','AP_EXECUTIVE')")
-    public ApiResponse<List<LateReceiptResponse>> pendingReview() {
-        return ApiResponse.success("Late receipts awaiting review retrieved", receiptService.getPendingLateReceipts());
+    public ApiResponse<List<LateReceiptResponse>> pendingReview(
+            @RequestParam(value = "status", required = false) String status) {
+        // No status (the default) is the work queue; VERIFIED, REJECTED or ALL show the reviewed history too.
+        return ApiResponse.success("Late receipts retrieved", receiptService.getLateReceiptsForReview(status));
     }
 
     @PostMapping("/xms/finance/late-receipts/{receiptId}/verify")

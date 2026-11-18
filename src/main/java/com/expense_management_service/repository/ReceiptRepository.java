@@ -19,4 +19,8 @@ public interface ReceiptRepository extends JpaRepository<Receipt, UUID> {
 
     /** Late receipts waiting for Finance/AP review, oldest first. */
     List<Receipt> findByAttachmentKindAndVerificationStatusOrderByUploadedAtAsc(String attachmentKind, String verificationStatus);
+
+    /** Late receipts in any of these review states, newest first (the reviewed history on the Finance page). */
+    List<Receipt> findByAttachmentKindAndVerificationStatusInOrderByUploadedAtDesc(String attachmentKind,
+                                                                                  java.util.Collection<String> verificationStatuses);
 }

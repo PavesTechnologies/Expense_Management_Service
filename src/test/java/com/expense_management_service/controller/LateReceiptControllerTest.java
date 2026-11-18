@@ -63,7 +63,8 @@ class LateReceiptControllerTest {
         return new LateReceiptResponse(receiptId, UUID.randomUUID(), "EXP-001", UUID.randomUUID(), "5100014",
                 LocalDate.of(2026, 11, 5), new BigDecimal("2500.00"), "hotel-receipt.pdf", "5100014",
                 LocalDateTime.of(2027, 2, 13, 10, 0), LocalDate.of(2027, 2, 13), REASON, "UPLOADED",
-                "PENDING_REVIEW", null, null, null, "NONE", null);
+                "PENDING_REVIEW", null, null, null, "NONE", null,
+                "DIRECT", LocalDate.of(2026, 11, 3), LocalDate.of(2026, 11, 7), null, null);
     }
 
     private MockMultipartFile file() {
@@ -113,12 +114,22 @@ class LateReceiptControllerTest {
 
     @Test
     void apExecutive_seesThePendingQueue() throws Exception {
-        when(receiptService.getPendingLateReceipts()).thenReturn(List.of(pending(UUID.randomUUID())));
+        when(receiptService.getLateReceiptsForReview(null)).thenReturn(List.of(pending(UUID.randomUUID())));
 
         mockMvc.perform(get("/xms/finance/late-receipts")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AP_EXECUTIVE))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.length()").value(1));
+    }
+
+    @Test
+    void finance_canAskForTheReviewedHistory_byStatus() throws Exception {
+        when(receiptService.getLateReceiptsForReview("ALL")).thenReturn(List.of(pending(UUID.randomUUID()), pending(UUID.randomUUID())));
+
+        mockMvc.perform(get("/xms/finance/late-receipts").param("status", "ALL")
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_AP_EXECUTIVE))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2));
     }
 
     @Test

@@ -17,6 +17,7 @@ import java.util.UUID;
 import com.expense_management_service.common.exception.BusinessRuleViolationException;
 import com.expense_management_service.common.exception.ResourceNotFoundException;
 import com.expense_management_service.dto.response.LateReceiptResponse;
+import com.expense_management_service.event.LateReceiptRejectedEvent;
 import com.expense_management_service.dto.response.ReceiptResponse;
 import com.expense_management_service.dto.response.ReceiptUrlResponse;
 import com.expense_management_service.entity.AuditLog;
@@ -267,6 +268,7 @@ public class ReceiptServiceImpl implements ReceiptService {
         if (actualReceiptDate.isAfter(LocalDate.now())) {
             throw new IllegalArgumentException("The receipt date cannot be in the future.");
         }
+        assertWithinTrip(actualReceiptDate, report, lineItem);
         String reasonText = requireReason(reason);
         byte[] fileBytes = assertFileValid(file);
         String fileHash = computeFileHash(fileBytes);
@@ -330,6 +332,27 @@ public class ReceiptServiceImpl implements ReceiptService {
     }
 
     @Override
+    @Transactional(readOnly = true)
+    public List<LateReceiptResponse> getLateReceiptsForReview(String status) {
+        String wanted = status == null || status.isBlank() ? Receipt.VERIFICATION_PENDING : status.trim().toUpperCase(Locale.ROOT);
+        List<String> states = switch (wanted) {
+            case Receipt.VERIFICATION_PENDING -> null;
+            case Receipt.VERIFICATION_VERIFIED, Receipt.VERIFICATION_REJECTED -> List.of(wanted);
+            case "ALL" -> List.of(Receipt.VERIFICATION_PENDING, Receipt.VERIFICATION_VERIFIED, Receipt.VERIFICATION_REJECTED);
+            default -> throw new IllegalArgumentException(
+                    "Unknown status " + status + ". Use PENDING_REVIEW, VERIFIED, REJECTED or ALL.");
+        };
+        if (states == null) {
+            return getPendingLateReceipts();
+        }
+        assertReviewer(null);
+        return receiptRepository.findByAttachmentKindAndVerificationStatusInOrderByUploadedAtDesc(Receipt.ATTACHMENT_LATE, states)
+                .stream()
+                .map(this::toLateResponse)
+                .toList();
+    }
+
+    @Override
     public LateReceiptResponse verifyLate(UUID receiptId, String note) {
         Receipt receipt = findLateReceipt(receiptId);
         assertReviewer(receipt);
@@ -352,7 +375,7 @@ public class ReceiptServiceImpl implements ReceiptService {
         }
 
         receipt.setVerificationStatus(Receipt.VERIFICATION_VERIFIED);
-        receipt.setVerifiedBy(currentUserService.getCurrentUser().employeeId());
+        receipt.setVerifiedBy(currentUserService.getActorId());
         receipt.setVerifiedAt(LocalDateTime.now());
         receipt.setVerificationNote(noteText);
         receiptRepository.save(receipt);
@@ -368,11 +391,13 @@ public class ReceiptServiceImpl implements ReceiptService {
         String noteText = requireReason(note);
 
         receipt.setVerificationStatus(Receipt.VERIFICATION_REJECTED);
-        receipt.setVerifiedBy(currentUserService.getCurrentUser().employeeId());
+        receipt.setVerifiedBy(currentUserService.getActorId());
         receipt.setVerifiedAt(LocalDateTime.now());
         receipt.setVerificationNote(noteText);
         receiptRepository.save(receipt);
         audit(receipt, "LATE_RECEIPT_REJECTED", Receipt.VERIFICATION_REJECTED, noteText);
+        // The managers who approved the report are told, for information only.
+        applicationEventPublisher.publishEvent(new LateReceiptRejectedEvent(receipt.getReceiptId(), receipt.getVerifiedBy()));
         return toLateResponse(receipt);
     }
 
@@ -393,6 +418,42 @@ public class ReceiptServiceImpl implements ReceiptService {
         }
     }
 
+    /**
+     * A late receipt belongs to an expense on this trip, so its printed date must fall within the trip. The window runs
+     * from the earliest to the latest of the trip dates, the reporting period and the claimed expense date. The expense
+     * date is included because a flight or hotel booked before the trip was accepted with that date at submission.
+     * A report with neither trip dates nor a reporting period has no window, so nothing is checked.
+     */
+    private static void assertWithinTrip(LocalDate receiptDate, ExpenseReport report, ExpenseLineItem line) {
+        LocalDate from = earliest(report.getTripStartDate(), report.getReportingPeriodStart());
+        LocalDate to = latest(report.getTripEndDate(), report.getReportingPeriodEnd());
+        if (from == null && to == null) {
+            return;
+        }
+        LocalDate expenseDate = line.getExpenseDate();
+        if (expenseDate != null) {
+            from = earliest(from, expenseDate);
+            to = latest(to, expenseDate);
+        }
+        if ((from != null && receiptDate.isBefore(from)) || (to != null && receiptDate.isAfter(to))) {
+            throw new BusinessRuleViolationException("The receipt date " + receiptDate + " is outside this trip ("
+                    + (from != null ? from : "?") + " to " + (to != null ? to : "?")
+                    + "). A late receipt must be for an expense on this trip.");
+        }
+    }
+
+    private static LocalDate earliest(LocalDate a, LocalDate b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        return a.isBefore(b) ? a : b;
+    }
+
+    private static LocalDate latest(LocalDate a, LocalDate b) {
+        if (a == null) return b;
+        if (b == null) return a;
+        return a.isAfter(b) ? a : b;
+    }
+
     private boolean totalDiffersFromClaim(ReceiptOcr ocr, ExpenseLineItem line) {
         if (ocr.getAmount() == null || line.getAmount() == null) {
             return false;
@@ -407,12 +468,17 @@ public class ReceiptServiceImpl implements ReceiptService {
     /** Finance/AP only, and never the person who uploaded the receipt or whose expense it is. */
     private void assertReviewer(Receipt receipt) {
         CurrentUser caller = currentUserService.getCurrentUser();
-        boolean reviewer = caller.roles() != null && caller.roles().stream().anyMatch(REVIEW_ROLES::contains);
+        // The token carries roles as UMS spells them (e.g. "Finance_Executive"), so compare ignoring case, as hasRole does.
+        boolean reviewer = caller.roles() != null && caller.roles().stream()
+                .anyMatch(r -> r != null && REVIEW_ROLES.contains(r.toUpperCase(Locale.ROOT)));
         if (!reviewer) {
             throw new AccessDeniedException("Only Finance or AP can review late receipts");
         }
-        if (receipt != null && (caller.employeeId().equals(receipt.getUploadedBy())
-                || caller.employeeId().equals(receipt.getEmployeeId()))) {
+        // Some accounts' tokens carry no employee_id claim. Such a caller has no expenses of their own, so there is
+        // nothing to compare; comparing null-safely avoids failing the whole review on a missing claim.
+        String callerEmployeeId = caller.employeeId();
+        if (receipt != null && callerEmployeeId != null && !callerEmployeeId.isBlank()
+                && (callerEmployeeId.equals(receipt.getUploadedBy()) || callerEmployeeId.equals(receipt.getEmployeeId()))) {
             throw new AccessDeniedException("You cannot review a receipt for your own expense");
         }
     }
@@ -441,6 +507,9 @@ public class ReceiptServiceImpl implements ReceiptService {
         ExpenseReport report = receipt.getReport();
         ReceiptDuplicateService.DuplicateSummary duplicate = receiptDuplicateService.summarize(receipt);
         DuplicateReceiptStatus status = duplicate != null ? duplicate.status() : DuplicateReceiptStatus.NONE;
+        Optional<ReceiptOcr> ocr = receipt.getReceiptId() == null ? Optional.empty()
+                : receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receipt.getReceiptId())
+                        .filter(o -> o.getProcessingStatus() == OcrStatus.OCR_COMPLETED);
         return new LateReceiptResponse(
                 receipt.getReceiptId(),
                 report.getReportId(),
@@ -460,7 +529,12 @@ public class ReceiptServiceImpl implements ReceiptService {
                 receipt.getVerifiedAt(),
                 receipt.getVerificationNote(),
                 status.name(),
-                duplicate != null ? duplicate.message() : null);
+                duplicate != null ? duplicate.message() : null,
+                report.getCashAdvance() != null ? LateReceiptResponse.SOURCE_CASH_ADVANCE : LateReceiptResponse.SOURCE_DIRECT,
+                report.getTripStartDate(),
+                report.getTripEndDate(),
+                ocr.map(ReceiptOcr::getAmount).orElse(null),
+                ocr.map(ReceiptOcr::getCurrencyCode).orElse(null));
     }
 
     private void audit(Receipt receipt, String action, String newValue, String reason) {
@@ -470,7 +544,7 @@ public class ReceiptServiceImpl implements ReceiptService {
                 .action(action)
                 .newValue(newValue)
                 .reason(reason)
-                .performedBy(currentUserService.getCurrentUser().employeeId())
+                .performedBy(currentUserService.getActorId())
                 .performedAt(LocalDateTime.now())
                 .build());
     }

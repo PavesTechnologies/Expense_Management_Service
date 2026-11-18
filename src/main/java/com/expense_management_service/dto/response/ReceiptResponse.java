@@ -33,12 +33,18 @@ public record ReceiptResponse(
          */
         DuplicateReceiptStatus duplicateStatus,
         /** Employee-facing explanation when {@link #duplicateStatus} isn't NONE; null otherwise. */
-        String duplicateMessage
+        String duplicateMessage,
+        /** ORIGINAL, or LATE for a receipt attached after the report was approved, reimbursed or closed. */
+        String attachmentKind,
+        /** Late receipts only: PENDING_REVIEW, VERIFIED or REJECTED by Finance/AP; null for an original receipt. */
+        String verificationStatus,
+        /** Late receipts only: Finance/AP's note on the decision. */
+        String verificationNote
 ) {
     public ReceiptResponse(UUID receiptId, UUID reportId, UUID lineItemId, String originalFileName, String contentType,
                            Integer fileSize, String uploadedBy, LocalDateTime uploadedAt, OcrStatus ocrStatus,
                            boolean possibleDuplicateFileReuse, UUID duplicateOfReceiptId) {
         this(receiptId, reportId, lineItemId, originalFileName, contentType, fileSize, uploadedBy, uploadedAt, ocrStatus,
-                possibleDuplicateFileReuse, duplicateOfReceiptId, DuplicateReceiptStatus.NONE, null);
+                possibleDuplicateFileReuse, duplicateOfReceiptId, DuplicateReceiptStatus.NONE, null, null, null, null);
     }
 }

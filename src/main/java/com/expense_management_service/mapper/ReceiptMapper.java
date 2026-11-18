@@ -34,7 +34,10 @@ public class ReceiptMapper {
                 possibleDuplicateFileReuse,
                 duplicateOfReceiptId,
                 duplicate.status(),
-                duplicate.message()
+                duplicate.message(),
+                entity.getAttachmentKind(),
+                entity.getVerificationStatus(),
+                entity.getVerificationNote()
         );
     }
 }

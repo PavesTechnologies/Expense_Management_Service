@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+
 import com.expense_management_service.entity.ApprovalAssignment;
 import com.expense_management_service.entity.ApprovalLevelInstance;
 import com.expense_management_service.entity.ExpenseReport;
@@ -26,7 +28,6 @@ import com.expense_management_service.service.DelegationService;
 import com.expense_management_service.service.MaterialChangeEvaluator;
 import com.expense_management_service.service.PolicyEvaluationGateway;
 import com.expense_management_service.service.SlaPolicyService;
-import me.paulschwarz.springdotenv.spring.DotenvApplicationInitializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -64,8 +65,8 @@ import static org.mockito.Mockito.when;
         "spring.flyway.enabled=false"
 })
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@ContextConfiguration(initializers = DotenvApplicationInitializer.class)
 @Commit // this repair must persist - @DataJpaTest rolls back by default
+@EnabledIfEnvironmentVariable(named = "XMS_TEST_DATASOURCE_URL", matches = ".+") // opt-in: needs a localhost test DB
 class RepairStuckCostCenterOwnerLevelsRealDbIT {
 
     private static final List<String> AFFECTED_REPORT_NUMBERS = List.of(

@@ -86,7 +86,8 @@ public final class CashAdvanceDisbursementRules {
         return PROOF_EXTENSIONS.get(file.getContentType().toLowerCase(Locale.ROOT));
     }
 
-    private static void validateProof(MultipartFile file, String label) {
+    /** Checks an uploaded proof file: present, PDF/JPG/PNG, at most 10 MB. Shared by cash advances and report payments. */
+    public static void validateProof(MultipartFile file, String label) {
         if (file == null || file.isEmpty()) {
             throw new IllegalArgumentException("Upload the " + label + ".");
         }

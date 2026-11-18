@@ -37,6 +37,18 @@ public interface ApPaymentService {
      */
     ExpenseReportResponse markPaymentCompleted(UUID reportId, CompletePaymentRequest request, String actingEmployeeId);
 
+    /**
+     * Confirms the payment with its proof. The proof (PDF, JPG or PNG, 10 MB at most) is checked and stored before the
+     * payment is recorded, and it is removed again if the confirmation fails. A payment confirmed through this method
+     * always has a proof attached to the report.
+     */
+    ExpenseReportResponse markPaymentCompletedWithProof(UUID reportId, CompletePaymentRequest request,
+                                                        org.springframework.web.multipart.MultipartFile paymentProof,
+                                                        String actingEmployeeId);
+
+    /** The proof of payment attached to a report, for AP and Finance to view. */
+    com.expense_management_service.dto.response.StoredProof paymentProof(UUID reportId);
+
     /** One bank payment covering several reports (Decision 3). Each report gets its own allocation. */
     com.expense_management_service.dto.response.ApPaymentBatchResponse recordBatchPayment(
             com.expense_management_service.dto.request.ApPaymentBatchRequest request, String actingEmployeeId);

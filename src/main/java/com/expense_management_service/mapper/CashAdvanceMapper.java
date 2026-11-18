@@ -6,6 +6,8 @@ import com.expense_management_service.entity.CashAdvance;
 import org.springframework.stereotype.Component;
 
 import java.time.LocalDate;
+import java.util.Locale;
+import java.util.UUID;
 
 @Component
 public class CashAdvanceMapper {
@@ -34,6 +36,7 @@ public class CashAdvanceMapper {
         LocalDate dueDate = request.settlementDueDate() != null ? request.settlementDueDate() : request.neededByDate();
 
         return CashAdvance.builder()
+                .advanceNumber(newAdvanceNumber(LocalDate.now()))
                 .amount(request.amount())
                 .baseAmount(request.baseAmount())
                 .purpose(purpose)
@@ -122,7 +125,18 @@ public class CashAdvanceMapper {
                 entity.getRequestType() == null ? "COMPLETE_NEW" : entity.getRequestType(),
                 entity.getAdditionalAmountRequested(),
                 entity.getTotalAdvanceAllocation(),
-                entity.getEmployeeJustification()
+                entity.getEmployeeJustification(),
+                entity.getAdvanceNumber()
         );
+    }
+
+    /**
+     * Reference in the same form as an expense report number: ADV-&lt;fiscal year&gt;-&lt;8 hex characters&gt;. The fiscal year
+     * runs April to March, the same convention as the expense report numbers.
+     */
+    public static String newAdvanceNumber(LocalDate date) {
+        int startYear = date.getMonthValue() >= 4 ? date.getYear() : date.getYear() - 1;
+        return "ADV-" + startYear + "-" + (startYear + 1) + "-"
+                + UUID.randomUUID().toString().substring(0, 8).toUpperCase(Locale.ROOT);
     }
 }

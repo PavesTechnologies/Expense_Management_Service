@@ -83,6 +83,8 @@ public class Receipt {
     /** {@link #ATTACHMENT_ORIGINAL} for a receipt uploaded with its claim; {@link #ATTACHMENT_LATE} for one attached after approval. */
     public static final String ATTACHMENT_ORIGINAL = "ORIGINAL";
     public static final String ATTACHMENT_LATE = "LATE";
+    /** Uploaded for a supplementary claim item. Its report link is the original report; it is never a line item receipt. */
+    public static final String ATTACHMENT_SUPPLEMENTARY = "SUPPLEMENTARY";
 
     public static final String VERIFICATION_PENDING = "PENDING_REVIEW";
     public static final String VERIFICATION_VERIFIED = "VERIFIED";
@@ -117,4 +119,13 @@ public class Receipt {
     @Builder.Default
     @ToString.Exclude
     private List<ReceiptOcr> receiptOcrs = new ArrayList<>();
+
+    /**
+     * The supplementary claim item this receipt supports, when it belongs to a claim. Null otherwise. One receipt row
+     * points at one item at most; the service locks the row so a receipt cannot be attached to two claims at once.
+     */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "supplementary_claim_item_id", nullable = true)
+    @ToString.Exclude
+    private SupplementaryClaimItem supplementaryClaimItem;
 }

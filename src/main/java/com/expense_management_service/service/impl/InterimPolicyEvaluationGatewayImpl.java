@@ -62,6 +62,12 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
     @Value("${expense.trip.require-project-or-client:true}")
     private boolean requireProjectOrClient = true;
 
+    /** True when at least one line is client billable and has a resolved client (the line rule already requires one). */
+    static boolean hasBillableLineWithClient(ExpenseReport report) {
+        return report.getExpenseLineItems() != null && report.getExpenseLineItems().stream()
+                .anyMatch(line -> Boolean.TRUE.equals(line.getClientBillable()) && line.getResolvedClientId() != null);
+    }
+
     @Override
     public PolicyDecision evaluate(ExpenseReport report) {
         List<PolicyViolation> current = refreshViolations(report);
@@ -76,8 +82,12 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
 
         // Stage 1 (S1-15): a trip report must say which project or client it is for, unless this environment has turned the
         // requirement off through configuration.
-        if (requireProjectOrClient && report.getProjectId() == null && report.getClientId() == null) {
-            return new PolicyDecision(false, display, "Enter the project or client for this trip before submitting.");
+        // The client and project now live on each billable expense line, so the trip is covered when a billable line
+        // has a resolved client. A report-level project or client still satisfies it for existing reports.
+        if (requireProjectOrClient && report.getProjectId() == null && report.getClientId() == null
+                && !hasBillableLineWithClient(report)) {
+            return new PolicyDecision(false, display,
+                    "Add a client billable expense with a client, or enter the project or client for this trip, before submitting.");
         }
 
         // Stage 1 (S1-11): every line must say how the employee paid.

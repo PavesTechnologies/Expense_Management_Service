@@ -48,4 +48,10 @@ public class ApPaymentAllocation {
 
     @Column(name = "payable_after", precision = 19, scale = 4, nullable = false)
     private BigDecimal payableAfter;
+
+    /** The supplementary claim this allocation pays, when it is a claim payment. Null for a report payment. Unique. */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "supplementary_claim_id", nullable = true, unique = true)
+    @ToString.Exclude
+    private SupplementaryExpenseClaim supplementaryClaim;
 }

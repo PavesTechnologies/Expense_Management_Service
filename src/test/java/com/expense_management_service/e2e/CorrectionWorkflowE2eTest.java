@@ -54,7 +54,7 @@ class CorrectionWorkflowE2eTest extends E2eTestBase {
         assertThat(amount(approved, "$.data.reimbursableAmount")).isEqualByComparingTo("1200.00");
 
         // AP pays the corrected amount, not the original.
-        postJson("/xms/ap-payments/" + reportId + "/complete", AP, """
+        apCompletesPaymentWithJson(reportId, """
                 {"paymentReference":"UTR-OLD","paymentMethod":"BANK_TRANSFER","paymentDate":"%s","amountPaid":1500.00}
                 """.formatted(java.time.LocalDate.now()), 422);
         apCompletesPayment(reportId, "1200.00", "UTR-1200");

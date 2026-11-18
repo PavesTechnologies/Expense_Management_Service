@@ -107,7 +107,8 @@ public class ReceiptConfirmationServiceImpl implements ReceiptConfirmationServic
         ExpenseLineItemRequest lineItemRequest = new ExpenseLineItemRequest(
                 request.categoryId(), expenseDate, merchantName, request.description(), amount, currencyId,
                 taxAmount, request.costCenterId(), request.projectId(), request.clientBillable(),
-                request.taxCodeId(), request.taxOverrideReason(), request.clientId(), request.allocationReason());
+                request.taxCodeId(), request.taxOverrideReason(), request.clientId(), request.allocationReason(),
+                request.employeePaymentMethod());
 
         ExpenseLineItemResponse created = expenseLineItemService.create(receipt.getReport().getReportId(), lineItemRequest);
         markCreatedByOcr(created.lineItemId(), latestOcr.isPresent());

@@ -40,7 +40,7 @@ class RegularExpenseWorkflowE2eTest extends E2eTestBase {
         assertThat((Object) read(approved, "$.data.paymentConfirmation")).isNull();
 
         // AP must confirm the exact amount owed.
-        postJson("/xms/ap-payments/" + reportId + "/complete", AP, """
+        apCompletesPaymentWithJson(reportId, """
                 {"paymentReference":"UTR-WRONG","paymentMethod":"BANK_TRANSFER","paymentDate":"%s","amountPaid":1400.00}
                 """.formatted(java.time.LocalDate.now()), 422);
         assertThat((String) read(report(reportId, employee), "$.data.paymentRoutingStatus")).isEqualTo("APPROVED_FOR_PAYMENT");
@@ -52,7 +52,7 @@ class RegularExpenseWorkflowE2eTest extends E2eTestBase {
         assertThat(amount(paid, "$.data.paymentConfirmation.amountPaid")).isEqualByComparingTo("1500.00");
 
         // A second confirmation is refused: the report can only be paid once.
-        postJson("/xms/ap-payments/" + reportId + "/complete", AP, """
+        apCompletesPaymentWithJson(reportId, """
                 {"paymentReference":"UTR-AGAIN","paymentMethod":"BANK_TRANSFER","paymentDate":"%s","amountPaid":1500.00}
                 """.formatted(java.time.LocalDate.now()), 400);
 

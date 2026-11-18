@@ -74,10 +74,38 @@ class ApPaymentServiceImplTest {
     @BeforeEach
     void setUp() {
         var factory = new ExpenseReportResponseFactory(new com.expense_management_service.mapper.ExpenseReportMapper(), policyViolationRepository);
+        storageService = org.mockito.Mockito.mock(com.expense_management_service.storage.StorageService.class);
         service = new ApPaymentServiceImpl(expenseReportRepository, expenseLineItemService, approvalWorkflowService,
                 approvalEventPublisher, auditLogRepository, factory, costCenterBudgetService, budgetEncumbranceService,
-                cashAdvanceBalanceLedger, cashAdvanceRepository, apPaymentBatchRepository, apPaymentAllocationRepository);
+                cashAdvanceBalanceLedger, cashAdvanceRepository, apPaymentBatchRepository, apPaymentAllocationRepository,
+                storageService);
         when(policyViolationRepository.findByLineItem_Report_ReportId(any())).thenReturn(List.of());
+    }
+
+    private com.expense_management_service.storage.StorageService storageService;
+
+    @Test
+    void confirmWithProof_refusesAPaymentWithoutAProof_andStoresNothing() {
+        UUID reportId = UUID.randomUUID();
+
+        assertThatThrownBy(() -> service.markPaymentCompletedWithProof(reportId, payment(), null, "5100099"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("proof of payment");
+        org.mockito.Mockito.verify(storageService, org.mockito.Mockito.never())
+                .upload(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
+    void confirmWithProof_removesTheStoredProof_whenThePaymentIsRefused() {
+        UUID reportId = UUID.randomUUID();
+        var proof = new org.springframework.mock.web.MockMultipartFile("paymentProof", "proof.pdf", "application/pdf",
+                "%PDF-1.4 test".getBytes());
+
+        // No report is stubbed, so the confirmation is refused after the proof was stored: the stored proof must be removed.
+        assertThatThrownBy(() -> service.markPaymentCompletedWithProof(reportId, payment(), proof, "5100099"))
+                .isInstanceOf(RuntimeException.class);
+        org.mockito.Mockito.verify(storageService).upload(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.any());
+        org.mockito.Mockito.verify(storageService).delete(org.mockito.ArgumentMatchers.anyString());
     }
 
     private ExpenseReport report(ReportStatus reportStatus, PaymentRoutingStatus paymentRoutingStatus) {

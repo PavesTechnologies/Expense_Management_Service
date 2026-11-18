@@ -88,6 +88,31 @@ class InterimPolicyEvaluationGatewayImplTest {
         return ExpenseReport.builder().reportId(reportId).expenseLineItems(List.of(paidLine())).build();
     }
 
+    @Test
+    void requirementOn_billableLineWithClient_allowsSubmissionWithoutAReportLevelClient() {
+        requireProjectOrClient(true);
+        stubNoViolations();
+        ExpenseLineItem billable = paidLine();
+        billable.setClientBillable(true);
+        billable.setResolvedClientId(UUID.randomUUID());
+
+        ExpenseReport trip = ExpenseReport.builder().reportId(UUID.randomUUID()).expenseLineItems(List.of(billable)).build();
+
+        assertThat(gateway.evaluate(trip).allowed()).isTrue();
+    }
+
+    @Test
+    void requirementOn_billableLineWithoutClient_stillBlocksSubmission() {
+        requireProjectOrClient(true);
+        stubNoViolations();
+        ExpenseLineItem billable = paidLine();
+        billable.setClientBillable(true);
+
+        ExpenseReport trip = ExpenseReport.builder().reportId(UUID.randomUUID()).expenseLineItems(List.of(billable)).build();
+
+        assertThat(gateway.evaluate(trip).allowed()).isFalse();
+    }
+
     private void requireProjectOrClient(boolean required) {
         org.springframework.test.util.ReflectionTestUtils.setField(gateway, "requireProjectOrClient", required);
     }

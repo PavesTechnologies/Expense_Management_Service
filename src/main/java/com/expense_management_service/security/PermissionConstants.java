@@ -28,6 +28,13 @@ public final class PermissionConstants {
     public static final String EXPENSE_SUBMIT = "EXPENSE_SUBMIT";
     public static final String EXPENSE_APPROVE = "EXPENSE_APPROVE";
 
+    // Supplementary expense claims (must be registered in UMS before a token can carry them; missing = denied)
+    public static final String SUPP_CLAIM_CREATE_FOR_EMPLOYEE = "SUPP_CLAIM_CREATE_FOR_EMPLOYEE";
+    public static final String SUPP_CLAIM_REVIEW_FINANCE = "SUPP_CLAIM_REVIEW_FINANCE";
+    // Receipt release: one Finance user requests, a different Finance user approves (must be registered in UMS)
+    public static final String RECEIPT_RELEASE_REQUEST = "RECEIPT_RELEASE_REQUEST";
+    public static final String RECEIPT_RELEASE_APPROVE = "RECEIPT_RELEASE_APPROVE";
+
     private PermissionConstants() {
     }
 }

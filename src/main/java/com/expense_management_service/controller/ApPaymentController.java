@@ -54,11 +54,25 @@ public class ApPaymentController {
     }
 
     /** AP confirms the actual payment - reference, method, date and amount are required. */
-    @PostMapping("/{reportId}/complete")
-    public ApiResponse<ExpenseReportResponse> markPaymentCompleted(@PathVariable UUID reportId,
-                                                                   @Valid @RequestBody CompletePaymentRequest request) {
+    /** Confirms a payment. The proof of payment is required; the payment is not recorded without it. */
+    @PostMapping(value = "/{reportId}/complete", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<ExpenseReportResponse> markPaymentCompleted(
+            @PathVariable UUID reportId,
+            @Valid @org.springframework.web.bind.annotation.RequestPart("request") CompletePaymentRequest request,
+            @org.springframework.web.bind.annotation.RequestPart("paymentProof") org.springframework.web.multipart.MultipartFile paymentProof) {
         return ApiResponse.success("Payment marked as completed",
-                apPaymentService.markPaymentCompleted(reportId, request, currentUserService.getEmployeeId()));
+                apPaymentService.markPaymentCompletedWithProof(reportId, request, paymentProof, currentUserService.getEmployeeId()));
+    }
+
+    /** The proof of payment attached when this report's payment was confirmed. */
+    @GetMapping("/{reportId}/payment-proof")
+    public org.springframework.http.ResponseEntity<org.springframework.core.io.Resource> paymentProof(@PathVariable UUID reportId) {
+        var proof = apPaymentService.paymentProof(reportId);
+        return org.springframework.http.ResponseEntity.ok()
+                .contentType(org.springframework.http.MediaType.parseMediaType(proof.contentType()))
+                .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION,
+                        org.springframework.http.ContentDisposition.inline().filename(proof.fileName()).build().toString())
+                .body(new org.springframework.core.io.InputStreamResource(proof.content()));
     }
 
     /**

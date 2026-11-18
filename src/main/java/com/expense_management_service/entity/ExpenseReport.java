@@ -217,6 +217,10 @@ public class ExpenseReport {
     @Column(name = "payment_remarks", length = 500)
     private String paymentRemarks;
 
+    /** Storage key of the proof of payment AP attached when confirming the payment. Null until it is confirmed with a proof. */
+    @Column(name = "payment_proof_reference", length = 512)
+    private String paymentProofReference;
+
     /**
      * Approved with nothing to pay the employee (fully offset by a cash advance, or company-paid):
      * never routed to AP and never shown as "paid". {@link #paymentRoutingStatus} stays NONE.

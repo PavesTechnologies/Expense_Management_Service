@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+
 import com.expense_management_service.entity.EmployeeCache;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.repository.EmployeeCacheRepository;
@@ -7,7 +9,6 @@ import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.security.CurrentUser;
 import com.expense_management_service.security.CurrentUserService;
 import jakarta.persistence.EntityManager;
-import me.paulschwarz.springdotenv.spring.DotenvApplicationInitializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -35,8 +36,8 @@ import static org.mockito.Mockito.when;
  */
 @DataJpaTest(properties = {"spring.jpa.hibernate.ddl-auto=none", "spring.flyway.enabled=false"})
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@ContextConfiguration(initializers = DotenvApplicationInitializer.class)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
+@EnabledIfEnvironmentVariable(named = "XMS_TEST_DATASOURCE_URL", matches = ".+") // opt-in: needs a localhost test DB
 class ExpenseReportingRealDbIT {
 
     @Autowired private EntityManager entityManager;

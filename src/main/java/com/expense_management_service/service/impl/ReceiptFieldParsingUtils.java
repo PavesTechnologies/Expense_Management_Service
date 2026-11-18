@@ -28,6 +28,9 @@ final class ReceiptFieldParsingUtils {
 
     private static final Pattern TIME_PATTERN = Pattern.compile("(\\d{1,2}:\\d{2}(?::\\d{2})?\\s?(?:[AaPp][Mm])?)");
 
+    /** A money amount: optional sign, digits with optional thousands commas, optional decimals. */
+    private static final Pattern AMOUNT_NUMBER = Pattern.compile("-?\\d{1,3}(?:,\\d{3})+(?:\\.\\d+)?|-?\\d+(?:\\.\\d+)?");
+
     /**
      * Common receipt date formats, tried in order — Textract returns the date as free text,
      * format varies by vendor. Day-first (dd/MM/yyyy) is tried before month-first (M/d/yyyy) for
@@ -148,10 +151,13 @@ final class ReceiptFieldParsingUtils {
         if (rawText == null) {
             return null;
         }
-        String numeric = rawText.replaceAll("[^0-9.-]", "");
-        if (numeric.isBlank()) {
+        // Take the first number in the text. Stripping every non-digit is wrong for "Rs. 357.00": the dot of "Rs."
+        // survives and gives ".357.00", which never parses, so currency-prefixed totals and taxes were lost.
+        Matcher number = AMOUNT_NUMBER.matcher(rawText);
+        if (!number.find()) {
             return null;
         }
+        String numeric = number.group().replace(",", "");
         try {
             return new BigDecimal(numeric).setScale(4, RoundingMode.HALF_UP);
         } catch (NumberFormatException e) {

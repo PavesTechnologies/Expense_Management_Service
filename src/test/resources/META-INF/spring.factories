@@ -1,0 +1,1 @@
+org.springframework.context.ApplicationContextInitializer=com.expense_management_service.testsupport.TestDatasourceContextInitializer

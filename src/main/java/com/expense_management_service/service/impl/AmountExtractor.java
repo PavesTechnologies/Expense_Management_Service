@@ -84,6 +84,10 @@ final class AmountExtractor {
             addLabelCandidates(candidatesInPriorityOrder, index, keyword, subtotalClaimedFields);
         }
 
+        // A plain "TOTAL" printed as a label (Textract did not type it as TOTAL). Whole word only: "SUBTOTAL" and
+        // "SUB TOTAL" are subtotals, not the payable amount.
+        addPlainTotalLabelCandidate(candidatesInPriorityOrder, index, subtotalClaimedFields);
+
         if (candidatesInPriorityOrder.isEmpty()) {
             return ExtractionResult.empty();
         }
@@ -99,6 +103,24 @@ final class AmountExtractor {
 
         CandidateAmount best = candidatesInPriorityOrder.values().iterator().next();
         return ExtractionResult.of(best.amount(), best.confidence());
+    }
+
+    private static final java.util.regex.Pattern PLAIN_TOTAL_LABEL =
+            java.util.regex.Pattern.compile("(?i)(?<![A-Z])(?<!SUB\\s)(?<!SUB)TOTAL(?![A-Z])");
+
+    private void addPlainTotalLabelCandidate(Map<String, CandidateAmount> candidates, ExpenseFieldIndex index,
+                                             Set<ExpenseField> excluded) {
+        for (ExpenseField field : index.allFields()) {
+            String label = ExpenseFieldSupport.labelOf(field);
+            if (label == null || excluded.contains(field) || !PLAIN_TOTAL_LABEL.matcher(label).find()) {
+                continue;
+            }
+            BigDecimal amount = ReceiptFieldParsingUtils.parseAmount(ExpenseFieldSupport.textOf(field), "TOTAL");
+            if (amount != null) {
+                candidates.putIfAbsent("TOTAL_LABEL", new CandidateAmount(amount, ExpenseFieldSupport.normalizedConfidenceOf(field)));
+                return;
+            }
+        }
     }
 
     private void addLabelCandidates(Map<String, CandidateAmount> candidates, ExpenseFieldIndex index,

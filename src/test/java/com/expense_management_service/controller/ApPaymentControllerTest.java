@@ -153,21 +153,20 @@ class ApPaymentControllerTest {
     void markPaymentCompleted_returns200_forApExecutive() throws Exception {
         UUID reportId = UUID.randomUUID();
         when(currentUserService.getEmployeeId()).thenReturn("5100200");
-        when(apPaymentService.markPaymentCompleted(eq(reportId), any(CompletePaymentRequest.class), eq("5100200")))
+        when(apPaymentService.markPaymentCompletedWithProof(eq(reportId), any(CompletePaymentRequest.class), any(), eq("5100200")))
                 .thenReturn(sampleReportResponse("APPROVED"));
 
-        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", reportId).contentType(MediaType.APPLICATION_JSON).content(PAYMENT_JSON).with(apExecutive()))
+        mockMvc.perform(confirmWithProof(reportId, PAYMENT_JSON).with(apExecutive()))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.paymentRoutingStatus").value("PAYMENT_COMPLETED"));
     }
 
     @Test
     void markPaymentCompleted_returns400_withoutAPaymentReference() throws Exception {
-        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("""
-                                {"paymentMethod":"BANK_TRANSFER","paymentDate":"2026-10-15","amountPaid":12500.00}
-                                """)
+        mockMvc.perform(confirmWithProof(UUID.randomUUID(),
+                        """
+                        {"paymentMethod":"BANK_TRANSFER","paymentDate":"2026-10-15","amountPaid":12500.00}
+                        """)
                         .with(apExecutive()))
                 .andExpect(status().isBadRequest());
 
@@ -176,20 +175,30 @@ class ApPaymentControllerTest {
 
     @Test
     void markPaymentCompleted_returns403_forGeneralRole() throws Exception {
-        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON).content(PAYMENT_JSON).with(general()))
+        mockMvc.perform(confirmWithProof(UUID.randomUUID(), PAYMENT_JSON).with(general()))
                 .andExpect(status().isForbidden());
     }
 
     @Test
     void markPaymentCompleted_returns403_forReportingManagerRole() throws Exception {
-        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON).content(PAYMENT_JSON).with(reportingManager()))
+        mockMvc.perform(confirmWithProof(UUID.randomUUID(), PAYMENT_JSON).with(reportingManager()))
                 .andExpect(status().isForbidden());
     }
 
     @Test
     void markPaymentCompleted_returns403_forFinanceExecutiveRole() throws Exception {
-        mockMvc.perform(post("/xms/ap-payments/{reportId}/complete", UUID.randomUUID()).contentType(MediaType.APPLICATION_JSON).content(PAYMENT_JSON).with(financeExecutive()))
+        mockMvc.perform(confirmWithProof(UUID.randomUUID(), PAYMENT_JSON).with(financeExecutive()))
                 .andExpect(status().isForbidden());
+    }
+
+    /** A confirmation as AP sends it now: the details as the "request" part, and the proof of payment as a file. */
+    private static org.springframework.test.web.servlet.request.MockMultipartHttpServletRequestBuilder confirmWithProof(UUID reportId, String json) {
+        return org.springframework.test.web.servlet.request.MockMvcRequestBuilders
+                .multipart("/xms/ap-payments/{reportId}/complete", reportId)
+                .file(new org.springframework.mock.web.MockMultipartFile("paymentProof", "proof.pdf", "application/pdf",
+                        "%PDF-1.4 test".getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .file(new org.springframework.mock.web.MockMultipartFile("request", "", "application/json",
+                        json.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
     }
 
     @Test

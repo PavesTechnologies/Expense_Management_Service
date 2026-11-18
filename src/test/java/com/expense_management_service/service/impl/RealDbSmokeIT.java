@@ -1,6 +1,7 @@
 package com.expense_management_service.service.impl;
 
-import me.paulschwarz.springdotenv.spring.DotenvApplicationInitializer;
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
@@ -34,11 +35,8 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.flyway.enabled=false"
 })
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE) // real DB, no embedded H2 swap-in
-@ContextConfiguration(initializers = DotenvApplicationInitializer.class) // same .env loader main() wires manually -
-                                                                          // Spring Boot test slices never go through
-                                                                          // main(), so without this ${DB_URL} etc.
-                                                                          // never resolve in ANY test context
 @Transactional(propagation = Propagation.NOT_SUPPORTED) // no auto-wrapping/rollback - just prove raw connectivity
+@EnabledIfEnvironmentVariable(named = "XMS_TEST_DATASOURCE_URL", matches = ".+") // opt-in: needs a localhost test DB
 class RealDbSmokeIT {
 
     @Autowired

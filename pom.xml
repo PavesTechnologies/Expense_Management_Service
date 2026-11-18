@@ -279,6 +279,10 @@
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
                     <argLine>-javaagent:&quot;${org.mockito:mockito-core:jar}&quot;</argLine>
+                    <!-- Tests never read the .env file, which holds the shared database credentials. -->
+                    <systemPropertyVariables>
+                        <springdotenv.enabled>false</springdotenv.enabled>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
 

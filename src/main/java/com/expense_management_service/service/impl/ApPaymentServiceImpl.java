@@ -80,6 +80,7 @@ public class ApPaymentServiceImpl implements ApPaymentService {
     private final CashAdvanceRepository cashAdvanceRepository;
     private final com.expense_management_service.repository.ApPaymentBatchRepository apPaymentBatchRepository;
     private final com.expense_management_service.repository.ApPaymentAllocationRepository apPaymentAllocationRepository;
+    private final com.expense_management_service.storage.StorageService storageService;
 
     @Override
     @Transactional(readOnly = true)
@@ -208,6 +209,47 @@ public class ApPaymentServiceImpl implements ApPaymentService {
 
         log.info("Payment completed for report {} by {} (reference {})", reportId, actingEmployeeId, reference);
         return expenseReportResponseFactory.toResponse(findReport(reportId));
+    }
+
+    @Override
+    public ExpenseReportResponse markPaymentCompletedWithProof(UUID reportId, CompletePaymentRequest request,
+                                                               org.springframework.web.multipart.MultipartFile paymentProof,
+                                                               String actingEmployeeId) {
+        // The proof is checked before anything is recorded, so a payment is never confirmed without one.
+        CashAdvanceDisbursementRules.validateProof(paymentProof, "proof of payment");
+        String proofKey = "payment-proofs/reports/" + reportId + "/" + UUID.randomUUID() + "."
+                + CashAdvanceDisbursementRules.proofExtension(paymentProof);
+        storageService.upload(proofKey, paymentProof);
+        try {
+            markPaymentCompleted(reportId, request, actingEmployeeId);
+            ExpenseReport report = expenseReportRepository.findById(reportId)
+                    .orElseThrow(() -> new ResourceNotFoundException("ExpenseReport not found with id: " + reportId));
+            report.setPaymentProofReference(proofKey);
+            expenseReportRepository.save(report);
+            return expenseReportResponseFactory.toResponse(findReport(reportId));
+        } catch (RuntimeException ex) {
+            // The payment was not recorded, so the stored proof is removed rather than left unattached.
+            try {
+                storageService.delete(proofKey);
+            } catch (RuntimeException cleanup) {
+                log.warn("Could not remove the proof {} after a failed payment confirmation", proofKey, cleanup);
+            }
+            throw ex;
+        }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.expense_management_service.dto.response.StoredProof paymentProof(UUID reportId) {
+        ExpenseReport report = expenseReportRepository.findById(reportId)
+                .orElseThrow(() -> new ResourceNotFoundException("ExpenseReport not found with id: " + reportId));
+        String key = report.getPaymentProofReference();
+        if (key == null) {
+            throw new ResourceNotFoundException("No proof of payment is attached to this report.");
+        }
+        String fileName = key.substring(key.lastIndexOf('/') + 1);
+        String contentType = key.endsWith(".pdf") ? "application/pdf" : key.endsWith(".png") ? "image/png" : "image/jpeg";
+        return new com.expense_management_service.dto.response.StoredProof(fileName, contentType, storageService.download(key));
     }
 
     /**
@@ -398,8 +440,7 @@ public class ApPaymentServiceImpl implements ApPaymentService {
 
     /** Net of cash-advance offsets - what the employee is actually owed. */
     private static BigDecimal amountOwed(ExpenseReport report) {
-        return report.getReimbursableAmount() != null ? report.getReimbursableAmount()
-                : ReimbursementCalculator.reimbursable(report.getTotalAmount(), report.getCashAdvanceAdjustments());
+        return SettlementAmounts.amountOwed(report);
     }
 
     /**

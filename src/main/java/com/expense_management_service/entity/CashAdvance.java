@@ -69,6 +69,10 @@ public class CashAdvance {
     @Column(name = "title", length = 255)
     private String title;
 
+    /** Reference shown to users, in the same form as an expense report number (ADV-YYYY-YYYY-XXXXXXXX). */
+    @Column(name = "advance_number", length = 32, unique = true)
+    private String advanceNumber;
+
     @Column(name = "notes", length = 2000)
     private String notes;
 

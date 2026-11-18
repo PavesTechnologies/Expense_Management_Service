@@ -61,6 +61,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 
 /**
@@ -338,9 +339,18 @@ abstract class E2eTestBase {
     }
 
     protected String apCompletesPayment(String reportId, String amountPaid, String reference) throws Exception {
-        return postJson("/xms/ap-payments/" + reportId + "/complete", AP, """
+        return apCompletesPaymentWithJson(reportId, """
                 {"paymentReference":"%s","paymentMethod":"BANK_TRANSFER","paymentDate":"%s","amountPaid":%s,"remarks":"NEFT"}
                 """.formatted(reference, LocalDate.now(), amountPaid), 200);
+    }
+
+    /** Confirms a payment the way AP does now: the details as the "request" part, and the proof of payment as a file. */
+    protected String apCompletesPaymentWithJson(String reportId, String json, int expectedStatus) throws Exception {
+        return call(multipart("/xms/ap-payments/" + reportId + "/complete")
+                .file(new org.springframework.mock.web.MockMultipartFile("paymentProof", "proof.pdf", "application/pdf",
+                        "%PDF-1.4 test proof".getBytes(java.nio.charset.StandardCharsets.UTF_8)))
+                .file(new org.springframework.mock.web.MockMultipartFile("request", "", "application/json",
+                        json.getBytes(java.nio.charset.StandardCharsets.UTF_8))), AP, expectedStatus);
     }
 
     /** Line approved by the manager and verified by Finance: the report ends APPROVED. */

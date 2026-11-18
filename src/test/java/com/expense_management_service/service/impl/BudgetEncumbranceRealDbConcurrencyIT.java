@@ -1,5 +1,7 @@
 package com.expense_management_service.service.impl;
 
+import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+
 import com.expense_management_service.entity.CostCenter;
 import com.expense_management_service.entity.CostCenterBudget;
 import com.expense_management_service.entity.Currency;
@@ -21,7 +23,6 @@ import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.GlAccountRepository;
 import com.expense_management_service.repository.BudgetEncumbranceRepository;
 import jakarta.persistence.EntityManager;
-import me.paulschwarz.springdotenv.spring.DotenvApplicationInitializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -73,8 +74,6 @@ import static org.assertj.core.api.Assertions.assertThat;
         "spring.flyway.enabled=false"
 })
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE) // real DB, no embedded H2 swap-in
-@ContextConfiguration(initializers = DotenvApplicationInitializer.class) // same .env loader main() wires manually -
-                                                                          // see RealDbSmokeIT for why this is required
 @Import({
         BudgetEncumbranceServiceImpl.class,
         CostCenterBudgetServiceImpl.class,
@@ -82,6 +81,7 @@ import static org.assertj.core.api.Assertions.assertThat;
         CostCenterBudgetMapper.class
 }) // the real production service beans, not a reimplementation of their locking logic
 @Transactional(propagation = Propagation.NOT_SUPPORTED) // no auto-wrapping/rollback - each thread manages its own
+@EnabledIfEnvironmentVariable(named = "XMS_TEST_DATASOURCE_URL", matches = ".+") // opt-in: needs a localhost test DB
 class BudgetEncumbranceRealDbConcurrencyIT {
 
     @Autowired

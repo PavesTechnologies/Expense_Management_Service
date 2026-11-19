@@ -69,6 +69,7 @@ class SalaryDeductionServiceTest {
     @Mock private CurrentUserService currentUserService;
     @Mock private StorageService storageService;
     @Mock private com.expense_management_service.integration.email.EmailTransport emailTransport;
+    @Mock private com.expense_management_service.repository.CashAdvanceAdjustmentRepository adjustmentRepository;
 
     private SalaryDeductionService service;
     private CashAdvance advance;
@@ -121,8 +122,14 @@ class SalaryDeductionServiceTest {
         EmailOutboxService outbox = new EmailOutboxService(outboundEmailRepository, emailTransport);
         CashAdvancePayrollPosting posting = new CashAdvancePayrollPosting(cashAdvanceRepository, repaymentRepository,
                 budgetMovements, balanceLedger, storageService, TestBalanceCalculators.storedCache());
+        // Every advance in these tests has one active linked expense, so settling it is allowed. The refusal has its own test.
+        com.expense_management_service.entity.CashAdvanceAdjustment linked =
+                org.mockito.Mockito.mock(com.expense_management_service.entity.CashAdvanceAdjustment.class);
+        org.mockito.Mockito.lenient().when(linked.isActive()).thenReturn(true);
+        org.mockito.Mockito.lenient().when(adjustmentRepository.findByCashAdvance_AdvanceId(org.mockito.ArgumentMatchers.any()))
+                .thenReturn(java.util.List.of(linked));
         service = new SalaryDeductionService(cashAdvanceRepository, requestRepository, recoveryCaseRepository, posting,
-                new PayrollMonthPolicy(12, 0), outbox, balanceLedger, policy, umsClient, currentUserService);
+                new PayrollMonthPolicy(12, 0), outbox, balanceLedger, policy, umsClient, currentUserService, adjustmentRepository);
     }
 
     @AfterEach
@@ -202,6 +209,19 @@ class SalaryDeductionServiceTest {
 
         verify(cashAdvanceRepository).findByIdForUpdate(advanceId);
         verify(cashAdvanceRepository, never()).findById(advanceId);
+    }
+
+    @Test
+    void create_refusesToSettle_anAdvanceWithNoLinkedExpense() {
+        outboxStatus(OutboundEmail.PENDING);
+        org.mockito.Mockito.when(adjustmentRepository.findByCashAdvance_AdvanceId(advanceId)).thenReturn(java.util.List.of());
+
+        var ex = org.junit.jupiter.api.Assertions.assertThrows(
+                com.expense_management_service.common.exception.BusinessRuleViolationException.class,
+                () -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth));
+
+        org.junit.jupiter.api.Assertions.assertTrue(ex.getMessage().contains("Link at least one expense"));
+        verify(requestRepository, never()).save(any());
     }
 
     @Test

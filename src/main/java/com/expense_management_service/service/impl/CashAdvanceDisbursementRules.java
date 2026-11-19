@@ -18,6 +18,7 @@ public final class CashAdvanceDisbursementRules {
     public static final String CASH = "CASH";
     public static final String BANK_TRANSFER = "BANK_TRANSFER";
     public static final String UPI = "UPI";
+    public static final String COMPANY_CARD = "COMPANY_CARD";
 
     public static final long MAX_PROOF_BYTES = 10L * 1024 * 1024;
 
@@ -38,7 +39,8 @@ public final class CashAdvanceDisbursementRules {
             throw new IllegalArgumentException("Select how the payment was made.");
         }
         String normalized = mode.trim().toUpperCase(Locale.ROOT);
-        if (!CASH.equals(normalized) && !BANK_TRANSFER.equals(normalized) && !UPI.equals(normalized)) {
+        if (!CASH.equals(normalized) && !BANK_TRANSFER.equals(normalized) && !UPI.equals(normalized)
+                && !COMPANY_CARD.equals(normalized)) {
             throw new IllegalArgumentException("Unknown disbursement mode: " + mode);
         }
         return normalized;
@@ -62,6 +64,13 @@ public final class CashAdvanceDisbursementRules {
                     throw new IllegalArgumentException("Enter the transfer date.");
                 }
                 requireText(disbursement.transferDetails(), "Enter the transfer details (bank and beneficiary account).");
+            }
+            case COMPANY_CARD -> {
+                requireText(disbursement.transactionReference(), "Enter the card transaction reference.");
+                if (disbursement.transferDate() == null) {
+                    throw new IllegalArgumentException("Enter the payment date.");
+                }
+                requireText(disbursement.transferDetails(), "Enter the company card used (card name or last four digits).");
             }
             case UPI -> {
                 requireText(disbursement.upiTransactionId(), "Enter the UPI transaction ID.");

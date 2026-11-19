@@ -68,7 +68,9 @@ class CashAdvanceCompensationTest {
         balanceLedger = mock(CashAdvanceBalanceLedger.class);
         currentUserService = mock(CurrentUserService.class);
         service = new CashAdvanceCarryForwardService(cashAdvanceRepository, balanceCalculator, carryForwardRepository,
-                balanceLedger, currentUserService);
+                balanceLedger, currentUserService,
+                org.mockito.Mockito.mock(com.expense_management_service.repository.CashAdvanceAdjustmentRepository.class,
+                        inv -> java.util.List.of(org.mockito.Mockito.mock(com.expense_management_service.entity.CashAdvanceAdjustment.class, inv2 -> true))));
         ReflectionTestUtils.setField(service, "enabled", false); // compensation does not need the feature flag
 
         Currency inr = Currency.builder().currencyCode("INR").decimalPlaces(2).build();
@@ -116,7 +118,7 @@ class CashAdvanceCompensationTest {
     @Test
     void propose_byAFinanceExecutive_onADisbursedRequest_createsAProposalThatReferencesTheRollover() {
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_B);
+        when(currentUserService.getActorId()).thenReturn(EXEC_B);
 
         var response = service.proposeCompensation(original.getCarryForwardId(), "Rollover was entered against the wrong advance");
 
@@ -135,7 +137,7 @@ class CashAdvanceCompensationTest {
     @Test
     void propose_needsAReason() {
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_B);
+        when(currentUserService.getActorId()).thenReturn(EXEC_B);
         assertThrows(IllegalArgumentException.class,
                 () -> service.proposeCompensation(original.getCarryForwardId(), "  "));
     }
@@ -143,7 +145,7 @@ class CashAdvanceCompensationTest {
     @Test
     void propose_isRefusedWhileTheRequestIsNotDisbursed_becauseTheRolloverIsReversedDirectly() {
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_B);
+        when(currentUserService.getActorId()).thenReturn(EXEC_B);
         destination.setDisbursedAt(null);
         assertThrows(BusinessRuleViolationException.class,
                 () -> service.proposeCompensation(original.getCarryForwardId(), "Wrong advance"));
@@ -152,7 +154,7 @@ class CashAdvanceCompensationTest {
     @Test
     void propose_isRefusedForAnAlreadyReversedRollover() {
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_B);
+        when(currentUserService.getActorId()).thenReturn(EXEC_B);
         original.setStatus(CashAdvanceCarryForward.REVERSED);
         assertThrows(BusinessRuleViolationException.class,
                 () -> service.proposeCompensation(original.getCarryForwardId(), "Wrong advance"));
@@ -161,7 +163,7 @@ class CashAdvanceCompensationTest {
     @Test
     void propose_isRefusedWhileAnotherCompensationIsPending() {
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_B);
+        when(currentUserService.getActorId()).thenReturn(EXEC_B);
         when(carryForwardRepository.findByReversesCarryForwardIdAndStatusIn(eq(original.getCarryForwardId()), anyCollection()))
                 .thenReturn(List.of(CashAdvanceCarryForward.builder().status(CashAdvanceCarryForward.PROPOSED).build()));
         BusinessRuleViolationException ex = assertThrows(BusinessRuleViolationException.class,
@@ -173,7 +175,7 @@ class CashAdvanceCompensationTest {
 
     private CashAdvanceCarryForward proposeAs(String proposer) {
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(proposer);
+        when(currentUserService.getActorId()).thenReturn(proposer);
         return rows.get(service.proposeCompensation(original.getCarryForwardId(), "Wrong advance").carryForwardId());
     }
 
@@ -181,7 +183,7 @@ class CashAdvanceCompensationTest {
     void approve_byASecondExecutive_reversesTheBalanceMovement_andKeepsTheCashAlreadyPaid() {
         CashAdvanceCarryForward compensation = proposeAs(EXEC_B);
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_A);
+        when(currentUserService.getActorId()).thenReturn(EXEC_A);
 
         var response = service.approveCompensation(compensation.getCarryForwardId(), "Second approval");
 
@@ -201,7 +203,7 @@ class CashAdvanceCompensationTest {
     void approve_byTheProposer_isRefused() {
         CashAdvanceCarryForward compensation = proposeAs(EXEC_B);
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_B);
+        when(currentUserService.getActorId()).thenReturn(EXEC_B);
         assertThrows(BusinessRuleViolationException.class,
                 () -> service.approveCompensation(compensation.getCarryForwardId(), "I approve my own"));
         assertEquals(CashAdvanceCarryForward.APPLIED, original.getStatus(), "nothing was reversed");
@@ -211,7 +213,7 @@ class CashAdvanceCompensationTest {
     void approve_isRefusedToANonExecutive() {
         CashAdvanceCarryForward compensation = proposeAs(EXEC_B);
         signInAs(RoleConstants.ROLE_FINANCE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_A);
+        when(currentUserService.getActorId()).thenReturn(EXEC_A);
         assertThrows(AccessDeniedException.class,
                 () -> service.approveCompensation(compensation.getCarryForwardId(), "Second approval of compensation"));
     }
@@ -221,7 +223,7 @@ class CashAdvanceCompensationTest {
         CashAdvanceCarryForward compensation = proposeAs(EXEC_B);
         destination.setDisbursedAmount(new BigDecimal("999")); // inconsistent with the amount less carried-in
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_A);
+        when(currentUserService.getActorId()).thenReturn(EXEC_A);
 
         BusinessRuleViolationException ex = assertThrows(BusinessRuleViolationException.class,
                 () -> service.approveCompensation(compensation.getCarryForwardId(), "Second approval of compensation"));
@@ -235,7 +237,7 @@ class CashAdvanceCompensationTest {
         CashAdvanceCarryForward compensation = proposeAs(EXEC_B);
         original.setStatus(CashAdvanceCarryForward.REVERSED);
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_A);
+        when(currentUserService.getActorId()).thenReturn(EXEC_A);
         assertThrows(BusinessRuleViolationException.class,
                 () -> service.approveCompensation(compensation.getCarryForwardId(), "Second approval of compensation"));
     }
@@ -244,7 +246,7 @@ class CashAdvanceCompensationTest {
     void approve_ofAnAlreadyAppliedCompensation_isIdempotent() {
         CashAdvanceCarryForward compensation = proposeAs(EXEC_B);
         signInAs(RoleConstants.ROLE_FINANCE_EXECUTIVE);
-        when(currentUserService.getEmployeeId()).thenReturn(EXEC_A);
+        when(currentUserService.getActorId()).thenReturn(EXEC_A);
         service.approveCompensation(compensation.getCarryForwardId(), "First approval of compensation");
         assertDoesNotThrow(() -> service.approveCompensation(compensation.getCarryForwardId(), "Retrying the same approval"));
         verify(balanceLedger, times(1)).applyBalance(any(), any(), any(), any(), any());

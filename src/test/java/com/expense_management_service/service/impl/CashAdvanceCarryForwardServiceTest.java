@@ -73,7 +73,9 @@ class CashAdvanceCarryForwardServiceTest {
     @BeforeEach
     void setUp() {
         service = new CashAdvanceCarryForwardService(cashAdvanceRepository, TestBalanceCalculators.storedCache(), carryForwardRepository,
-                new CashAdvanceBalanceLedger(auditLogRepository, TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)), currentUserService);
+                new CashAdvanceBalanceLedger(auditLogRepository, TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)), currentUserService,
+                org.mockito.Mockito.mock(com.expense_management_service.repository.CashAdvanceAdjustmentRepository.class,
+                        inv -> java.util.List.of(org.mockito.Mockito.mock(com.expense_management_service.entity.CashAdvanceAdjustment.class, inv2 -> true))));
         ReflectionTestUtils.setField(service, "enabled", true);
 
         inr = Currency.builder().currencyCode("INR").decimalPlaces(2).build();
@@ -112,6 +114,7 @@ class CashAdvanceCarryForwardServiceTest {
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(employeeId, null, authorities));
         lenient().when(currentUserService.getEmployeeId()).thenReturn(employeeId);
+        org.mockito.Mockito.lenient().when(currentUserService.getActorId()).thenReturn(employeeId);
     }
 
     private CashAdvanceCarryForwardRequest proposal(BigDecimal amount) {
@@ -487,6 +490,7 @@ class CashAdvanceCarryForwardServiceTest {
     void markReady_storesTheAmount_forTheOwner() {
         actAs(EMPLOYEE, "GENERAL");
         lenient().when(currentUserService.getEmployeeId()).thenReturn(EMPLOYEE);
+        org.mockito.Mockito.lenient().when(currentUserService.getActorId()).thenReturn(EMPLOYEE);
 
         var response = service.markReady(sourceId, new BigDecimal("400.00"), GOOD_REASON);
 
@@ -498,6 +502,7 @@ class CashAdvanceCarryForwardServiceTest {
     void markReady_refusesMoreThanTheUnallocatedBalance() {
         actAs(EMPLOYEE, "GENERAL");
         lenient().when(currentUserService.getEmployeeId()).thenReturn(EMPLOYEE);
+        org.mockito.Mockito.lenient().when(currentUserService.getActorId()).thenReturn(EMPLOYEE);
 
         assertThatThrownBy(() -> service.markReady(sourceId, new BigDecimal("1500.00"), GOOD_REASON))
                 .isInstanceOf(BusinessRuleViolationException.class)
@@ -508,6 +513,7 @@ class CashAdvanceCarryForwardServiceTest {
     void markReady_refusesAnOverdueSource() {
         actAs(EMPLOYEE, "GENERAL");
         lenient().when(currentUserService.getEmployeeId()).thenReturn(EMPLOYEE);
+        org.mockito.Mockito.lenient().when(currentUserService.getActorId()).thenReturn(EMPLOYEE);
         source.setStatus("OVERDUE");
 
         assertThatThrownBy(() -> service.markReady(sourceId, new BigDecimal("100.00"), GOOD_REASON))
@@ -597,6 +603,7 @@ class CashAdvanceCarryForwardServiceTest {
     void cancelReady_clearsTheReadyAmount() {
         actAs(EMPLOYEE, "GENERAL");
         lenient().when(currentUserService.getEmployeeId()).thenReturn(EMPLOYEE);
+        org.mockito.Mockito.lenient().when(currentUserService.getActorId()).thenReturn(EMPLOYEE);
         source.setCarryForwardReadyAmount(new BigDecimal("400.00"));
 
         var response = service.cancelReady(sourceId, GOOD_REASON);

@@ -375,27 +375,14 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
         List<CashAdvance> allAdvances;
 
-        if ("APPROVED".equals(upperStatus)) {
+        if ("APPROVED".equals(upperStatus) || "REJECTED".equals(upperStatus)) {
 
-            allAdvances =
-                    cashAdvanceRepository.findByStatusIn(
-                            List.of(
-                                    "APPROVED",
-                                    "DISBURSED",
-                                    "IN_PROGRESS",
-                                    "RECONCILIATION_PENDING",
-                                    "SUBMITTED_FOR_REVIEW",
-                                    "UNDER_REVIEW",
-                                    "SETTLEMENT_PENDING",
-                                    "CLOSED",
-                                    "SETTLED"
-                            )
-                    );
-
-        } else if ("REJECTED".equals(upperStatus)) {
-
-            allAdvances =
-                    cashAdvanceRepository.findByStatus("REJECTED");
+            // History is what this user decided, read from the audit trail: every advance they approved (at whatever
+            // stage it is now, including ones still waiting for Finance) or rejected, latest decision first. It used to
+            // return every approved or rejected advance in the company, whoever decided it.
+            allAdvances = advancesDecidedBy(
+                    ownIds(mgrId),
+                    "APPROVED".equals(upperStatus) ? "CASH_ADVANCE_APPROVED" : "CASH_ADVANCE_REJECTED");
 
         } else {
 
@@ -448,6 +435,36 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         return new PageImpl<>(pageContent, pageable, allAdvances.size());
     }
 
+
+    /** The caller's own ids (employee id and its UUID form). Delegators are left out: history is what this user did. */
+    private Set<String> ownIds(String employeeId) {
+        Set<String> ids = new HashSet<>();
+        if (employeeId == null || employeeId.isBlank()) {
+            return ids;
+        }
+        ids.add(employeeId);
+        employeeCacheRepository.findByEmployeeId(employeeId).map(EmployeeCache::getEmployeeUuid).ifPresent(ids::add);
+        employeeCacheRepository.findByEmployeeUuid(employeeId).map(EmployeeCache::getEmployeeId).ifPresent(ids::add);
+        ids.remove(null);
+        return ids;
+    }
+
+    /** Advances the actors approved or rejected (by audit action), most recent decision first. */
+    private List<CashAdvance> advancesDecidedBy(Set<String> actors, String action) {
+        if (actors.isEmpty()) {
+            return List.of();
+        }
+        List<UUID> orderedIds = auditLogRepository.findEntityIdsActedOnBy("CashAdvance", action, actors).stream()
+                .map(row -> (UUID) row[0])
+                .filter(java.util.Objects::nonNull)
+                .toList();
+        if (orderedIds.isEmpty()) {
+            return List.of();
+        }
+        java.util.Map<UUID, CashAdvance> byId = new java.util.HashMap<>();
+        cashAdvanceRepository.findAllById(orderedIds).forEach(a -> byId.put(a.getAdvanceId(), a));
+        return orderedIds.stream().map(byId::get).filter(java.util.Objects::nonNull).toList();
+    }
 
     // ============================================================
     // APPROVER CHECK

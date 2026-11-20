@@ -44,6 +44,20 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, UUID> {
                           @Param("q") String q,
                           Pageable pageable);
 
+    /**
+     * Records of one entity type that any of {@code actors} acted on with {@code action}, each with the time of that
+     * actor's latest such action, most recent first. Row = [entityId (UUID), latest performedAt (LocalDateTime)].
+     */
+    @Query("""
+            select a.entityId, max(a.performedAt) from AuditLog a
+            where a.entityName = :entityName and a.action = :action and a.performedBy in :actors
+            group by a.entityId
+            order by max(a.performedAt) desc
+            """)
+    List<Object[]> findEntityIdsActedOnBy(@Param("entityName") String entityName,
+                                          @Param("action") String action,
+                                          @Param("actors") java.util.Collection<String> actors);
+
     @Query("select distinct a.entityName from AuditLog a order by a.entityName")
     List<String> findDistinctEntityNames();
 

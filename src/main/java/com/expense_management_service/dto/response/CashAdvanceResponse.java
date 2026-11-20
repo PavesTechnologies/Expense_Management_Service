@@ -44,7 +44,11 @@ public record CashAdvanceResponse(
         BigDecimal totalAdvanceAllocation,
         String employeeJustification,
         /** Reference in the same form as an expense report number, e.g. ADV-2026-2027-1A2B3C4D. Null on rows before V50 until backfilled. */
-        String advanceNumber
+        String advanceNumber,
+        /** What the employee asked for. Differs from {@code amount} when the manager approved a lower amount. */
+        BigDecimal requestedAmount,
+        /** Manager's decision: FULL_ADVANCE, REDUCED, SET_OFF or DEFERRED. Null until the manager decides. */
+        String managerTreatment
 ) {
     public CashAdvanceResponse(
             UUID advanceId,
@@ -64,7 +68,7 @@ public record CashAdvanceResponse(
     ) {
         this(advanceId, employeeId, managerId, null, null, amount, currencyId, currencyCode, baseAmount,
                 purpose, status, settlementDueDate, neededByDate, outstandingBalance, createdAt, updatedAt,
-                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+                null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     public CashAdvanceResponse(
@@ -84,7 +88,7 @@ public record CashAdvanceResponse(
     ) {
         this(advanceId, employeeId, managerId, null, null, amount, currencyId, currencyCode, baseAmount,
             purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     public CashAdvanceResponse(
@@ -103,7 +107,7 @@ public record CashAdvanceResponse(
     ) {
         this(advanceId, employeeId, null, null, null, amount, currencyId, currencyCode, baseAmount,
             purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, createdAt, updatedAt,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 
     public CashAdvanceResponse(
@@ -120,6 +124,6 @@ public record CashAdvanceResponse(
     ) {
         this(advanceId, employeeId, null, null, null, amount, currencyId, currencyCode, baseAmount,
             purpose, status, settlementDueDate, settlementDueDate, outstandingBalance, null, null,
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
     }
 }

@@ -129,7 +129,8 @@ public class CashAdvanceMapper {
                 entity.getAdvanceNumber(),
                 // requestedAmount is stored on the first manager decision; before that the amount is what was requested.
                 entity.getRequestedAmount() != null ? entity.getRequestedAmount() : entity.getAmount(),
-                entity.getRecommendedTreatment()
+                entity.getRecommendedTreatment(),
+                entity.getCarryForwardReadyAmount()
         );
     }
 

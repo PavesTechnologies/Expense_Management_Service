@@ -45,6 +45,12 @@ public class CashAdvanceBalanceLedger {
         if (balance != null && balance.signum() > 0 && CashAdvanceExpenseWindow.isLocked(advance, LocalDateTime.now(), overdueWindowDays)) {
             return "OVERDUE";
         }
+        // Money carried forward from this advance and not yet taken in by a later one is still owed, so the advance stays
+        // open (never closed) at a zero balance. The held money has no deadline of its own, so it is never overdue.
+        if (CashAdvanceAllocationRules.holdsCarryForward(advance.getCarryForwardReadyAmount())
+                && balance != null && balance.signum() == 0) {
+            return CashAdvanceBalanceRules.STATUS_SETTLEMENT_PENDING;
+        }
         return CashAdvanceBalanceRules.statusAfterBalance(balance, decimals, hasUnpaidReimbursement(advance));
     }
 

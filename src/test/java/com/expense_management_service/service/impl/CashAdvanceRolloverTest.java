@@ -211,13 +211,32 @@ class CashAdvanceRolloverTest {
     }
 
     @Test
-    void subtractsWhatIsAlreadyAllocatedFromTheSource() {
+    void subtractsProposalsStillWaitingFromTheSource() {
+        // Applied carry-forwards are already off the balance; only a proposal still waiting holds part of it back.
         CashAdvance source = register(advance("DISBURSED", "4000", LocalDateTime.of(2026, 9, 1, 9, 0), inr()));
         CashAdvanceCarryForward earlier = CashAdvanceCarryForward.builder().amount(new BigDecimal("3500"))
-                .status(CashAdvanceCarryForward.APPLIED).build();
+                .status(CashAdvanceCarryForward.PROPOSED).build();
         when(carryForwardRepository.findBySourceAdvance_AdvanceIdAndStatusIn(eq(source.getAdvanceId()), anyCollection()))
                 .thenReturn(List.of(earlier));
         assertThrows(BusinessRuleViolationException.class, () -> rollover(new BigDecimal("1000"), null, false));
+    }
+
+    @Test
+    void heldCarryForward_isTakenFirst_withoutTouchingItsAdvanceBalanceAgain() {
+        // Finance already carried 600 forward from this advance (its balance is now 0), whatever its status.
+        CashAdvance held = advance("EXPENSE_VERIFIED", "0", LocalDateTime.of(2026, 8, 1, 9, 0), inr());
+        held.setCarryForwardReadyAmount(new BigDecimal("600"));
+        byId.put(held.getAdvanceId(), held);
+        when(cashAdvanceRepository.findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(ME))
+                .thenReturn(List.of(held));
+        CashAdvance open = register(advance("DISBURSED", "1000", LocalDateTime.of(2026, 9, 1, 9, 0), inr()));
+
+        rollover(new BigDecimal("1000"), null, false);
+
+        assertNull(held.getCarryForwardReadyAmount());
+        assertEquals(0, held.getOutstandingBalance().compareTo(BigDecimal.ZERO));
+        assertEquals(0, destination.getCarriedInAmount().compareTo(new BigDecimal("1000")));
+        assertEquals(0, CashAdvanceBalanceRules.carriedOut(open).compareTo(new BigDecimal("400")));
     }
 
     @Test

@@ -1538,8 +1538,11 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
 
             // Overdue means: an open balance after the 30-day expense window (see CashAdvanceExpenseWindow), not the
             // user-entered settlement date. The ledger derives OVERDUE from the same rule, so the status is durable.
-            if (!CashAdvanceExpenseWindow.isLocked(advance, now, overdueWindowDays)
-                    || balanceCalculator.outstanding(advance).compareTo(BigDecimal.ZERO) <= 0) {
+            if (!CashAdvanceExpenseWindow.isLocked(advance, now, overdueWindowDays)) {
+                continue;
+            }
+            // Carried-forward money has already left the balance, so only what is still owed on the advance itself counts.
+            if (balanceCalculator.outstanding(advance).compareTo(BigDecimal.ZERO) <= 0) {
                 continue;
             }
             String oldStatus = advance.getStatus();
@@ -2270,6 +2273,15 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             open = open.add(owed);
             if (CashAdvanceAllocationRules.rolloverEligible(advance.getStatus())) {
                 eligible = eligible.add(owed);
+            }
+        }
+        // Money Finance carried forward has left its advance's balance but is still owed. It is part of the employee's
+        // outstanding, and any new request may take it in, whatever the status of the advance it came from.
+        for (CashAdvance advance : cashAdvanceRepository.findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(employeeId)) {
+            BigDecimal held = advance.getCarryForwardReadyAmount();
+            if (CashAdvanceAllocationRules.holdsCarryForward(held)) {
+                open = open.add(held);
+                eligible = eligible.add(held);
             }
         }
         if (type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING && eligible.signum() <= 0) {

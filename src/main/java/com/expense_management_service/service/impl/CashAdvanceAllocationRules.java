@@ -30,6 +30,20 @@ public final class CashAdvanceAllocationRules {
         return status != null && ROLLOVER_ELIGIBLE_STATUSES.contains(status.toUpperCase(Locale.ROOT));
     }
 
+    /** True when the advance holds money Finance carried forward that no later advance has taken in yet. */
+    public static boolean holdsCarryForward(BigDecimal heldAmount) {
+        return heldAmount != null && heldAmount.signum() > 0;
+    }
+
+    /** The carried-forward amount still held after {@code moved} of it went into another advance; null once none is left. */
+    public static BigDecimal readyAfterMove(BigDecimal readyAmount, BigDecimal moved) {
+        if (readyAmount == null) {
+            return null;
+        }
+        BigDecimal left = readyAmount.subtract(moved == null ? BigDecimal.ZERO : moved);
+        return left.signum() > 0 ? left : null;
+    }
+
     /** The request type when the caller did not send one: the behaviour before request types existed. */
     public static CashAdvanceRequestType typeOrDefault(CashAdvanceRequestType type) {
         return type == null ? CashAdvanceRequestType.COMPLETE_NEW : type;

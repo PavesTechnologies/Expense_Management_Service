@@ -73,7 +73,9 @@ class CashAdvanceCarryForwardServiceTest {
     @BeforeEach
     void setUp() {
         service = new CashAdvanceCarryForwardService(cashAdvanceRepository, TestBalanceCalculators.storedCache(), carryForwardRepository,
-                new CashAdvanceBalanceLedger(auditLogRepository, TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)), currentUserService);
+                new CashAdvanceBalanceLedger(auditLogRepository, TestBalanceCalculators.storedCache(), org.mockito.Mockito.mock(com.expense_management_service.repository.ExpenseReportRepository.class)), currentUserService,
+                org.mockito.Mockito.mock(com.expense_management_service.repository.CashAdvanceAdjustmentRepository.class,
+                        inv -> java.util.List.of(org.mockito.Mockito.mock(com.expense_management_service.entity.CashAdvanceAdjustment.class, inv2 -> true))));
         ReflectionTestUtils.setField(service, "enabled", true);
 
         inr = Currency.builder().currencyCode("INR").decimalPlaces(2).build();
@@ -112,6 +114,7 @@ class CashAdvanceCarryForwardServiceTest {
         SecurityContextHolder.getContext().setAuthentication(
                 new UsernamePasswordAuthenticationToken(employeeId, null, authorities));
         lenient().when(currentUserService.getEmployeeId()).thenReturn(employeeId);
+        org.mockito.Mockito.lenient().when(currentUserService.getActorId()).thenReturn(employeeId);
     }
 
     private CashAdvanceCarryForwardRequest proposal(BigDecimal amount) {

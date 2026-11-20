@@ -692,68 +692,6 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         }
     }
 
-    /**
-     * Finance's approval of a Cash Advance + Outstanding request. In one transaction: the rollover is taken from the eligible
-     * balances (oldest first), the approved cash is set (it may be lower than requested), any overdue exception is recorded,
-     * and then the request is approved. If the rollover cannot be applied, nothing is approved.
-     */
-    @Override
-    public CashAdvanceResponse approveAllocation(UUID advanceId, String approverId,
-                                                 com.expense_management_service.dto.request.CashAdvanceAllocationApprovalRequest request) {
-        cashAdvanceRepository.findByIdForUpdate(advanceId);
-        CashAdvance entity = findEntity(advanceId);
-        if (!CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING.name().equals(entity.getRequestType())) {
-            throw new BusinessRuleViolationException("Only a Cash Advance + Outstanding request is approved through an allocation.");
-        }
-        String statusUpper = entity.getStatus() == null ? "" : entity.getStatus().toUpperCase();
-        if (!List.of("PENDING_FINANCE_APPROVAL", "PENDING_FINANCE").contains(statusUpper)) {
-            throw new BusinessRuleViolationException("This request is not awaiting Finance approval. Current status: " + entity.getStatus());
-        }
-        validateApproverAuthorization(entity, approverId);
-
-        BigDecimal requestedCash = entity.getAdditionalAmountRequested();
-        if (requestedCash == null) {
-            throw new BusinessRuleViolationException("The additional amount is missing on this request.");
-        }
-        BigDecimal cash = request.approvedCashAmount() != null ? request.approvedCashAmount() : requestedCash;
-        if (cash.signum() < 0 || cash.compareTo(requestedCash) > 0) {
-            throw new BusinessRuleViolationException("The approved cash must be between 0 and the requested " + requestedCash.toPlainString() + ".");
-        }
-        if (cash.signum() > 0) {
-            validateRoundAmount(cash);
-        }
-
-        // The eligible balance is read here, under the lock, not from the employee's earlier figures.
-        BigDecimal eligible = allocationFor(entity.getEmployeeId(), CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING, requestedCash)
-                .eligibleOutstanding();
-        CashAdvanceCarryForwardService.OverdueException overdue = null;
-        if (request.overdueSourceAdvanceId() != null) {
-            if (!hasAuthority(RoleConstants.ROLE_FINANCE_EXECUTIVE)) {
-                throw new org.springframework.security.access.AccessDeniedException(
-                        "Only a Finance executive can authorise a rollover from an overdue advance.");
-            }
-            overdue = new CashAdvanceCarryForwardService.OverdueException(
-                    request.overdueSourceAdvanceId(), request.overdueAmount(), request.overdueJustification());
-        }
-        BigDecimal maxRollover = overdue != null && overdue.amount() != null ? eligible.add(overdue.amount()) : eligible;
-        BigDecimal rollover = request.rolloverAmount() != null ? request.rolloverAmount() : maxRollover;
-        if (rollover.signum() <= 0) {
-            throw new BusinessRuleViolationException("There is no eligible outstanding balance to roll over.");
-        }
-        if (rollover.compareTo(maxRollover) > 0) {
-            throw new BusinessRuleViolationException("The rollover is more than the eligible balance of " + maxRollover.toPlainString() + ".");
-        }
-        if (rollover.compareTo(maxRollover) < 0
-                && (request.reductionJustification() == null || request.reductionJustification().isBlank())) {
-            throw new BusinessRuleViolationException(
-                    "Explain why the rollover is less than the eligible balance. The rest stays outstanding on its advance.");
-        }
-
-        carryForwardService.applyRollover(entity, rollover, cash, overdue, approverId,
-                "Rolled over on Finance approval of " + advanceId, hasAuthority(RoleConstants.ROLE_FINANCE_EXECUTIVE));
-        return approveInternal(advanceId, approverId, overdue == null ? null : overdue.sourceAdvanceId());
-    }
-
     private static boolean hasAuthority(String role) {
         org.springframework.security.core.Authentication auth = SecurityContextHolder.getContext().getAuthentication();
         if (auth == null) {
@@ -1212,7 +1150,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                 entity.setDisbursementAcknowledgedBy(disbursement.receivedByName().trim());
                 entity.setDisbursementProofReference(proofKey);
             }
-            case CashAdvanceDisbursementRules.BANK_TRANSFER -> {
+            case CashAdvanceDisbursementRules.BANK_TRANSFER, CashAdvanceDisbursementRules.COMPANY_CARD -> {
                 entity.setDisbursementReference(disbursement.transactionReference().trim());
                 entity.setDisbursementPaymentDate(disbursement.transferDate());
                 entity.setDisbursementTransferDetails(disbursement.transferDetails().trim());
@@ -1394,7 +1332,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
      */
     private static String repaymentReference(String mode, CashAdvanceDisbursement payment) {
         return switch (mode) {
-            case CashAdvanceDisbursementRules.BANK_TRANSFER -> payment.transactionReference().trim();
+            case CashAdvanceDisbursementRules.BANK_TRANSFER, CashAdvanceDisbursementRules.COMPANY_CARD -> payment.transactionReference().trim();
             case CashAdvanceDisbursementRules.UPI -> payment.upiTransactionId().trim();
             case CashAdvanceDisbursementRules.CASH -> "CASH-" + sha256Prefix(payment.signedAcknowledgment());
             default -> throw new IllegalStateException("Unhandled repayment mode: " + mode);
@@ -2355,9 +2293,18 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                 CashAdvanceAllocationRules.justificationRequired(type, open));
     }
 
+    /** The Cash Advance + Outstanding (rollover) flow has been removed. Nothing may create, preview or approve one. */
+    static void refuseRemovedRollover(CashAdvanceRequestType type) {
+        if (type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING) {
+            throw new BusinessRuleViolationException(
+                    "Cash Advance + Outstanding is no longer available. Request a Complete New cash advance instead.");
+        }
+    }
+
     /** Validates the request type and its amounts, then stores the calculation on the advance. Called on create and update. */
     void applyAllocationRules(CashAdvance entity, CashAdvanceRequest request) {
         CashAdvanceRequestType type = CashAdvanceAllocationRules.typeOrDefault(request.requestType());
+        refuseRemovedRollover(type);
         BigDecimal amount = request.amount();
         if (type == CashAdvanceRequestType.COMPLETE_NEW && request.additionalAmount() != null) {
             throw new BusinessRuleViolationException("An additional amount applies only to Cash Advance + Outstanding.");
@@ -2381,6 +2328,7 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         validateRoundAmount(request.amount());
         String employeeId = currentUserService.getEmployeeId();
         CashAdvanceRequestType type = CashAdvanceAllocationRules.typeOrDefault(request.requestType());
+        refuseRemovedRollover(type);
         Allocation allocation = allocationFor(employeeId, type, request.amount());
         CashAdvanceExposure.Result exposure =
                 evaluateExposure(employeeId, null, allocation.openOutstanding(), committedAmount(employeeId, null), request.amount());

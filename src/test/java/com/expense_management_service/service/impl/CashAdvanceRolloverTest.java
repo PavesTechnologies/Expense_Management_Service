@@ -66,7 +66,9 @@ class CashAdvanceRolloverTest {
         when(currentUserService.getEmployeeId()).thenReturn(FINANCE);
 
         service = new CashAdvanceCarryForwardService(cashAdvanceRepository, balanceCalculator, carryForwardRepository,
-                balanceLedger, currentUserService);
+                balanceLedger, currentUserService,
+                org.mockito.Mockito.mock(com.expense_management_service.repository.CashAdvanceAdjustmentRepository.class,
+                        inv -> java.util.List.of(org.mockito.Mockito.mock(com.expense_management_service.entity.CashAdvanceAdjustment.class, inv2 -> true))));
         ReflectionTestUtils.setField(service, "enabled", true);
 
         byId = new HashMap<>();

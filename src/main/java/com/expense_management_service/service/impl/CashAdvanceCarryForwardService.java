@@ -71,6 +71,7 @@ public class CashAdvanceCarryForwardService {
     private final CashAdvanceCarryForwardRepository carryForwardRepository;
     private final CashAdvanceBalanceLedger balanceLedger;
     private final CurrentUserService currentUserService;
+    private final com.expense_management_service.repository.CashAdvanceAdjustmentRepository adjustmentRepository;
 
     @Value("${expense.carry-forward.enabled:false}")
     private boolean enabled = false;
@@ -90,7 +91,7 @@ public class CashAdvanceCarryForwardService {
     @Transactional
     public CashAdvanceCarryForwardResponse propose(CashAdvanceCarryForwardRequest request) {
         requireEnabled();
-        String actor = currentUserService.getEmployeeId();
+        String actor = currentUserService.getActorId();
         String reason = requireReason(request.reason());
         BigDecimal amount = requirePositive(request.amount());
 
@@ -119,6 +120,7 @@ public class CashAdvanceCarryForwardService {
         }
         assertSameEmployeeAndCurrency(source, destination);
         assertSourceCanGiveBalance(source);
+        assertSourceHasLinkedExpense(source);
         assertDestinationEligible(destination);
         assertNoCycle(source.getAdvanceId(), destination.getAdvanceId());
 
@@ -152,7 +154,7 @@ public class CashAdvanceCarryForwardService {
     @Transactional
     public CashAdvanceCarryForwardResponse approve(UUID carryForwardId, CarryForwardDecisionRequest decision) {
         requireEnabled();
-        String approver = currentUserService.getEmployeeId();
+        String approver = currentUserService.getActorId();
         String reason = requireReason(decision.reason());
 
         CashAdvanceCarryForward allocation = lockAllocation(carryForwardId);
@@ -208,7 +210,7 @@ public class CashAdvanceCarryForwardService {
     @Transactional
     public CarryForwardReadyResponse markReady(UUID sourceAdvanceId, BigDecimal amount, String reason) {
         requireEnabled();
-        String actor = currentUserService.getEmployeeId();
+        String actor = currentUserService.getActorId();
         String why = requireReason(reason);
         BigDecimal requested = requirePositive(amount);
         if (!isFinanceCaller()) {
@@ -243,7 +245,7 @@ public class CashAdvanceCarryForwardService {
     @Transactional
     public CarryForwardReadyResponse cancelReady(UUID sourceAdvanceId, String reason) {
         requireEnabled();
-        String actor = currentUserService.getEmployeeId();
+        String actor = currentUserService.getActorId();
         String why = requireReason(reason);
         if (!isFinanceCaller()) {
             throw new BusinessRuleViolationException("Only Finance can return a carried-forward balance.");
@@ -432,7 +434,7 @@ public class CashAdvanceCarryForwardService {
     @Transactional
     public CashAdvanceCarryForwardResponse reject(UUID carryForwardId, CarryForwardDecisionRequest decision) {
         requireEnabled();
-        String actor = currentUserService.getEmployeeId();
+        String actor = currentUserService.getActorId();
         String reason = requireReason(decision.reason());
 
         CashAdvanceCarryForward allocation = lockAllocation(carryForwardId);
@@ -455,7 +457,7 @@ public class CashAdvanceCarryForwardService {
     public CashAdvanceCarryForwardResponse reverse(UUID carryForwardId, CarryForwardDecisionRequest decision) {
         requireEnabled();
         requireFinance();
-        String actor = currentUserService.getEmployeeId();
+        String actor = currentUserService.getActorId();
         String reason = requireReason(decision.reason());
 
         CashAdvanceCarryForward allocation = lockAllocation(carryForwardId);
@@ -712,7 +714,7 @@ public class CashAdvanceCarryForwardService {
     @Transactional
     public CashAdvanceCarryForwardResponse proposeCompensation(UUID originalId, String reason) {
         requireExecutive();
-        String actor = currentUserService.getEmployeeId();
+        String actor = currentUserService.getActorId();
         String text = requireReason(reason);
         CashAdvanceCarryForward original = lockAllocation(originalId);
         if (!CashAdvanceCarryForward.APPLIED.equals(original.getStatus())) {
@@ -751,7 +753,7 @@ public class CashAdvanceCarryForwardService {
     @Transactional
     public CashAdvanceCarryForwardResponse approveCompensation(UUID compensationId, String reason) {
         requireExecutive();
-        String approver = currentUserService.getEmployeeId();
+        String approver = currentUserService.getActorId();
         String text = requireReason(reason);
         CashAdvanceCarryForward compensation = lockAllocation(compensationId);
         if (CashAdvanceCarryForward.APPLIED.equals(compensation.getStatus())) {
@@ -873,7 +875,7 @@ public class CashAdvanceCarryForwardService {
         if (isFinanceCaller()) {
             return;
         }
-        String actor = currentUserService.getEmployeeId();
+        String actor = currentUserService.getActorId();
         String manager = allocation.getSourceAdvance().getManagerId();
         if (isManagerCaller() && sameEmployee(actor, manager)) {
             return;
@@ -959,6 +961,19 @@ public class CashAdvanceCarryForwardService {
     /** The authoritative balance from the records. The cached column is never used for capacity decisions. */
     BigDecimal outstanding(CashAdvance advance) {
         return balanceCalculator.outstanding(advance);
+    }
+
+    /**
+     * A carry-forward moves the source's balance out of it, which closes the source. An advance with no expense linked
+     * has nothing to reconcile against, so it cannot be settled this way.
+     */
+    private void assertSourceHasLinkedExpense(CashAdvance source) {
+        boolean linked = adjustmentRepository.findByCashAdvance_AdvanceId(source.getAdvanceId()).stream()
+                .anyMatch(com.expense_management_service.entity.CashAdvanceAdjustment::isActive);
+        if (!linked) {
+            throw new BusinessRuleViolationException("Link at least one expense to the source advance before carrying its "
+                    + "balance forward. Without a linked expense, the advance cannot be closed.");
+        }
     }
 
     private CashAdvance findAdvance(UUID id) {

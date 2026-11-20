@@ -26,7 +26,7 @@ public class CashAdvanceRepaymentMapper {
 
         switch (mode) {
             case "CASH" -> builder.receivedByName(payment.receivedByName().trim());
-            case "BANK_TRANSFER" -> builder
+            case "BANK_TRANSFER", "COMPANY_CARD" -> builder
                     .transferDate(payment.transferDate())
                     .transferDetails(payment.transferDetails().trim());
             case "UPI" -> builder

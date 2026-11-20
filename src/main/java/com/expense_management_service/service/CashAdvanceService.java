@@ -62,9 +62,6 @@ public interface CashAdvanceService {
 
     void delete(UUID advanceId);
 
-    /** Finance's approval of a Cash Advance + Outstanding request: rollover, approved cash and any overdue exception, atomically. */
-    CashAdvanceResponse approveAllocation(UUID advanceId, String approverId,
-                                          com.expense_management_service.dto.request.CashAdvanceAllocationApprovalRequest request);
 
     /** Calculation preview for a new request. Calculated on the server from the ledger; the employee's input is not trusted. */
     com.expense_management_service.dto.response.CashAdvancePreviewResponse preview(

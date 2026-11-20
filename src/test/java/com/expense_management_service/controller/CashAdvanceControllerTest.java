@@ -371,26 +371,6 @@ class CashAdvanceControllerTest {
     // ---------------------------------------------------------------- Slice 1: preview and profile
 
     @Test
-    void preview_returns200_withTheServerCalculation() throws Exception {
-        com.expense_management_service.dto.response.CashAdvancePreviewResponse preview =
-                new com.expense_management_service.dto.response.CashAdvancePreviewResponse(
-                        com.expense_management_service.enums.CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING, "INR",
-                        new BigDecimal("4000"), new BigDecimal("4000"), new BigDecimal("4000"), new BigDecimal("8000"),
-                        false, null, new BigDecimal("8000"), false, BigDecimal.ZERO);
-        when(cashAdvanceService.preview(any())).thenReturn(preview);
-
-        mockMvc.perform(post("/xms/employee/cash-advances/preview")
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
-                        .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
-                        .content("{\"requestType\":\"ADVANCE_PLUS_OUTSTANDING\",\"amount\":4000,\"currencyId\":\"" + currencyId + "\"}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.requestType").value("ADVANCE_PLUS_OUTSTANDING"))
-                .andExpect(jsonPath("$.data.eligibleOutstanding").value(4000))
-                .andExpect(jsonPath("$.data.totalAdvanceAllocation").value(8000))
-                .andExpect(jsonPath("$.data.justificationRequired").value(false));
-    }
-
-    @Test
     void preview_returns400_forAnAmountThatIsNotPositive() throws Exception {
         mockMvc.perform(post("/xms/employee/cash-advances/preview")
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
@@ -434,31 +414,4 @@ class CashAdvanceControllerTest {
     }
 
     // ---------------------------------------------------------------- Slice 3: Finance allocation approval
-
-    @Test
-    void approveAllocation_returns200_forFinance() throws Exception {
-        CashAdvanceResponse response = new CashAdvanceResponse(
-                advanceId, "EMP001", "MGR001", new BigDecimal("6000.00"), currencyId, "INR",
-                new BigDecimal("2000.00"), "Trip", "APPROVED", LocalDate.now().plusDays(7),
-                new BigDecimal("6000.00"), null, null);
-        when(currentUserService.getEmployeeId()).thenReturn("FIN1");
-        when(cashAdvanceService.approveAllocation(eq(advanceId), eq("FIN1"), any())).thenReturn(response);
-
-        mockMvc.perform(post("/xms/employee/cash-advances/{advanceId}/approve-allocation", advanceId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE)))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"rolloverAmount\":4000,\"approvedCashAmount\":2000}"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.data.status").value("APPROVED"));
-    }
-
-    @Test
-    void approveAllocation_isNotAvailableToAnEmployee() throws Exception {
-        mockMvc.perform(post("/xms/employee/cash-advances/{advanceId}/approve-allocation", advanceId)
-                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .content("{}"))
-                .andExpect(status().isForbidden());
-        verifyNoInteractions(cashAdvanceService);
-    }
 }

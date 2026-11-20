@@ -132,15 +132,6 @@ public class CashAdvanceController {
         return ApiResponse.success("Cash advance approved", cashAdvanceService.approve(advanceId, currentUserService.getEmployeeId()));
     }
 
-    @Operation(summary = "Finance approval of a Cash Advance + Outstanding request: rollover, approved cash and any overdue exception, atomically")
-    @PostMapping("/{advanceId}/approve-allocation")
-    @PreAuthorize("hasAnyRole('ADMIN','FINANCE','FINANCE_EXECUTIVE')")
-    public ApiResponse<CashAdvanceResponse> approveAllocation(
-            @PathVariable UUID advanceId,
-            @RequestBody com.expense_management_service.dto.request.CashAdvanceAllocationApprovalRequest request) {
-        return ApiResponse.success("Cash advance approved", cashAdvanceService.approveAllocation(advanceId,
-                currentUserService.getEmployeeId(), request));
-    }
 
     @Operation(summary = "Manager decision on a cash advance: full, reduced, set-off recommendation, defer or reject (Authorized Manager/Delegate/Admin)")
     @PostMapping("/{advanceId}/manager-decision")

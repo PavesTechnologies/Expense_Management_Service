@@ -10,6 +10,7 @@ import com.expense_management_service.entity.OutboundEmail;
 import com.expense_management_service.entity.SalaryDeductionRequest;
 import com.expense_management_service.integration.ums.UmsClient;
 import com.expense_management_service.integration.ums.dto.UmsUserResponse;
+import com.expense_management_service.repository.CashAdvanceAdjustmentRepository;
 import com.expense_management_service.repository.CashAdvanceRecoveryCaseRepository;
 import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.repository.SalaryDeductionRequestRepository;
@@ -74,6 +75,7 @@ public class SalaryDeductionService {
     private final PolicySettingsService policy;
     private final UmsClient umsClient;
     private final CurrentUserService currentUserService;
+    private final CashAdvanceAdjustmentRepository adjustmentRepository;
 
     /** The payroll component Payroll adds to the payslip for this recovery. Configurable; must exist in payroll. */
     @Value("${expense.payroll.deduction-component:Cash Advance Recovery}")
@@ -120,6 +122,14 @@ public class SalaryDeductionService {
         BigDecimal balance = payrollPosting.currentBalance(advance);
         if (balance.signum() <= 0) {
             throw new BusinessRuleViolationException("This advance has no outstanding balance to recover.");
+        }
+        // Settling pays off the balance through payroll, which closes the advance. An advance with no expense linked
+        // has nothing to reconcile against, so it stays open until an expense is linked.
+        boolean hasLinkedExpense = adjustmentRepository.findByCashAdvance_AdvanceId(advanceId).stream()
+                .anyMatch(a -> a.isActive());
+        if (!hasLinkedExpense) {
+            throw new BusinessRuleViolationException("Link at least one expense to this advance before settling it. "
+                    + "Without a linked expense, the advance cannot be closed.");
         }
         int decimals = CashAdvancePayrollPosting.decimals(advance);
         requireAmount(amount, balance, decimals, false);

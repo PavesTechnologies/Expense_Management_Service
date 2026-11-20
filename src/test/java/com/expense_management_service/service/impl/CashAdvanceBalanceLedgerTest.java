@@ -278,4 +278,28 @@ class CashAdvanceBalanceLedgerTest {
 
         assertEquals("SETTLEMENT_PENDING", ledger.statusFor(advance, new BigDecimal("500.00"), 2));
     }
+
+    @Test
+    void heldCarryForward_keepsAZeroBalanceAdvanceOpen_andIsNeverOverdue() {
+        // All of the balance was carried forward long ago and no later advance has taken it in yet.
+        CashAdvance advance = openAdvanceDisbursedDaysAgo(120, "0.00");
+        advance.setCarryForwardReadyAmount(new BigDecimal("500.00"));
+
+        assertEquals("SETTLEMENT_PENDING", ledger.statusFor(advance, BigDecimal.ZERO.setScale(2), 2));
+    }
+
+    @Test
+    void heldCarryForward_doesNotHideTheRestOfTheBalanceGoingOverdue() {
+        CashAdvance advance = openAdvanceDisbursedDaysAgo(40, "300.00");
+        advance.setCarryForwardReadyAmount(new BigDecimal("500.00"));
+
+        assertEquals("OVERDUE", ledger.statusFor(advance, new BigDecimal("300.00"), 2));
+    }
+
+    @Test
+    void advanceCloses_onceNothingIsHeldAndTheBalanceIsZero() {
+        CashAdvance advance = openAdvanceDisbursedDaysAgo(5, "0.00");
+
+        assertEquals("CLOSED", ledger.statusFor(advance, BigDecimal.ZERO.setScale(2), 2));
+    }
 }

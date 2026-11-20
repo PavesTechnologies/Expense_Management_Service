@@ -481,23 +481,65 @@ class CashAdvanceCarryForwardServiceTest {
                 .hasMessageContaining("Only applied carry-forwards can be reversed");
     }
 
-    // ---------------------------------------------------------------- ready carry-forward (applied on approval)
+    // ---------------------------------------------------------------- held carry-forward (Finance moves it at once)
 
     @Test
-    void markReady_storesTheAmount_forTheOwner() {
-        actAs(EMPLOYEE, "GENERAL");
-        lenient().when(currentUserService.getEmployeeId()).thenReturn(EMPLOYEE);
+    void markReady_byFinance_movesTheMoneyAtOnce_intoTheHeldOutstanding() {
+        actAs(FINANCE_APPROVER, "FINANCE");
 
         var response = service.markReady(sourceId, new BigDecimal("400.00"), GOOD_REASON);
 
+        assertThat(source.getOutstandingBalance()).isEqualByComparingTo("600.00");
+        assertThat(source.getCarriedOutAmount()).isEqualByComparingTo("400.00");
         assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("400.00");
         assertThat(response.readyAmount()).isEqualByComparingTo("400.00");
     }
 
     @Test
-    void markReady_refusesMoreThanTheUnallocatedBalance() {
+    void markReady_addsToWhatIsAlreadyHeld() {
+        actAs(FINANCE_APPROVER, "FINANCE");
+
+        service.markReady(sourceId, new BigDecimal("300.00"), GOOD_REASON);
+        service.markReady(sourceId, new BigDecimal("200.00"), GOOD_REASON);
+
+        assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("500.00");
+        assertThat(source.getOutstandingBalance()).isEqualByComparingTo("500.00");
+    }
+
+    @Test
+    void markReady_ofTheWholeBalance_keepsTheAdvanceOpen_notClosed() {
+        actAs(FINANCE_APPROVER, "FINANCE");
+
+        service.markReady(sourceId, new BigDecimal("1000.00"), GOOD_REASON);
+
+        assertThat(source.getOutstandingBalance()).isEqualByComparingTo("0.00");
+        assertThat(source.getStatus()).isEqualTo("SETTLEMENT_PENDING");
+    }
+
+    @Test
+    void markReady_duringExpenseReview_keepsTheReviewStatus() {
+        actAs(FINANCE_APPROVER, "FINANCE");
+        source.setStatus("EXPENSE_SUBMITTED");
+
+        service.markReady(sourceId, new BigDecimal("400.00"), GOOD_REASON);
+
+        assertThat(source.getStatus()).isEqualTo("EXPENSE_SUBMITTED");
+        assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("400.00");
+    }
+
+    @Test
+    void markReady_isFinanceOnly() {
         actAs(EMPLOYEE, "GENERAL");
-        lenient().when(currentUserService.getEmployeeId()).thenReturn(EMPLOYEE);
+
+        assertThatThrownBy(() -> service.markReady(sourceId, new BigDecimal("100.00"), GOOD_REASON))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("Only Finance");
+        assertThat(source.getCarryForwardReadyAmount()).isNull();
+    }
+
+    @Test
+    void markReady_refusesMoreThanTheUnallocatedBalance() {
+        actAs(FINANCE_APPROVER, "FINANCE");
 
         assertThatThrownBy(() -> service.markReady(sourceId, new BigDecimal("1500.00"), GOOD_REASON))
                 .isInstanceOf(BusinessRuleViolationException.class)
@@ -506,8 +548,7 @@ class CashAdvanceCarryForwardServiceTest {
 
     @Test
     void markReady_refusesAnOverdueSource() {
-        actAs(EMPLOYEE, "GENERAL");
-        lenient().when(currentUserService.getEmployeeId()).thenReturn(EMPLOYEE);
+        actAs(FINANCE_APPROVER, "FINANCE");
         source.setStatus("OVERDUE");
 
         assertThatThrownBy(() -> service.markReady(sourceId, new BigDecimal("100.00"), GOOD_REASON))
@@ -516,36 +557,54 @@ class CashAdvanceCarryForwardServiceTest {
     }
 
     @Test
-    void applyReady_proposesCappedAtTheDestinationAmount_andMovesNothingUntilApproved() {
-        source.setCarryForwardReadyAmount(new BigDecimal("800.00"));
-        lenient().when(cashAdvanceRepository.findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(EMPLOYEE))
-                .thenReturn(List.of(source));
+    void setOff_takesTheHeldMoneyIntoTheApprovedAdvance_cappedAtItsAmount() {
+        holdOnSource("800.00");
+        destination.setRecommendedTreatment("SET_OFF");
 
         service.applyReadyForDestination(destination);
 
-        assertThat(destination.getCarriedInAmount()).isNull();
-        assertThat(source.getOutstandingBalance()).isEqualByComparingTo("1000.00");
-        assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("800.00");
-        verify(carryForwardRepository).save(argThat(cf -> CashAdvanceCarryForward.PROPOSED.equals(cf.getStatus())
+        assertThat(destination.getCarriedInAmount()).isEqualByComparingTo("500.00");
+        assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("300.00");
+        assertThat(source.getOutstandingBalance()).isEqualByComparingTo("200.00");
+        verify(carryForwardRepository).save(argThat(cf -> CashAdvanceCarryForward.APPLIED.equals(cf.getStatus())
                 && cf.getAmount().compareTo(new BigDecimal("500.00")) == 0));
     }
 
     @Test
-    void applyReady_takesTheOldestSourceFirst() {
-        CashAdvance older = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(EMPLOYEE).currency(inr)
-                .amount(new BigDecimal("1000.00")).outstandingBalance(new BigDecimal("1000.00")).status("DISBURSED")
+    void setOff_usesOnlyTheAdvanceAndAmountTheManagerNamed() {
+        CashAdvance other = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(EMPLOYEE).currency(inr)
+                .amount(new BigDecimal("1000.00")).outstandingBalance(BigDecimal.ZERO).status("SETTLEMENT_PENDING")
                 .carryForwardReadyAmount(new BigDecimal("300.00")).build();
         source.setCarryForwardReadyAmount(new BigDecimal("400.00"));
         lenient().when(cashAdvanceRepository.findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(EMPLOYEE))
-                .thenReturn(List.of(older, source));
+                .thenReturn(List.of(other, source));
+        destination.setRecommendedTreatment("SET_OFF");
+        destination.setRecommendedSourceAdvanceId(sourceId.toString());
+        destination.setRecommendedSetOffAmount(new BigDecimal("250.00"));
 
         service.applyReadyForDestination(destination);
 
-        verify(carryForwardRepository).save(argThat(cf -> cf.getSourceAdvance() == older
-                && CashAdvanceCarryForward.PROPOSED.equals(cf.getStatus())
-                && cf.getAmount().compareTo(new BigDecimal("300.00")) == 0));
-        assertThat(older.getCarryForwardReadyAmount()).isEqualByComparingTo("300.00");
+        assertThat(other.getCarryForwardReadyAmount()).isEqualByComparingTo("300.00");
+        assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("150.00");
+        assertThat(destination.getCarriedInAmount()).isEqualByComparingTo("250.00");
+    }
+
+    @Test
+    void aRequestThatIsNotASetOff_leavesTheHeldMoneyWhereItIs() {
+        holdOnSource("800.00");
+
+        service.applyReadyForDestination(destination);
+
         assertThat(destination.getCarriedInAmount()).isNull();
+        assertThat(source.getCarryForwardReadyAmount()).isEqualByComparingTo("800.00");
+        verify(carryForwardRepository, never()).save(any(CashAdvanceCarryForward.class));
+    }
+
+    private void holdOnSource(String amount) {
+        source.setCarryForwardReadyAmount(new BigDecimal(amount));
+        source.setOutstandingBalance(new BigDecimal("200.00"));
+        lenient().when(cashAdvanceRepository.findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(EMPLOYEE))
+                .thenReturn(List.of(source));
     }
 
     private CashAdvanceCarryForward proposedRow(BigDecimal amount) {
@@ -586,6 +645,7 @@ class CashAdvanceCarryForwardServiceTest {
     void applyReady_doesNothingWhileTheFeatureIsDisabled() {
         ReflectionTestUtils.setField(service, "enabled", false);
         source.setCarryForwardReadyAmount(new BigDecimal("800.00"));
+        destination.setRecommendedTreatment("SET_OFF");
 
         service.applyReadyForDestination(destination);
 
@@ -594,14 +654,16 @@ class CashAdvanceCarryForwardServiceTest {
     }
 
     @Test
-    void cancelReady_clearsTheReadyAmount() {
-        actAs(EMPLOYEE, "GENERAL");
-        lenient().when(currentUserService.getEmployeeId()).thenReturn(EMPLOYEE);
-        source.setCarryForwardReadyAmount(new BigDecimal("400.00"));
+    void cancelReady_returnsTheHeldMoneyToItsAdvance() {
+        actAs(FINANCE_APPROVER, "FINANCE");
+        service.markReady(sourceId, new BigDecimal("400.00"), GOOD_REASON);
 
         var response = service.cancelReady(sourceId, GOOD_REASON);
 
         assertThat(source.getCarryForwardReadyAmount()).isNull();
+        assertThat(source.getCarriedOutAmount()).isEqualByComparingTo("0.00");
+        assertThat(source.getOutstandingBalance()).isEqualByComparingTo("1000.00");
         assertThat(response.readyAmount()).isNull();
     }
+
 }

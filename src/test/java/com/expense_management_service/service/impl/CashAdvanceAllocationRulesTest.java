@@ -18,6 +18,23 @@ class CashAdvanceAllocationRulesTest {
     private static final BigDecimal ZERO = BigDecimal.ZERO;
 
     @ParameterizedTest
+    @CsvSource(value = {"500, true", "0.01, true", "0, false", "-1, false", "NULL, false"}, nullValues = "NULL")
+    void holdsCarryForward_onlyForAPositiveHeldAmount(BigDecimal held, boolean holds) {
+        assertEquals(holds, CashAdvanceAllocationRules.holdsCarryForward(held));
+    }
+
+    @ParameterizedTest
+    @CsvSource(value = {"500, 500, NULL", "500, 200, 300", "500, 700, NULL", "NULL, 200, NULL"}, nullValues = "NULL")
+    void readyAfterMove_keepsOnlyWhatHasNotMovedYet(BigDecimal ready, BigDecimal moved, BigDecimal left) {
+        BigDecimal actual = CashAdvanceAllocationRules.readyAfterMove(ready, moved);
+        if (left == null) {
+            assertNull(actual);
+        } else {
+            assertEquals(0, left.compareTo(actual));
+        }
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = {"DISBURSED", "IN_PROGRESS", "SETTLEMENT_PENDING", "PARTIALLY_SETTLED", "PARTIALLY_ADJUSTED", "ADJUSTED", "disbursed"})
     void rolloverEligible_forDisbursedAdvancesWhoseExpensesAreFinal(String status) {
         assertTrue(CashAdvanceAllocationRules.rolloverEligible(status));

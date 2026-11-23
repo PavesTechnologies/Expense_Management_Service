@@ -121,6 +121,40 @@ class DashboardEmployeeFlowTest {
         assertEquals(0, new BigDecimal("3000.00").compareTo(kpi(r, "caOutstanding")));
     }
 
+    /** "Where your reports are": every report the employee can follow is in one step, so the steps add up. */
+    @Test
+    void journey_putsEveryReportInOneStep_includingSettledBySAdvance_andSentBack() {
+        ExpenseReport draft = report("ER-D", ReportStatus.DRAFT, PaymentRoutingStatus.NONE, null, null);
+        ExpenseReport submitted = report("ER-S", ReportStatus.SUBMITTED, PaymentRoutingStatus.NONE, null, null);
+        ExpenseReport withManager = report("ER-M", ReportStatus.PENDING_APPROVAL, PaymentRoutingStatus.NONE, null, null);
+        ExpenseReport queried = report("ER-Q", ReportStatus.QUERY_RAISED, PaymentRoutingStatus.NONE, null, null);
+        ExpenseReport atFinance = report("ER-F", ReportStatus.PENDING_FINANCE_VERIFICATION, PaymentRoutingStatus.NONE, null, null);
+        // Approved, 700 still owed, not routed to AP yet: on its way to payment, not settled.
+        ExpenseReport owed = report("ER-O", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "700.00", null);
+        ExpenseReport withAp = report("ER-A", ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT, "500.00", null);
+        ExpenseReport paid = report("ER-P", ReportStatus.CLOSED, PaymentRoutingStatus.PAYMENT_COMPLETED, "400.00", "400.00");
+        // Fully covered by the advance: nothing to pay. These were missing from the journey before.
+        ExpenseReport covered1 = report("ER-C1", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "0.00", null);
+        ExpenseReport covered2 = report("ER-C2", ReportStatus.CLOSED, PaymentRoutingStatus.NONE, "0.00", null);
+        ExpenseReport rejected = report("ER-R", ReportStatus.REJECTED, PaymentRoutingStatus.NONE, null, null);
+        stubData(List.of(draft, submitted, withManager, queried, atFinance, owed, withAp, paid, covered1, covered2, rejected),
+                List.of(), List.of());
+        when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of());
+
+        DashboardResponse r = service.employee();
+
+        java.util.Map<String, Long> steps = r.pipeline().stream()
+                .collect(java.util.stream.Collectors.toMap(DashboardResponse.Stage::key, DashboardResponse.Stage::count));
+        assertEquals(1L, steps.get("draft"));
+        assertEquals(2L, steps.get("approval"), "submitted + with the manager");
+        assertEquals(1L, steps.get("finance"));
+        assertEquals(2L, steps.get("ap"), "with AP + approved and still owed");
+        assertEquals(1L, steps.get("paid"));
+        assertEquals(2L, steps.get("settled"), "covered by the advance, nothing to pay");
+        assertEquals(1L, steps.get("action"), "sent back to the employee");
+        assertEquals(10L, steps.values().stream().mapToLong(Long::longValue).sum(), "all but the rejected report");
+    }
+
     @Test
     void reimbursementChain_claimed_approved_coveredByAdvance_waitingForAp_paid() {
         ExpenseReport approved = report("ER-1", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "700.00", null);

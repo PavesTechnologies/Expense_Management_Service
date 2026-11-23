@@ -44,6 +44,7 @@ import com.expense_management_service.repository.ApprovalLevelInstanceRepository
 import com.expense_management_service.repository.ApprovalLineItemReviewRepository;
 import com.expense_management_service.repository.ApprovalSplitReviewRepository;
 import com.expense_management_service.repository.CashAdvanceAdjustmentRepository;
+import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.repository.ExpenseReportRepository;
 import com.expense_management_service.repository.PolicyViolationRepository;
@@ -146,6 +147,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private com.expense_management_service.repository.AuditLogRepository auditLogRepository;
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
     private CashAdvanceRepository cashAdvanceRepository;
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private FinanceVerificationReviewRepository financeVerificationReviewRepository;
@@ -175,7 +178,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
     // ---------------------------------------------------------------------
 
     @Override
-    public ExpenseReportResponse submit(UUID reportId) {
+    public ExpenseReportResponse submit(UUID reportId, String lateSubmissionReason) {
         ExpenseReport report = findReport(reportId);
 
         if (report.getReportStatus() == ReportStatus.AWAITING_CORRECTION) {
@@ -184,7 +187,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
         assertDraft(report);
         assertHasLineItems(report);
-        assertWithinSubmissionDeadline(report);
+        assertWithinSubmissionDeadline(report, lateSubmissionReason);
         if (report.getCostCenter() == null) {
             throw new IllegalArgumentException("Expense report has no cost center assigned");
         }
@@ -215,12 +218,18 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         return toResponse(findReport(reportId));
     }
 
+    /** Shortest late-submission reason accepted - enough for a real explanation, same as a Finance override reason. */
+    static final int MIN_LATE_REASON_LENGTH = 10;
+
     /**
      * Submission deadline. Advance-linked reports: advance disbursement date + configured days (no clock until the
      * advance is disbursed). Regular reports: trip end date + configured days. A Finance extension replaces the
      * computed date, and a Finance reopen lifts the check entirely.
+     * <p>
+     * Past the deadline the employee can still submit by giving a reason for the delay: the reason is stored on the
+     * report (approvers see it) and in the audit log. Without a reason the submit is refused.
      */
-    private void assertWithinSubmissionDeadline(ExpenseReport report) {
+    private void assertWithinSubmissionDeadline(ExpenseReport report, String lateSubmissionReason) {
         // Re-checked at submit: the period end may have been saved on an earlier day. Finance extensions and reopens
         // only move the submission deadline, so they never allow a future reporting period.
         ExpenseReportServiceImpl.assertReportingPeriod(report.getReportingPeriodStart(), report.getReportingPeriodEnd(),
@@ -245,9 +254,33 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 submissionDeadlineDays, today)) {
             LocalDate deadline = SubmissionDeadlinePolicy.effectiveDeadline(report.getTripEndDate(), linked, disbursedOn,
                     extendedUntil, submissionDeadlineDays);
-            throw new BusinessRuleViolationException("The submission deadline for this report was " + deadline
-                    + ". Ask Finance to extend or reopen it before submitting.");
+            String reason = lateSubmissionReason == null ? "" : lateSubmissionReason.trim();
+            if (reason.length() < MIN_LATE_REASON_LENGTH) {
+                throw new BusinessRuleViolationException("The submission deadline for this report was " + deadline
+                        + ". Give a reason for the late submission (at least " + MIN_LATE_REASON_LENGTH
+                        + " characters) to submit it.");
+            }
+            report.setLateSubmissionReason(reason);
+            recordLateSubmission(report, deadline, reason);
         }
+    }
+
+    /** Audit trail for a late submission: who submitted, the missed deadline and the employee's reason. */
+    private void recordLateSubmission(ExpenseReport report, LocalDate deadline, String reason) {
+        approvalEventPublisher.publish("REPORT_SUBMITTED_LATE", report.getReportId(), "deadline=" + deadline);
+        if (auditLogRepository == null) {
+            return;
+        }
+        auditLogRepository.save(AuditLog.builder()
+                .entityName("ExpenseReport")
+                .entityId(report.getReportId())
+                .action("SUBMITTED_LATE")
+                .oldValue("deadline=" + deadline)
+                .newValue("submittedOn=" + LocalDate.now(clock))
+                .performedBy(report.getEmployeeId())
+                .performedAt(LocalDateTime.now())
+                .reason(reason)
+                .build());
     }
 
     /**

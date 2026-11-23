@@ -76,7 +76,9 @@ public class ExpenseReportController {
 
     @PostMapping("/{reportId}/submit")
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
-    public ApiResponse<ExpenseReportResponse> submit(@PathVariable UUID reportId) {
-        return ApiResponse.success("Expense report submitted for approval", approvalWorkflowService.submit(reportId));
+    public ApiResponse<ExpenseReportResponse> submit(@PathVariable UUID reportId,
+            @RequestBody(required = false) @jakarta.validation.Valid com.expense_management_service.dto.request.SubmitReportRequest body) {
+        String lateReason = body != null ? body.lateSubmissionReason() : null;
+        return ApiResponse.success("Expense report submitted for approval", approvalWorkflowService.submit(reportId, lateReason));
     }
 }

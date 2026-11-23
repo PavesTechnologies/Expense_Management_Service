@@ -21,8 +21,11 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: redpanda:29092
       SPRING_DATA_REDIS_HOST: redis
       SPRING_DATA_REDIS_PORT: 6379
+      # Paves Assistant LLM (free, self-hosted) - the ollama service below.
+      CHATBOT_OLLAMA_BASE_URL: http://ollama:11434
     depends_on:
       - redis
+      - ollama
     ports:
       - "8081:8081"
     extra_hosts:
@@ -38,6 +41,31 @@ services:
     ports:
       - "6379:6379"
     restart: unless-stopped
+
+  # Free, self-hosted LLM for the Paves Assistant (POST /xms/chat). API on http://localhost:11434.
+  # Needs ~8 GB free RAM for qwen2.5:7b (set CHATBOT_MODEL=qwen2.5:3b in .env for ~4 GB).
+  ollama:
+    image: ollama/ollama:0.12.6
+    container_name: xms-ollama-local
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
+  # One-shot: downloads the model into the shared volume on first start (several GB), then exits.
+  ollama-pull:
+    image: ollama/ollama:0.12.6
+    container_name: xms-ollama-pull
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c", "sleep 3 && ollama pull ${CHATBOT_MODEL:-qwen2.5:7b}"]
+    restart: "no"
+
+volumes:
+  ollama-models:
 
 networks:
   cdc-network:

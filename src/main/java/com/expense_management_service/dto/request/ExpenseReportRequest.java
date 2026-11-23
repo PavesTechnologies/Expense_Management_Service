@@ -33,9 +33,9 @@ public record ExpenseReportRequest(
         LocalDate reportingPeriodStart,
         /** Actual reporting period end. Optional, but may not be in the future. */
         LocalDate reportingPeriodEnd,
-        /** The internal project the trip is for. At least one of project or client is required before submission (Stage 1, S1-15). */
+        /** The internal project the trip is for. Optional: only client-billable expense lines must name a client. */
         UUID projectId,
-        /** The RMS client the trip is for. At least one of project or client is required before submission (Stage 1, S1-15). */
+        /** The RMS client the trip is for. Optional: only client-billable expense lines must name a client. */
         UUID clientId
 ) {
 

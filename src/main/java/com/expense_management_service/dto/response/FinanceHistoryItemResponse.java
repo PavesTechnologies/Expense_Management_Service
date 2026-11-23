@@ -28,6 +28,8 @@ public record FinanceHistoryItemResponse(
         String paymentRoutingStatus,
         LocalDateTime paymentCompletedAt,
         /** NOT_APPLICABLE, or PENDING/COMPLETED for a client-billable report's invoice handoff. */
-        String invoiceHandoffStatus
+        String invoiceHandoffStatus,
+        /** The cash advance this report settles, or null for an ordinary expense report. */
+        UUID cashAdvanceId
 ) {
 }

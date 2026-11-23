@@ -76,7 +76,7 @@ class ApprovalWorkflowControllerTest {
     @Test
     void submit_returns200_forAnyAuthenticatedEmployee() throws Exception {
         UUID reportId = UUID.randomUUID();
-        when(approvalWorkflowService.submit(reportId)).thenReturn(sampleReportResponse("PENDING_APPROVAL"));
+        when(approvalWorkflowService.submit(reportId, null)).thenReturn(sampleReportResponse("PENDING_APPROVAL"));
 
         mockMvc.perform(post("/xms/approvals/{reportId}/submit", reportId)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))

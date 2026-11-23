@@ -401,6 +401,40 @@ class ApprovalWorkflowServiceImplTest {
     }
 
     @Test
+    void submit_allowsAnOverdueReportWhenTheEmployeeGivesALateReason() {
+        ExpenseReport report = draftReport();
+        report.setTripEndDate(java.time.LocalDate.now().minusDays(60));
+        stubSuccessfulSubmitFlow(report);
+
+        var response = service.submit(reportId, "  Was travelling for another client and could not file on time  ");
+
+        assertThat(response.reportStatus()).isEqualTo(ReportStatus.PENDING_APPROVAL.name());
+        assertThat(report.getLateSubmissionReason()).isEqualTo("Was travelling for another client and could not file on time");
+    }
+
+    @Test
+    void submit_refusesAnOverdueReportWhenTheLateReasonIsTooShort() {
+        ExpenseReport report = draftReport();
+        report.setTripEndDate(java.time.LocalDate.now().minusDays(60));
+        stubSuccessfulSubmitFlow(report);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> service.submit(reportId, "late"))
+                .isInstanceOf(com.expense_management_service.common.exception.BusinessRuleViolationException.class)
+                .hasMessageContaining("Give a reason for the late submission");
+        assertThat(report.getLateSubmissionReason()).isNull();
+    }
+
+    @Test
+    void submit_ignoresALateReasonWhenTheReportIsOnTime() {
+        ExpenseReport report = draftReport();
+        stubSuccessfulSubmitFlow(report);
+
+        service.submit(reportId, "No delay at all, just testing the field");
+
+        assertThat(report.getLateSubmissionReason()).isNull();
+    }
+
+    @Test
     void submit_materializesChainAndActivatesFirstLevel() {
         ExpenseReport report = draftReport();
         when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(report));

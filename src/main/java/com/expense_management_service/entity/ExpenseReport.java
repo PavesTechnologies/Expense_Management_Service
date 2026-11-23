@@ -96,11 +96,11 @@ public class ExpenseReport {
     @ToString.Exclude
     private CashAdvance cashAdvance;
 
-    /** The internal project the trip is for. Stage 1 (S1-15): at least one of project or client is required before submission. */
+    /** The internal project the trip is for. Optional: only client-billable expense lines must name a client. */
     @Column(name = "project_id")
     private UUID projectId;
 
-    /** The RMS client the trip is for. Stage 1 (S1-15): at least one of project or client is required before submission. */
+    /** The RMS client the trip is for. Optional: only client-billable expense lines must name a client. */
     @Column(name = "client_id")
     private UUID clientId;
 
@@ -129,6 +129,13 @@ public class ExpenseReport {
     /** Finance reopen: the submission deadline check is lifted for this report. Set by a deadline override. */
     @Column(name = "expense_deadline_reopened", nullable = false)
     private boolean expenseDeadlineReopened;
+
+    /**
+     * Why the employee submitted after the submission deadline. Set only when a report is submitted late; the employee
+     * gives the reason themselves at submit time and approvers see it. Null for on-time submissions.
+     */
+    @Column(name = "late_submission_reason", columnDefinition = "TEXT")
+    private String lateSubmissionReason;
 
     /**
      * Optimistic-locking column. The {@code version} column already exists in the database

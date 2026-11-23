@@ -31,6 +31,7 @@ import static com.expense_management_service.security.RoleConstants.ROLE_FINANCE
 import static com.expense_management_service.security.RoleConstants.ROLE_MANAGER;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.when;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -215,7 +216,7 @@ class ExpenseReportControllerTest {
     @Test
     void submit_returns200_forEmployee() throws Exception {
         UUID id = UUID.randomUUID();
-        when(approvalWorkflowService.submit(eq(id))).thenReturn(sampleResponse(id, "PENDING_APPROVAL"));
+        when(approvalWorkflowService.submit(eq(id), isNull())).thenReturn(sampleResponse(id, "PENDING_APPROVAL"));
 
         mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/submit", id)
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))

@@ -16,6 +16,8 @@ public record FinanceQueueItemResponse(
         String reportStatus,
         LocalDateTime submittedAt,
         Integer levelOrder,
-        List<FinancePendingLineItemResponse> pendingLineItems
+        List<FinancePendingLineItemResponse> pendingLineItems,
+        /** The cash advance this report settles, or null for an ordinary expense report. */
+        UUID cashAdvanceId
 ) {
 }

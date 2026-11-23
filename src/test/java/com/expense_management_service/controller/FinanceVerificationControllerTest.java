@@ -218,7 +218,7 @@ class FinanceVerificationControllerTest {
         when(currentUserService.getEmployeeId()).thenReturn("5100050");
         FinanceQueueItemResponse item = new FinanceQueueItemResponse(
                 UUID.randomUUID(), "EXP-0001", "5100001", new BigDecimal("1000"), "INR", "Engineering",
-                "PENDING_FINANCE_VERIFICATION", LocalDateTime.now(), 2, List.of());
+                "PENDING_FINANCE_VERIFICATION", LocalDateTime.now(), 2, List.of(), null);
         when(financeVerificationService.getFinanceQueue(eq("5100050"), any(Pageable.class)))
                 .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
 
@@ -247,7 +247,7 @@ class FinanceVerificationControllerTest {
         FinanceHistoryItemResponse item = new FinanceHistoryItemResponse(
                 UUID.randomUUID(), "EXP-0001", "5100001", new BigDecimal("1000"), "INR", "Engineering",
                 "APPROVED", "VERIFIED", 2, "5100050", LocalDateTime.now(), null,
-                "APPROVED_FOR_PAYMENT", null, "NOT_APPLICABLE");
+                "APPROVED_FOR_PAYMENT", null, "NOT_APPLICABLE", null);
         when(financeVerificationService.getFinanceHistory(eq(FinanceVerificationStatus.VERIFIED), any(Pageable.class)))
                 .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
 

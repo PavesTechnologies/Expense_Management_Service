@@ -15,7 +15,6 @@ import com.expense_management_service.service.ReceiptDuplicateService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -54,18 +53,15 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
     private final CrossDepartmentAllocationService crossDepartmentAllocationService;
     private final ExpenseLineItemRepository expenseLineItemRepository;
 
-    /**
-     * S1-15: a trip report must name a project or a client before it is submitted. On by default, so production enforces
-     * it. Environments that do not need it (for example local development) can switch it off with
-     * {@code expense.trip.require-project-or-client=false}.
-     */
-    @Value("${expense.trip.require-project-or-client:true}")
-    private boolean requireProjectOrClient = true;
-
-    /** True when at least one line is client billable and has a resolved client (the line rule already requires one). */
-    static boolean hasBillableLineWithClient(ExpenseReport report) {
-        return report.getExpenseLineItems() != null && report.getExpenseLineItems().stream()
-                .anyMatch(line -> Boolean.TRUE.equals(line.getClientBillable()) && line.getResolvedClientId() != null);
+    /** Client-billable lines that have no client to bill - the only project/client requirement on submission. */
+    static List<String> billableLinesWithoutClient(ExpenseReport report) {
+        if (report.getExpenseLineItems() == null) {
+            return List.of();
+        }
+        return report.getExpenseLineItems().stream()
+                .filter(line -> Boolean.TRUE.equals(line.getClientBillable()) && line.getResolvedClientId() == null)
+                .map(InterimPolicyEvaluationGatewayImpl::lineLabel)
+                .toList();
     }
 
     @Override
@@ -80,14 +76,12 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
             return new PolicyDecision(false, display, duplicateReceiptReason(duplicates));
         }
 
-        // Stage 1 (S1-15): a trip report must say which project or client it is for, unless this environment has turned the
-        // requirement off through configuration.
-        // The client and project now live on each billable expense line, so the trip is covered when a billable line
-        // has a resolved client. A report-level project or client still satisfies it for existing reports.
-        if (requireProjectOrClient && report.getProjectId() == null && report.getClientId() == null
-                && !hasBillableLineWithClient(report)) {
-            return new PolicyDecision(false, display,
-                    "Add a client billable expense with a client, or enter the project or client for this trip, before submitting.");
+        // A report can mix billable and non-billable expenses, and a fully non-billable report needs no project or
+        // client. Only a client-billable expense must name the client it will be billed to.
+        List<String> billableWithoutClient = billableLinesWithoutClient(report);
+        if (!billableWithoutClient.isEmpty()) {
+            return new PolicyDecision(false, display, "Choose the client for each client-billable expense before submitting: "
+                    + String.join("; ", billableWithoutClient));
         }
 
         // Stage 1 (S1-11): every line must say how the employee paid.
@@ -111,10 +105,8 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
                     + String.join("; ", otherWithoutExplanation));
         }
 
-        List<String> missingReceipts = missingMandatoryReceipts(report);
-        if (!missingReceipts.isEmpty()) {
-            return new PolicyDecision(false, display, "Attach the mandatory receipt before submitting: " + String.join("; ", missingReceipts));
-        }
+        // Receipts do not block submission: a report with line items may be submitted whatever their category. A missing
+        // receipt still shows as a policy warning for the approver and Finance to judge.
 
         List<String> claimedElsewhere = duplicateClaimsOnOtherReports(report);
         if (!claimedElsewhere.isEmpty()) {
@@ -129,6 +121,8 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
 
         List<String> unexplained = policyViolationRepository.findByLineItem_Report_ReportId(report.getReportId()).stream()
                 .filter(violation -> !violation.isJustified())
+                // A missing-receipt warning cannot be justified by the employee, so it never blocks submission.
+                .filter(violation -> violation.getRuleType() != com.expense_management_service.enums.PolicyRuleType.RECEIPT_REQUIRED)
                 .map(violation -> violation.getMessage() != null ? violation.getMessage() : String.valueOf(violation.getRuleType()))
                 .toList();
         if (unexplained.isEmpty()) {
@@ -145,14 +139,6 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
         return name + " on " + line.getExpenseDate();
     }
 
-    /** Confirmed requirement: a line in a receipt-required category must carry a receipt before submission. */
-    private List<String> missingMandatoryReceipts(ExpenseReport report) {
-        return report.getExpenseLineItems().stream()
-                .filter(line -> line.getCategory() != null && Boolean.TRUE.equals(line.getCategory().getReceiptRequired()))
-                .filter(line -> line.getReceipts() == null || line.getReceipts().isEmpty())
-                .map(line -> line.getCategory().getCategoryName() + " on " + line.getExpenseDate())
-                .toList();
-    }
 
     /** Confirmed requirement: the same expense may not be claimed on two reports (same employee, merchant, date, amount, currency). */
     private List<String> duplicateClaimsOnOtherReports(ExpenseReport report) {

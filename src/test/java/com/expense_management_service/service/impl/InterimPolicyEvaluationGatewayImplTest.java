@@ -67,97 +67,49 @@ class InterimPolicyEvaluationGatewayImplTest {
                 receiptDuplicateService, crossDepartmentAllocationService, expenseLineItemRepository);
     }
 
-    @Test
-    void evaluate_blocksSubmission_whenTheTripHasNoProjectOrClient() {
-        UUID reportId = UUID.randomUUID();
-        ExpenseReport noReference = ExpenseReport.builder().reportId(reportId).expenseLineItems(List.of(paidLine())).build();
-        stubNoViolations();
-
-        PolicyDecision decision = gateway.evaluate(noReference);
-
-        assertThat(decision.allowed()).isFalse();
-        assertThat(decision.blockedReason()).contains("project or client");
+    private ExpenseReport withLines(ExpenseLineItem... lines) {
+        return ExpenseReport.builder().reportId(UUID.randomUUID()).expenseLineItems(List.of(lines)).build();
     }
 
-    private ExpenseReport withProject(UUID reportId) {
-        return ExpenseReport.builder().reportId(reportId).projectId(UUID.randomUUID())
-                .expenseLineItems(List.of(paidLine())).build();
-    }
-
-    private ExpenseReport withNeitherProjectNorClient(UUID reportId) {
-        return ExpenseReport.builder().reportId(reportId).expenseLineItems(List.of(paidLine())).build();
+    private ExpenseLineItem billableLine(UUID resolvedClientId) {
+        ExpenseLineItem line = paidLine();
+        line.setClientBillable(true);
+        line.setResolvedClientId(resolvedClientId);
+        return line;
     }
 
     @Test
-    void requirementOn_billableLineWithClient_allowsSubmissionWithoutAReportLevelClient() {
-        requireProjectOrClient(true);
-        stubNoViolations();
-        ExpenseLineItem billable = paidLine();
-        billable.setClientBillable(true);
-        billable.setResolvedClientId(UUID.randomUUID());
-
-        ExpenseReport trip = ExpenseReport.builder().reportId(UUID.randomUUID()).expenseLineItems(List.of(billable)).build();
-
-        assertThat(gateway.evaluate(trip).allowed()).isTrue();
-    }
-
-    @Test
-    void requirementOn_billableLineWithoutClient_stillBlocksSubmission() {
-        requireProjectOrClient(true);
-        stubNoViolations();
-        ExpenseLineItem billable = paidLine();
-        billable.setClientBillable(true);
-
-        ExpenseReport trip = ExpenseReport.builder().reportId(UUID.randomUUID()).expenseLineItems(List.of(billable)).build();
-
-        assertThat(gateway.evaluate(trip).allowed()).isFalse();
-    }
-
-    private void requireProjectOrClient(boolean required) {
-        org.springframework.test.util.ReflectionTestUtils.setField(gateway, "requireProjectOrClient", required);
-    }
-
-    @Test
-    void requirementOn_projectSelected_allowsSubmission() {
-        requireProjectOrClient(true);
+    void nonBillableReport_withNoProjectOrClient_allowsSubmission() {
         stubNoViolations();
 
-        assertThat(gateway.evaluate(withProject(UUID.randomUUID())).allowed()).isTrue();
-    }
-
-    @Test
-    void requirementOn_clientSelected_allowsSubmission() {
-        requireProjectOrClient(true);
-        stubNoViolations();
-
-        assertThat(gateway.evaluate(report(UUID.randomUUID(), paidLine())).allowed()).isTrue();
-    }
-
-    @Test
-    void requirementOff_neitherSelected_allowsSubmission() {
-        requireProjectOrClient(false);
-        stubNoViolations();
-
-        PolicyDecision decision = gateway.evaluate(withNeitherProjectNorClient(UUID.randomUUID()));
+        PolicyDecision decision = gateway.evaluate(withLines(paidLine()));
 
         assertThat(decision.allowed()).isTrue();
         assertThat(decision.blockedReason()).isNull();
     }
 
     @Test
-    void requirementOff_projectOnly_allowsSubmission() {
-        requireProjectOrClient(false);
+    void billableLineWithClient_allowsSubmission() {
         stubNoViolations();
 
-        assertThat(gateway.evaluate(withProject(UUID.randomUUID())).allowed()).isTrue();
+        assertThat(gateway.evaluate(withLines(billableLine(UUID.randomUUID()))).allowed()).isTrue();
     }
 
     @Test
-    void requirementOff_clientOnly_allowsSubmission() {
-        requireProjectOrClient(false);
+    void mixedBillableAndNonBillableLines_allowSubmission() {
         stubNoViolations();
 
-        assertThat(gateway.evaluate(report(UUID.randomUUID(), paidLine())).allowed()).isTrue();
+        assertThat(gateway.evaluate(withLines(paidLine(), billableLine(UUID.randomUUID()))).allowed()).isTrue();
+    }
+
+    @Test
+    void billableLineWithoutClient_blocksSubmission() {
+        stubNoViolations();
+
+        PolicyDecision decision = gateway.evaluate(withLines(paidLine(), billableLine(null)));
+
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason()).contains("client for each client-billable expense");
     }
 
     @Test
@@ -197,7 +149,7 @@ class InterimPolicyEvaluationGatewayImplTest {
     }
 
     @Test
-    void evaluate_blocksSubmission_whenMandatoryReceiptIsMissing() {
+    void evaluate_allowsSubmission_whenAReceiptRequiredLineHasNoReceipt() {
         UUID reportId = UUID.randomUUID();
         com.expense_management_service.entity.ExpenseCategory meals = com.expense_management_service.entity.ExpenseCategory.builder()
                 .categoryName("Meals").receiptRequired(true).build();
@@ -210,8 +162,8 @@ class InterimPolicyEvaluationGatewayImplTest {
 
         PolicyDecision decision = gateway.evaluate(report(reportId, line));
 
-        assertThat(decision.allowed()).isFalse();
-        assertThat(decision.blockedReason()).contains("mandatory receipt").contains("Meals");
+        // Line items are enough: a receipt-required category without a receipt no longer blocks submission.
+        assertThat(decision.allowed()).isTrue();
     }
 
     @Test
@@ -234,6 +186,18 @@ class InterimPolicyEvaluationGatewayImplTest {
 
         assertThat(decision.allowed()).isFalse();
         assertThat(decision.blockedReason()).contains("already claimed").contains("Taj Hotel");
+    }
+
+    @Test
+    void evaluate_doesNotBlockSubmission_forAnUnjustifiedMissingReceiptWarning() {
+        PolicyViolation receiptWarning = PolicyViolation.builder().violationId(UUID.randomUUID())
+                .ruleType(PolicyRuleType.RECEIPT_REQUIRED).severity(PolicySeverity.WARN)
+                .enforcementType(PolicyEnforcementType.BLOCK).message("Receipt required for Meals").build();
+
+        PolicyDecision decision = evaluateWith(receiptWarning);
+
+        assertThat(decision.allowed()).isTrue();
+        assertThat(decision.violations()).hasSize(1);
     }
 
     @Test

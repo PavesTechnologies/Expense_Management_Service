@@ -45,8 +45,10 @@ public class ApprovalWorkflowController {
     private final ApprovalRecordsService approvalRecordsService;
 
     @PostMapping("/{reportId}/submit")
-    public ApiResponse<ExpenseReportResponse> submit(@PathVariable UUID reportId) {
-        return ApiResponse.success("Report submitted for approval", approvalWorkflowService.submit(reportId));
+    public ApiResponse<ExpenseReportResponse> submit(@PathVariable UUID reportId,
+            @RequestBody(required = false) @jakarta.validation.Valid com.expense_management_service.dto.request.SubmitReportRequest body) {
+        String lateReason = body != null ? body.lateSubmissionReason() : null;
+        return ApiResponse.success("Report submitted for approval", approvalWorkflowService.submit(reportId, lateReason));
     }
 
     @PostMapping("/{reportId}/recall")

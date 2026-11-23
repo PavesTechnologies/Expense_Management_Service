@@ -32,13 +32,26 @@ public record CashAdvanceUtilizationResponse(
         /** True when advanceAmount - approvedUtilization - totalRepaidAmount equals the stored outstanding balance. */
         boolean balanceConsistent,
         String advanceStatus,
-        /** CLOSED, REPAYMENT_DUE, REIMBURSEMENT_DUE or PENDING_CLOSURE (zero balance, not yet closed). */
+        /**
+         * CLOSED, REPAYMENT_DUE (part of the balance can be settled now), AWAITING_EXPENSE_APPROVAL (the whole balance is
+         * held for expenses still in approval), REIMBURSEMENT_DUE or PENDING_CLOSURE (zero balance, not yet closed).
+         */
         String closureStatus,
         boolean closed,
-        /** Unpaid part of the linked reports' reimbursable amounts. The advance stays open until this is paid. */
+        /**
+         * Unpaid part of the approved linked reports' reimbursable amounts. The advance stays open until this is paid.
+         * A report still in approval owes nothing yet: its reimbursable amount is only fixed at approval.
+         */
         BigDecimal reimbursementOwedAmount,
         List<LinkedReport> linkedReports,
-        List<CategoryUtilization> categories
+        List<CategoryUtilization> categories,
+        /** Claimed on linked reports that are not approved yet (draft, in approval, sent back). Not set against the advance yet. */
+        BigDecimal inApprovalAmount,
+        /**
+         * The part of the outstanding balance that can be settled now, by salary deduction or carry forward: the
+         * outstanding balance less what is held for expenses in approval. Never negative.
+         */
+        BigDecimal settleableAmount
 ) {
 
     public record LinkedReport(

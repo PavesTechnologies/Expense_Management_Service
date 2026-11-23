@@ -62,10 +62,14 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
     @Value("${expense.trip.require-project-or-client:true}")
     private boolean requireProjectOrClient = true;
 
-    /** True when at least one line is client billable and has a resolved client (the line rule already requires one). */
-    static boolean hasBillableLineWithClient(ExpenseReport report) {
-        return report.getExpenseLineItems() != null && report.getExpenseLineItems().stream()
-                .anyMatch(line -> Boolean.TRUE.equals(line.getClientBillable()) && line.getResolvedClientId() != null);
+    /** The client billable lines that have no client. A line that is not client billable never needs one. */
+    static List<ExpenseLineItem> billableLinesWithoutClient(ExpenseReport report) {
+        if (report.getExpenseLineItems() == null) {
+            return List.of();
+        }
+        return report.getExpenseLineItems().stream()
+                .filter(line -> Boolean.TRUE.equals(line.getClientBillable()) && line.getResolvedClientId() == null)
+                .toList();
     }
 
     @Override
@@ -80,14 +84,18 @@ public class InterimPolicyEvaluationGatewayImpl implements PolicyEvaluationGatew
             return new PolicyDecision(false, display, duplicateReceiptReason(duplicates));
         }
 
-        // Stage 1 (S1-15): a trip report must say which project or client it is for, unless this environment has turned the
+        // Stage 1 (S1-15): the client lives on each expense line. Only a client billable line needs one, so a report with
+        // no billable lines (an internal trip) submits without a client. A billable line with no client is named in the
+        // error. A report-level project or client still covers it for existing reports. Environments can turn the
         // requirement off through configuration.
-        // The client and project now live on each billable expense line, so the trip is covered when a billable line
-        // has a resolved client. A report-level project or client still satisfies it for existing reports.
-        if (requireProjectOrClient && report.getProjectId() == null && report.getClientId() == null
-                && !hasBillableLineWithClient(report)) {
-            return new PolicyDecision(false, display,
-                    "Add a client billable expense with a client, or enter the project or client for this trip, before submitting.");
+        if (requireProjectOrClient && report.getProjectId() == null && report.getClientId() == null) {
+            List<String> billableWithoutClient = billableLinesWithoutClient(report).stream()
+                    .map(InterimPolicyEvaluationGatewayImpl::lineLabel)
+                    .toList();
+            if (!billableWithoutClient.isEmpty()) {
+                return new PolicyDecision(false, display, "Choose the client for each client billable expense, or mark it "
+                        + "as not client billable, before submitting: " + String.join("; ", billableWithoutClient));
+            }
         }
 
         // Stage 1 (S1-11): every line must say how the employee paid.

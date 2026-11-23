@@ -853,6 +853,21 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             // Legacy requests only. Requests of the new flow get their rollover explicitly, never from a ready balance.
             carryForwardService.applyReadyForDestination(saved);
         }
+        if ("APPROVED".equals(nextStatus)
+                && CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD.name().equals(saved.getRequestType())) {
+            // The employee asked for the held carry-forward to be included. It moves in now, in this transaction. The
+            // budget above was consumed on the new cash only: the carried money was budgeted on its original advance.
+            // Move what the request showed (total - new cash), no more: approvers decided on that figure.
+            BigDecimal shown = saved.getTotalAdvanceAllocation() != null && saved.getAdditionalAmountRequested() != null
+                    ? saved.getTotalAdvanceAllocation().subtract(saved.getAdditionalAmountRequested()).max(BigDecimal.ZERO)
+                    : null;
+            carryForwardService.applyHeldCarryForward(saved, actingUser, shown);
+            // If Finance returned part of it in the meantime, the stored total follows what actually moved. The approved
+            // amount includes the carried-in part, as for a set-off: disbursement pays approved - carriedIn.
+            saved.setTotalAdvanceAllocation(saved.getAmount());
+            saved.setApprovedAmount(saved.getAmount());
+            cashAdvanceRepository.save(saved);
+        }
 
         auditLogRepository.save(
                 AuditLog.builder()
@@ -1985,7 +2000,8 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             BigDecimal owed = ledgerOutstanding(other);
             if (owed.signum() > 0) {
                 others.add(new com.expense_management_service.dto.response.EmployeeAdvanceBalanceResponse.OpenAdvance(
-                        other.getAdvanceId(), other.getTitle(), other.getStatus(), other.getAmount(), owed));
+                        other.getAdvanceId(), other.getTitle(), other.getStatus(), other.getAmount(), owed,
+                        other.getCurrency() == null ? null : other.getCurrency().getCurrencyCode()));
             }
         }
         BigDecimal outstanding = others.stream()
@@ -2147,6 +2163,10 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
                 if (sourceId.equals(advanceId)) {
                     throw new BusinessRuleViolationException("An advance cannot be set off against itself.");
                 }
+                if (CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD.name().equals(entity.getRequestType())) {
+                    throw new BusinessRuleViolationException("This request already brings in the carried-forward balance. "
+                            + "Approve it in full or at a reduced amount instead of a set-off.");
+                }
                 CashAdvance source = findEntity(sourceId);
                 if (source.getEmployeeId() == null || !source.getEmployeeId().equals(entity.getEmployeeId())) {
                     throw new BusinessRuleViolationException("The set-off source must belong to the same employee.");
@@ -2246,25 +2266,81 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     private static final class Allocation {
         final BigDecimal openOutstanding;
         final BigDecimal eligibleOutstanding;
+        final BigDecimal heldCarryForward;
         final BigDecimal total;
         final boolean justificationRequired;
 
-        Allocation(BigDecimal openOutstanding, BigDecimal eligibleOutstanding, BigDecimal total, boolean justificationRequired) {
+        Allocation(BigDecimal openOutstanding, BigDecimal eligibleOutstanding, BigDecimal heldCarryForward, BigDecimal total,
+                   boolean justificationRequired) {
             this.openOutstanding = openOutstanding;
             this.eligibleOutstanding = eligibleOutstanding;
+            this.heldCarryForward = heldCarryForward;
             this.total = total;
             this.justificationRequired = justificationRequired;
         }
 
         BigDecimal openOutstanding() { return openOutstanding; }
         BigDecimal eligibleOutstanding() { return eligibleOutstanding; }
+        BigDecimal heldCarryForward() { return heldCarryForward; }
         BigDecimal total() { return total; }
         boolean justificationRequired() { return justificationRequired; }
+
+        /** The balance added on top of the new cash for this request type, as shown in the preview. */
+        BigDecimal broughtIn(CashAdvanceRequestType type) {
+            return switch (CashAdvanceAllocationRules.typeOrDefault(type)) {
+                case ADVANCE_PLUS_OUTSTANDING -> eligibleOutstanding;
+                case ADVANCE_PLUS_CARRY_FORWARD -> heldCarryForward;
+                case COMPLETE_NEW -> BigDecimal.ZERO;
+            };
+        }
     }
 
-    private Allocation allocationFor(String employeeId, CashAdvanceRequestType type, BigDecimal amount) {
+    /**
+     * @param currencyCode the request's currency. A carried-forward balance moves in only when it is in this currency
+     *                     (approval moves same-currency balances only), so only those count toward the total. Null when
+     *                     the currency is not chosen yet: then no carried-forward balance is counted.
+     */
+    private Allocation allocationFor(String employeeId, CashAdvanceRequestType type, BigDecimal amount, String currencyCode) {
+        return allocationFor(employeeId, type, amount, currencyCode, null);
+    }
+
+    /**
+     * Statuses in which a Cash Advance + Carry Forward request has not reached a final outcome. Its carry-forward stays
+     * claimed while it is in one of these: it is shown on that request and not offered to another. Once it is approved
+     * (the money moves in), rejected or cancelled, the claim ends; a rejected or cancelled request never moved anything,
+     * so the balance is simply available again.
+     */
+    static final List<String> CARRY_FORWARD_CLAIM_STATUSES = List.of(
+            "DRAFT", "SUBMITTED", "PENDING", "PENDING_APPROVAL", "PENDING_MANAGER_APPROVAL",
+            "PENDING_COST_CENTER_APPROVAL", "PENDING_COST_CENTER", "PENDING_FINANCE_APPROVAL", "PENDING_FINANCE",
+            "DEFERRED", "QUERY_RAISED");
+
+    /** The employee's open Carry Forward requests in this currency, other than {@code excludeAdvanceId}, with their claims. */
+    private List<CashAdvance> openCarryForwardClaims(String employeeId, String currencyCode, UUID excludeAdvanceId) {
+        if (currencyCode == null) {
+            return List.of();
+        }
+        return cashAdvanceRepository.findByEmployeeIdAndStatusIn(employeeId, CARRY_FORWARD_CLAIM_STATUSES).stream()
+                .filter(a -> CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD.name().equals(a.getRequestType()))
+                .filter(a -> excludeAdvanceId == null || !excludeAdvanceId.equals(a.getAdvanceId()))
+                .filter(a -> a.getCurrency() != null && currencyCode.equalsIgnoreCase(a.getCurrency().getCurrencyCode()))
+                .filter(a -> claimedCarryForward(a).signum() > 0)
+                .toList();
+    }
+
+    /** The carry-forward a request claims: its total less the new cash. */
+    static BigDecimal claimedCarryForward(CashAdvance request) {
+        if (request.getTotalAdvanceAllocation() == null || request.getAdditionalAmountRequested() == null) {
+            return BigDecimal.ZERO;
+        }
+        return request.getTotalAdvanceAllocation().subtract(request.getAdditionalAmountRequested()).max(BigDecimal.ZERO);
+    }
+
+    private Allocation allocationFor(String employeeId, CashAdvanceRequestType type, BigDecimal amount, String currencyCode,
+                                     UUID excludeAdvanceId) {
         BigDecimal open = BigDecimal.ZERO;
         BigDecimal eligible = BigDecimal.ZERO;
+        BigDecimal heldTotal = BigDecimal.ZERO;
         for (CashAdvance advance : cashAdvanceRepository.findByEmployeeIdAndStatusIn(employeeId, OUTSTANDING_DISPLAY_STATUSES)) {
             BigDecimal owed = ledgerOutstanding(advance);
             if (owed.signum() <= 0) {
@@ -2276,21 +2352,59 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
             }
         }
         // Money Finance carried forward has left its advance's balance but is still owed. It is part of the employee's
-        // outstanding, and any new request may take it in, whatever the status of the advance it came from.
+        // outstanding, and a new request in the same currency may take it in, whatever the status of the advance it came from.
+        java.util.Set<String> otherCurrencies = new java.util.TreeSet<>();
         for (CashAdvance advance : cashAdvanceRepository.findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(employeeId)) {
             BigDecimal held = advance.getCarryForwardReadyAmount();
             if (CashAdvanceAllocationRules.holdsCarryForward(held)) {
                 open = open.add(held);
-                eligible = eligible.add(held);
+                String heldCurrency = advance.getCurrency() == null ? null : advance.getCurrency().getCurrencyCode();
+                if (currencyCode != null && currencyCode.equalsIgnoreCase(heldCurrency)) {
+                    eligible = eligible.add(held);
+                    heldTotal = heldTotal.add(held);
+                } else if (heldCurrency != null) {
+                    otherCurrencies.add(heldCurrency);
+                }
             }
         }
         if (type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING && eligible.signum() <= 0) {
             throw new BusinessRuleViolationException(
                     "You have no outstanding balance that can be included. Choose Complete New Cash Advance instead.");
         }
-        return new Allocation(open, eligible,
-                CashAdvanceAllocationRules.totalAllocation(type, eligible, amount),
+        // A balance another open Carry Forward request already shows is not offered again until that request is final.
+        List<CashAdvance> claims = openCarryForwardClaims(employeeId, currencyCode, excludeAdvanceId);
+        BigDecimal claimed = claims.stream().map(CashAdvanceServiceImpl::claimedCarryForward).reduce(BigDecimal.ZERO, BigDecimal::add);
+        BigDecimal heldBeforeClaims = heldTotal;
+        heldTotal = heldTotal.subtract(claimed).max(BigDecimal.ZERO);
+        if (type == CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD && heldTotal.signum() <= 0
+                && heldBeforeClaims.signum() > 0 && !claims.isEmpty()) {
+            CashAdvance first = claims.get(0);
+            throw new BusinessRuleViolationException("Your carried-forward balance of " + heldBeforeClaims.toPlainString() + " "
+                    + currencyCode + " is already included in your request \"" + (first.getTitle() == null ? "Cash advance" : first.getTitle())
+                    + "\" (" + first.getStatus() + "). It becomes available again if that request is rejected or cancelled. "
+                    + "Choose Complete New Cash Advance for this one.");
+        }
+        if (type == CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD && heldTotal.signum() <= 0) {
+            if (currencyCode == null) {
+                throw new BusinessRuleViolationException("Choose the currency of your carried-forward balance first.");
+            }
+            throw new BusinessRuleViolationException(otherCurrencies.isEmpty()
+                    ? "You have no carried-forward balance to include. Choose Complete New Cash Advance instead."
+                    : "Your carried-forward balance is in " + String.join(", ", otherCurrencies) + ", not " + currencyCode
+                            + ". Request the advance in " + String.join(" or ", otherCurrencies)
+                            + " to include it, or choose Complete New Cash Advance.");
+        }
+        return new Allocation(open, eligible, heldTotal,
+                CashAdvanceAllocationRules.totalAllocation(type, eligible, heldTotal, amount),
                 CashAdvanceAllocationRules.justificationRequired(type, open));
+    }
+
+    /** Cash Advance + Carry Forward needs the carry-forward feature: without it no held balance can move. */
+    private void refuseCarryForwardWhenDisabled(CashAdvanceRequestType type) {
+        if (type == CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD && !carryForwardService.isEnabled()) {
+            throw new BusinessRuleViolationException(
+                    "Cash Advance + Carry Forward is not available. Request a Complete New cash advance instead.");
+        }
     }
 
     /** The Cash Advance + Outstanding (rollover) flow has been removed. Nothing may create, preview or approve one. */
@@ -2305,19 +2419,25 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
     void applyAllocationRules(CashAdvance entity, CashAdvanceRequest request) {
         CashAdvanceRequestType type = CashAdvanceAllocationRules.typeOrDefault(request.requestType());
         refuseRemovedRollover(type);
+        refuseCarryForwardWhenDisabled(type);
         BigDecimal amount = request.amount();
         if (type == CashAdvanceRequestType.COMPLETE_NEW && request.additionalAmount() != null) {
-            throw new BusinessRuleViolationException("An additional amount applies only to Cash Advance + Outstanding.");
+            throw new BusinessRuleViolationException("An additional amount applies only when a balance is added to the request.");
         }
-        if (type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING
+        if (CashAdvanceAllocationRules.addsBalance(type)
                 && request.additionalAmount() != null && request.additionalAmount().compareTo(amount) != 0) {
             throw new BusinessRuleViolationException("The additional amount must match the amount required.");
         }
-        Allocation allocation = allocationFor(entity.getEmployeeId(), type, amount);
+        // On update the currency is replaced after this runs, so use the incoming one when it is sent.
+        String currencyCode = request.currencyId() != null
+                ? findCurrency(request.currencyId()).getCurrencyCode()
+                : (entity.getCurrency() == null ? null : entity.getCurrency().getCurrencyCode());
+        // The request being edited does not compete with its own claim.
+        Allocation allocation = allocationFor(entity.getEmployeeId(), type, amount, currencyCode, entity.getAdvanceId());
         String justification = CashAdvanceAllocationRules.validJustification(
                 allocation.justificationRequired(), request.employeeJustification());
         entity.setRequestType(type.name());
-        entity.setAdditionalAmountRequested(type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING ? amount : null);
+        entity.setAdditionalAmountRequested(CashAdvanceAllocationRules.addsBalance(type) ? amount : null);
         entity.setOutstandingAmountSnapshot(allocation.openOutstanding());
         entity.setTotalAdvanceAllocation(allocation.total());
         entity.setEmployeeJustification(justification);
@@ -2329,15 +2449,16 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         String employeeId = currentUserService.getEmployeeId();
         CashAdvanceRequestType type = CashAdvanceAllocationRules.typeOrDefault(request.requestType());
         refuseRemovedRollover(type);
-        Allocation allocation = allocationFor(employeeId, type, request.amount());
+        refuseCarryForwardWhenDisabled(type);
+        String currencyCode = request.currencyId() == null ? null : findCurrency(request.currencyId()).getCurrencyCode();
+        Allocation allocation = allocationFor(employeeId, type, request.amount(), currencyCode, request.advanceId());
         CashAdvanceExposure.Result exposure =
                 evaluateExposure(employeeId, null, allocation.openOutstanding(), committedAmount(employeeId, null), request.amount());
-        String currencyCode = request.currencyId() == null ? null : findCurrency(request.currencyId()).getCurrencyCode();
         return new CashAdvancePreviewResponse(
                 type,
                 currencyCode,
                 allocation.openOutstanding(),
-                type == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING ? allocation.eligibleOutstanding() : BigDecimal.ZERO,
+                allocation.broughtIn(type),
                 request.amount(),
                 allocation.total(),
                 allocation.justificationRequired(),

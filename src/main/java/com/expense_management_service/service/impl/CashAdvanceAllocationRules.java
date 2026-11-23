@@ -58,9 +58,26 @@ public final class CashAdvanceAllocationRules {
 
     /** Total advance amount the request covers: the eligible balance rolled in, plus the amount needed now. */
     public static BigDecimal totalAllocation(CashAdvanceRequestType type, BigDecimal eligibleOutstanding, BigDecimal amount) {
-        return typeOrDefault(type) == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING
-                ? eligibleOutstanding.add(amount)
-                : amount;
+        return totalAllocation(type, eligibleOutstanding, BigDecimal.ZERO, amount);
+    }
+
+    /**
+     * Total advance amount the request covers. Cash Advance + Outstanding adds the eligible outstanding; Cash Advance +
+     * Carry Forward adds only the balance Finance has already carried forward and is holding.
+     */
+    public static BigDecimal totalAllocation(CashAdvanceRequestType type, BigDecimal eligibleOutstanding,
+                                             BigDecimal heldCarryForward, BigDecimal amount) {
+        return switch (typeOrDefault(type)) {
+            case ADVANCE_PLUS_OUTSTANDING -> eligibleOutstanding.add(amount);
+            case ADVANCE_PLUS_CARRY_FORWARD -> (heldCarryForward == null ? BigDecimal.ZERO : heldCarryForward).add(amount);
+            case COMPLETE_NEW -> amount;
+        };
+    }
+
+    /** True for the request types where {@code amount} is only the new cash, with a balance added on top. */
+    public static boolean addsBalance(CashAdvanceRequestType type) {
+        CashAdvanceRequestType t = typeOrDefault(type);
+        return t == CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING || t == CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD;
     }
 
     /** Validates a justification against the rule. Returns the trimmed text, or null when none is needed and none given. */

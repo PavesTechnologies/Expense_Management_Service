@@ -68,15 +68,18 @@ class InterimPolicyEvaluationGatewayImplTest {
     }
 
     @Test
-    void evaluate_blocksSubmission_whenTheTripHasNoProjectOrClient() {
+    void requirementOn_noBillableLines_allowsSubmissionWithoutAClient() {
+        requireProjectOrClient(true);
         UUID reportId = UUID.randomUUID();
-        ExpenseReport noReference = ExpenseReport.builder().reportId(reportId).expenseLineItems(List.of(paidLine())).build();
+        ExpenseLineItem notBillable = paidLine();
+        notBillable.setClientBillable(false);
+        ExpenseReport internalTrip = ExpenseReport.builder().reportId(reportId).expenseLineItems(List.of(notBillable)).build();
         stubNoViolations();
 
-        PolicyDecision decision = gateway.evaluate(noReference);
+        PolicyDecision decision = gateway.evaluate(internalTrip);
 
-        assertThat(decision.allowed()).isFalse();
-        assertThat(decision.blockedReason()).contains("project or client");
+        assertThat(decision.allowed()).isTrue();
+        assertThat(decision.blockedReason()).isNull();
     }
 
     private ExpenseReport withProject(UUID reportId) {
@@ -110,7 +113,22 @@ class InterimPolicyEvaluationGatewayImplTest {
 
         ExpenseReport trip = ExpenseReport.builder().reportId(UUID.randomUUID()).expenseLineItems(List.of(billable)).build();
 
-        assertThat(gateway.evaluate(trip).allowed()).isFalse();
+        PolicyDecision decision = gateway.evaluate(trip);
+        assertThat(decision.allowed()).isFalse();
+        assertThat(decision.blockedReason()).contains("Choose the client for each client billable expense");
+    }
+
+    @Test
+    void requirementOn_billableLineWithoutClient_isCoveredByAReportLevelProject() {
+        requireProjectOrClient(true);
+        stubNoViolations();
+        ExpenseLineItem billable = paidLine();
+        billable.setClientBillable(true);
+
+        ExpenseReport trip = ExpenseReport.builder().reportId(UUID.randomUUID()).projectId(UUID.randomUUID())
+                .expenseLineItems(List.of(billable)).build();
+
+        assertThat(gateway.evaluate(trip).allowed()).isTrue();
     }
 
     private void requireProjectOrClient(boolean required) {

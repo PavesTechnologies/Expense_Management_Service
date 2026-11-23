@@ -14,6 +14,11 @@ import java.util.UUID;
 public record CashAdvancePreviewRequest(
         CashAdvanceRequestType requestType,
         @NotNull @Positive BigDecimal amount,
-        UUID currencyId
+        UUID currencyId,
+        /** The saved draft being previewed, if any, so its own carry-forward claim is not counted against it. */
+        UUID advanceId
 ) {
+    public CashAdvancePreviewRequest(CashAdvanceRequestType requestType, BigDecimal amount, UUID currencyId) {
+        this(requestType, amount, currencyId, null);
+    }
 }

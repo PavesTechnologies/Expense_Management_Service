@@ -95,13 +95,6 @@ public class DashboardServiceImpl implements DashboardService {
                 .setParameter("me", me).getResultList();
         Map<UUID, BigDecimal> amounts = baseAmountsByReport(reports.stream().map(ExpenseReport::getReportId).toList());
 
-        long drafts = count(reports, r -> r.getReportStatus() == ReportStatus.DRAFT);
-        long needsAction = count(reports, r -> NEEDS_EMPLOYEE_ACTION.contains(r.getReportStatus()));
-        long inApproval = count(reports, r -> r.getReportStatus() == ReportStatus.PENDING_APPROVAL);
-        long atFinance = count(reports, r -> r.getReportStatus() == ReportStatus.PENDING_FINANCE_VERIFICATION);
-        long withAp = count(reports, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
-        long paid = count(reports, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.PAYMENT_COMPLETED);
-
         Map<UUID, BigDecimal> payments = paymentAmounts(reports, amounts);
         BigDecimal awaitingReimbursement = sum(reports, payments, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.APPROVED_FOR_PAYMENT);
         BigDecimal reimbursed = sum(reports, payments, r -> r.getPaymentRoutingStatus() == PaymentRoutingStatus.PAYMENT_COMPLETED);
@@ -226,12 +219,25 @@ public class DashboardServiceImpl implements DashboardService {
         kpis.add(new Kpi("erPendingAp", "Waiting for AP", erPendingAp, "money", "Sent to AP, not paid yet", erPendingAp.signum() > 0 ? "amber" : "gray"));
         kpis.add(new Kpi("erPaid", "Paid to you", erPaid, "money", "Reimbursement already paid", "emerald"));
 
+        // Every report the employee can still follow is in exactly one step, so the steps add up to their reports.
+        // "Settled" ends a report that was fully covered by an advance (nothing to pay). "action" (sent back to the
+        // employee) is not a step on the line; the journey shows it as a callout.
+        Map<String, Long> journey = new java.util.LinkedHashMap<>();
+        for (String key : List.of("draft", "approval", "finance", "ap", "paid", "settled", "action")) {
+            journey.put(key, 0L);
+        }
+        for (ExpenseReport r : reports) {
+            String step = journeyStep(r, amounts);
+            if (step != null) journey.merge(step, 1L, Long::sum);
+        }
         List<Stage> pipeline = List.of(
-                new Stage("draft", "Draft", drafts),
-                new Stage("approval", "Manager approval", inApproval),
-                new Stage("finance", "Finance check", atFinance),
-                new Stage("ap", "With AP", withAp),
-                new Stage("paid", "Paid", paid));
+                new Stage("draft", "Draft", journey.get("draft")),
+                new Stage("approval", "Manager approval", journey.get("approval")),
+                new Stage("finance", "Finance check", journey.get("finance")),
+                new Stage("ap", "With AP", journey.get("ap")),
+                new Stage("paid", "Paid", journey.get("paid")),
+                new Stage("settled", "Settled", journey.get("settled")),
+                new Stage("action", "Sent back to you", journey.get("action")));
 
         List<Item> attention = reports.stream()
                 .filter(r -> NEEDS_EMPLOYEE_ACTION.contains(r.getReportStatus()) || r.getReportStatus() == ReportStatus.DRAFT)
@@ -665,6 +671,39 @@ public class DashboardServiceImpl implements DashboardService {
 
     // ------------------------------------------------------------------ helpers
 
+    /**
+     * The step of the employee's "Where your reports are" journey a report is in. Approved reports end in "paid" (money
+     * received), "ap" (still owed: with AP or on its way there) or "settled" (fully covered by an advance, nothing to pay).
+     * Rejected and cancelled reports have left the journey (null).
+     */
+    static String journeyStep(ExpenseReport r, Map<UUID, BigDecimal> gross) {
+        ReportStatus status = r.getReportStatus();
+        if (status == null) return null;
+        switch (status) {
+            case DRAFT:
+                return "draft";
+            case AWAITING_CORRECTION:
+            case POLICY_REJECTED:
+            case QUERY_RAISED:
+                return "action";
+            case SUBMITTED:
+            case PENDING_APPROVAL:
+                return "approval";
+            case PENDING_FINANCE_VERIFICATION:
+                return "finance";
+            case APPROVED:
+            case CLOSED:
+            case REIMBURSED: {
+                PaymentRoutingStatus routing = r.getPaymentRoutingStatus();
+                if (status == ReportStatus.REIMBURSED || routing == PaymentRoutingStatus.PAYMENT_COMPLETED) return "paid";
+                if (routing == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) return "ap";
+                return remainingPayable(owedOf(r, gross), r.getPaidAmount()).signum() > 0 ? "ap" : "settled";
+            }
+            default:
+                return null;
+        }
+    }
+
     /** The one flow stage a report is in, for the employee dashboard. */
     private static String employeeStage(ExpenseReport r) {
         ReportStatus status = r.getReportStatus();
@@ -819,9 +858,6 @@ public class DashboardServiceImpl implements DashboardService {
         return value instanceof BigDecimal b ? b : BigDecimal.ZERO;
     }
 
-    private static long count(List<ExpenseReport> reports, Function<ExpenseReport, Boolean> test) {
-        return reports.stream().filter(test::apply).count();
-    }
 
     private static BigDecimal sum(List<ExpenseReport> reports, Map<UUID, BigDecimal> amounts, Function<ExpenseReport, Boolean> test) {
         return reports.stream().filter(test::apply)

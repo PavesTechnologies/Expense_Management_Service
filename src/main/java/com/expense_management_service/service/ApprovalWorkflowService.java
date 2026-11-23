@@ -21,7 +21,15 @@ import java.util.UUID;
 public interface ApprovalWorkflowService {
 
     /** Resolves the matching flow, materialises the chain, activates the first level. */
-    ExpenseReportResponse submit(UUID reportId);
+    default ExpenseReportResponse submit(UUID reportId) {
+        return submit(reportId, null);
+    }
+
+    /**
+     * Same as {@link #submit(UUID)}; {@code lateSubmissionReason} lets the employee submit a report that is past its
+     * submission deadline by explaining the delay (ignored when the report is on time).
+     */
+    ExpenseReportResponse submit(UUID reportId, String lateSubmissionReason);
 
     /** Employee-initiated: PENDING_APPROVAL/AWAITING_CORRECTION -> DRAFT. Blocked once any level has approved (§6). */
     ExpenseReportResponse recall(UUID reportId, String actingEmployeeId);

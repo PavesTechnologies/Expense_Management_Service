@@ -235,7 +235,8 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
                 report.getCostCenter() != null ? report.getCostCenter().getCostCenterName() : null,
                 report.getReportStatus() != null ? report.getReportStatus().name() : null,
                 report.getSubmittedAt(),
-                instance.getLevelOrder(), pendingLineItems);
+                instance.getLevelOrder(), pendingLineItems,
+                report.getCashAdvance() != null ? report.getCashAdvance().getAdvanceId() : null);
     }
 
     /** Expense GL and, for recoverable tax, the tax code's input tax GL - split as the tax journal posts it. */
@@ -323,7 +324,8 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
                 representative != null ? representative.getComment() : null,
                 report.getPaymentRoutingStatus() != null ? report.getPaymentRoutingStatus().name() : null,
                 report.getPaymentCompletedAt(),
-                report.getInvoiceHandoffStatus() != null ? report.getInvoiceHandoffStatus().name() : null);
+                report.getInvoiceHandoffStatus() != null ? report.getInvoiceHandoffStatus().name() : null,
+                report.getCashAdvance() != null ? report.getCashAdvance().getAdvanceId() : null);
     }
 
     /**

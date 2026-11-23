@@ -96,7 +96,8 @@ public class ExpenseReportMapper {
                 Boolean.TRUE.equals(entity.getNoPaymentDue()),
                 toPaymentConfirmation(entity),
                 entity.getProjectId(),
-                entity.getClientId()
+                entity.getClientId(),
+                entity.getLateSubmissionReason()
         );
     }
 

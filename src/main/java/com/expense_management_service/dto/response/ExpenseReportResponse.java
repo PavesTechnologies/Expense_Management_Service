@@ -54,8 +54,31 @@ public record ExpenseReportResponse(
         /** The internal project the report is for (null when none is set). */
         UUID projectId,
         /** The RMS client the report is for (null when none is set). */
-        UUID clientId
+        UUID clientId,
+        /** The employee's reason for submitting after the deadline, or null when it was submitted on time. */
+        String lateSubmissionReason
 ) {
+    /** Shape before the late-submission reason was exposed. */
+    public ExpenseReportResponse(UUID reportId, String reportNumber, String employeeId, String title,
+                                 String businessPurpose, String fiscalYear, UUID costCenterId, String costCenterName,
+                                 String reportStatus, String paymentRoutingStatus, String invoiceHandoffStatus,
+                                 UUID currencyId, String currencyCode, String baseCurrencyCode,
+                                 BigDecimal totalAmount, BigDecimal reimbursableAmount,
+                                 LocalDateTime submittedAt, LocalDateTime approvedAt, LocalDateTime closedAt,
+                                 LocalDateTime createdAt, LocalDateTime updatedAt,
+                                 int lineItemCount, boolean editable, boolean deletable,
+                                 int policyWarningCount, int policyUnjustifiedCount, UUID cashAdvanceId,
+                                 LocalDate tripStartDate, LocalDate tripEndDate, LocalDate submissionDeadline,
+                                 int submissionDeadlineDays, LocalDate reportingPeriodStart, LocalDate reportingPeriodEnd,
+                                 boolean noPaymentDue, PaymentConfirmation paymentConfirmation, UUID projectId, UUID clientId) {
+        this(reportId, reportNumber, employeeId, title, businessPurpose, fiscalYear, costCenterId, costCenterName,
+                reportStatus, paymentRoutingStatus, invoiceHandoffStatus, currencyId, currencyCode, baseCurrencyCode,
+                totalAmount, reimbursableAmount, submittedAt, approvedAt, closedAt, createdAt, updatedAt,
+                lineItemCount, editable, deletable, policyWarningCount, policyUnjustifiedCount, cashAdvanceId,
+                tripStartDate, tripEndDate, submissionDeadline, submissionDeadlineDays, reportingPeriodStart,
+                reportingPeriodEnd, noPaymentDue, paymentConfirmation, projectId, clientId, null);
+    }
+
     public record PaymentConfirmation(
             LocalDateTime confirmedAt,
             String confirmedBy,

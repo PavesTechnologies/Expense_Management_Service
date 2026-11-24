@@ -17,6 +17,27 @@ class CashAdvanceAllocationRulesTest {
 
     private static final BigDecimal ZERO = BigDecimal.ZERO;
 
+    @Test
+    void carryForwardType_totalIsHeldCarryForwardPlusNewCash_notTheOtherOutstanding() {
+        BigDecimal total = CashAdvanceAllocationRules.totalAllocation(
+                CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD, new BigDecimal("2000"), new BigDecimal("800"), new BigDecimal("500"));
+        assertEquals(0, new BigDecimal("1300").compareTo(total));
+    }
+
+    @Test
+    void carryForwardType_needsNoJustification_evenWithOutstanding() {
+        assertFalse(CashAdvanceAllocationRules.justificationRequired(
+                CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD, new BigDecimal("800")));
+    }
+
+    @Test
+    void addsBalance_onlyForTheTypesThatAddABalanceToTheNewCash() {
+        assertTrue(CashAdvanceAllocationRules.addsBalance(CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD));
+        assertTrue(CashAdvanceAllocationRules.addsBalance(CashAdvanceRequestType.ADVANCE_PLUS_OUTSTANDING));
+        assertFalse(CashAdvanceAllocationRules.addsBalance(CashAdvanceRequestType.COMPLETE_NEW));
+        assertFalse(CashAdvanceAllocationRules.addsBalance(null));
+    }
+
     @ParameterizedTest
     @CsvSource(value = {"500, true", "0.01, true", "0, false", "-1, false", "NULL, false"}, nullValues = "NULL")
     void holdsCarryForward_onlyForAPositiveHeldAmount(BigDecimal held, boolean holds) {

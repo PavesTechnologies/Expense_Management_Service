@@ -5,6 +5,7 @@ import com.expense_management_service.config.ChatbotProperties;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.stereotype.Component;
@@ -24,9 +25,11 @@ import java.util.Map;
  * Bodies are (de)serialized with a local Jackson 2 {@link ObjectMapper} and sent as strings, the same
  * way other integration code here avoids depending on which Jackson version Spring's converters use.
  * Message contents are never logged: they carry employee and financial data.
+ * Active when {@code chatbot.provider=ollama}.
  */
 @Slf4j
 @Component
+@ConditionalOnProperty(name = "chatbot.provider", havingValue = "ollama")
 public class OllamaLlmClient implements LlmClient {
 
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
@@ -78,6 +81,15 @@ public class OllamaLlmClient implements LlmClient {
         return parse(raw);
     }
 
+    @Override
+    public Map<String, Object> toolResultMessage(ToolCall call, String content) {
+        Map<String, Object> message = new LinkedHashMap<>();
+        message.put("role", "tool");
+        message.put("tool_name", call.name());
+        message.put("content", content);
+        return message;
+    }
+
     @SuppressWarnings("unchecked")
     private LlmReply parse(String raw) {
         Map<String, Object> response;
@@ -96,7 +108,7 @@ public class OllamaLlmClient implements LlmClient {
                 if (call instanceof Map<?, ?> callMap && callMap.get("function") instanceof Map<?, ?> function) {
                     Object name = function.get("name");
                     if (name == null) continue;
-                    toolCalls.add(new ToolCall(String.valueOf(name), readArguments(function.get("arguments"))));
+                    toolCalls.add(new ToolCall(null, String.valueOf(name), readArguments(function.get("arguments"))));
                 }
             }
         }

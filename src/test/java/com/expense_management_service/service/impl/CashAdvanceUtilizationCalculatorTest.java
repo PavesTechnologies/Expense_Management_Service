@@ -80,6 +80,31 @@ class CashAdvanceUtilizationCalculatorTest {
     }
 
     @Test
+    void reportInApproval_isHeldAgainstTheAdvance_onlyTheRestIsSettleable_andNoReimbursementIsOwedYet() {
+        report.setReportStatus(ReportStatus.PENDING_APPROVAL);
+        report.setReimbursableAmount(new BigDecimal("250.00")); // still the gross claim before approval
+        when(receiptRepo.findByReport_ReportId(report.getReportId())).thenReturn(List.of());
+
+        CashAdvanceUtilizationResponse response = calculator.calculate(advance);
+
+        assertThat(response.inApprovalAmount()).isEqualByComparingTo("250.00");
+        assertThat(response.settleableAmount()).isEqualByComparingTo("750.00");
+        assertThat(response.reimbursementOwedAmount()).isEqualByComparingTo("0");
+        assertThat(response.closureStatus()).isEqualTo("REPAYMENT_DUE");
+    }
+
+    @Test
+    void approvedReport_isNotHeld() {
+        when(receiptRepo.findByReport_ReportId(report.getReportId())).thenReturn(List.of());
+
+        CashAdvanceUtilizationResponse response = calculator.calculate(advance);
+
+        assertThat(response.inApprovalAmount()).isEqualByComparingTo("0");
+        // Nothing is set against the advance in this test (no adjustments), so the whole 1,000 can be settled.
+        assertThat(response.settleableAmount()).isEqualByComparingTo("1000.00");
+    }
+
+    @Test
     void lineWithoutAnyReceiptIsCountedAsMissing() {
         when(receiptRepo.findByReport_ReportId(report.getReportId())).thenReturn(List.of());
 

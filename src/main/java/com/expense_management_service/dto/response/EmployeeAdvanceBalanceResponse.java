@@ -28,7 +28,9 @@ public record EmployeeAdvanceBalanceResponse(
         /** What the manager recorded on this request. Null when the manager has not decided yet. */
         ManagerDecision managerDecision
 ) {
-    public record OpenAdvance(UUID advanceId, String title, String status, BigDecimal amount, BigDecimal outstandingBalance) {
+    /** {@code currencyCode} is this advance's own currency, which can differ from the request being decided. */
+    public record OpenAdvance(UUID advanceId, String title, String status, BigDecimal amount, BigDecimal outstandingBalance,
+                              String currencyCode) {
     }
 
     /**

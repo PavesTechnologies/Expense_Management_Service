@@ -44,11 +44,16 @@ class ChatbotServiceImplTest {
         when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(
                 UUID.randomUUID(), 1L, "EMP-1", "asha@example.com", "Asha", List.of("General"), List.of()));
         when(tools.definitions()).thenReturn(TOOL_DEFS);
+        when(llmClient.toolResultMessage(any(), any())).thenAnswer(inv -> {
+            ToolCall call = inv.getArgument(0);
+            return Map.of("role", "tool", "tool_call_id", call.id(), "content", inv.getArgument(1));
+        });
     }
 
     private ChatbotServiceImpl service(boolean enabled, int maxToolRounds) {
         return new ChatbotServiceImpl(llmClient, tools,
-                new ChatbotProperties(enabled, "http://localhost:11434", "qwen2.5:7b", 0.2, 60, maxToolRounds, 12),
+                new ChatbotProperties(enabled, "openai-compatible", "https://api.example.invalid/v1", "test-key",
+                        "http://localhost:11434", "test-model", 0.2, 60, maxToolRounds, 12),
                 currentUserService, "Asia/Kolkata");
     }
 
@@ -74,7 +79,7 @@ class ChatbotServiceImplTest {
         Map<String, Object> toolAsk = Map.of("role", "assistant", "content", "",
                 "tool_calls", List.of(Map.of("function", Map.of("name", ChatbotTools.MY_EXPENSE_REPORTS))));
         when(llmClient.chat(anyList(), anyList()))
-                .thenReturn(new LlmReply("", List.of(new ToolCall(ChatbotTools.MY_EXPENSE_REPORTS, Map.of())), toolAsk))
+                .thenReturn(new LlmReply("", List.of(new ToolCall("call_1", ChatbotTools.MY_EXPENSE_REPORTS, Map.of())), toolAsk))
                 .thenReturn(new LlmReply("Your claim ER-001 is approved.", List.of(), Map.of("role", "assistant")));
         when(tools.execute(eq(ChatbotTools.MY_EXPENSE_REPORTS), any()))
                 .thenReturn("{\"reports\":[{\"reportNumber\":\"ER-001\",\"status\":\"APPROVED\"}]}");
@@ -86,7 +91,7 @@ class ChatbotServiceImplTest {
         verify(llmClient, times(2)).chat(sent.capture(), anyList());
         List<Map<String, Object>> secondCall = new ArrayList<>(sent.getAllValues().get(1));
         Map<String, Object> last = secondCall.get(secondCall.size() - 1);
-        assertThat(last).containsEntry("role", "tool").containsEntry("tool_name", ChatbotTools.MY_EXPENSE_REPORTS);
+        assertThat(last).containsEntry("role", "tool").containsEntry("tool_call_id", "call_1");
         assertThat((String) last.get("content")).contains("ER-001");
     }
 
@@ -107,7 +112,7 @@ class ChatbotServiceImplTest {
 
     @Test
     void stopsOfferingTools_afterMaxRounds() {
-        LlmReply wantsTool = new LlmReply("", List.of(new ToolCall(ChatbotTools.MY_CASH_ADVANCES, Map.of())),
+        LlmReply wantsTool = new LlmReply("", List.of(new ToolCall("call_2", ChatbotTools.MY_CASH_ADVANCES, Map.of())),
                 Map.of("role", "assistant", "content", ""));
         when(llmClient.chat(anyList(), anyList()))
                 .thenReturn(wantsTool)

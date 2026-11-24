@@ -83,6 +83,10 @@ public class CashAdvanceCarryForwardService {
     @org.springframework.beans.factory.annotation.Autowired(required = false)
     private CashAdvanceUtilizationCalculator utilizationCalculator;
 
+    /** Optional for the same reason; without it the open-report check is skipped. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private CashAdvanceSettlementReadiness settlementReadiness;
+
     /** Statuses whose expenses are still being reviewed. Their status is owned by that review, so a carry-forward keeps it. */
     private static final Set<String> EXPENSE_REVIEW_STATUSES = Set.of("EXPENSE_SUBMITTED", "EXPENSE_VERIFIED");
 
@@ -220,6 +224,10 @@ public class CashAdvanceCarryForwardService {
         assertSourceCanGiveBalance(source);
         BigDecimal available = carryableNow(source);
         if (requested.compareTo(available) > 0) {
+            // Say how much is held for expenses in approval, and on which reports, when that is what limits it.
+            if (settlementReadiness != null && proposedFrom(source.getAdvanceId()).signum() == 0) {
+                settlementReadiness.assertWithinSettleable(settlementReadiness.utilization(source), requested, "carried forward");
+            }
             throw new BusinessRuleViolationException("Carry-forward of " + requested + " exceeds the unallocated balance of "
                     + available + " on this advance (the balance less expenses already submitted against it).");
         }
@@ -300,6 +308,95 @@ public class CashAdvanceCarryForwardService {
         }
     }
 
+    /** True when the carry-forward feature is switched on ({@code expense.carry-forward.enabled}). */
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    /**
+     * Cash Advance + Carry Forward: on final approval, every balance Finance carried forward for this employee (same
+     * currency, oldest first) moves into the request. The request's amount becomes the new cash plus what moved in, and its
+     * carried-in amount records the moved part, so disbursement pays only the new cash. Runs in the caller's transaction,
+     * so the approval and the movement commit together. Returns the total moved in.
+     *
+     * <p>Finance already decided to move this money when it carried it forward, so no further approval is needed. If
+     * Finance returned the held balance before this approval, nothing moves and the request is just its new cash.
+     */
+    @Transactional
+    public BigDecimal applyHeldCarryForward(CashAdvance destination, String approver) {
+        return applyHeldCarryForward(destination, approver, null);
+    }
+
+    /**
+     * As above, but moves at most {@code limit}: the carry-forward the request showed when it was submitted and approved.
+     * A balance carried forward after submission is not pulled in silently; it waits for the employee's next request.
+     * Null means no limit.
+     */
+    @Transactional
+    public BigDecimal applyHeldCarryForward(CashAdvance destination, String approver, BigDecimal limit) {
+        requireEnabled();
+        if (destination.getDisbursedAt() != null) {
+            throw new BusinessRuleViolationException("The request has already been disbursed, so it cannot take a carry-forward.");
+        }
+        if (!carryForwardRepository.findByDestinationAdvance_AdvanceIdAndStatusIn(destination.getAdvanceId(), ACTIVE).isEmpty()) {
+            // Already applied (for example a retried approval). Never move the money twice.
+            return CashAdvanceBalanceRules.carriedIn(destination);
+        }
+        String actor = approver == null || approver.isBlank() ? AUTO_ACTOR : approver;
+        String currency = currencyCode(destination);
+        List<CashAdvance> sources = new java.util.ArrayList<>();
+        for (CashAdvance source : cashAdvanceRepository
+                .findByEmployeeIdAndCarryForwardReadyAmountIsNotNullOrderByCreatedAtAsc(destination.getEmployeeId())) {
+            if (!source.getAdvanceId().equals(destination.getAdvanceId()) && currency.equals(currencyCode(source))) {
+                sources.add(source);
+            }
+        }
+        // Lock in id order, like a rollover, so concurrent movements queue instead of deadlocking.
+        List<CashAdvance> lockOrder = new java.util.ArrayList<>(sources);
+        lockOrder.sort(java.util.Comparator.comparing(CashAdvance::getAdvanceId));
+        java.util.Map<UUID, CashAdvance> locked = new java.util.HashMap<>();
+        for (CashAdvance source : lockOrder) {
+            locked.put(source.getAdvanceId(), lockAdvance(source.getAdvanceId()));
+        }
+
+        // Oldest first, up to the limit.
+        java.util.Map<UUID, BigDecimal> take = new java.util.LinkedHashMap<>();
+        BigDecimal total = BigDecimal.ZERO;
+        for (CashAdvance source : sources) {
+            BigDecimal amount = held(locked.get(source.getAdvanceId()));
+            if (limit != null) {
+                amount = amount.min(limit.subtract(total));
+            }
+            if (amount.signum() > 0) {
+                take.put(source.getAdvanceId(), amount);
+                total = total.add(amount);
+            }
+        }
+        if (total.signum() <= 0) {
+            return BigDecimal.ZERO;
+        }
+
+        BigDecimal cash = destination.getAmount() == null ? BigDecimal.ZERO : destination.getAmount();
+        BigDecimal newAmount = cash.add(total);
+        destination.setAmount(newAmount);
+        // The request was created with outstanding = its cash. The employee now accounts for the carried part too, and
+        // disbursement keeps an outstanding that is already set, so it must move with the amount here.
+        BigDecimal oldOutstanding = destination.getOutstandingBalance();
+        destination.setOutstandingBalance(newAmount);
+        cashAdvanceRepository.save(destination);
+        balanceLedger.recordChange("CashAdvance", destination.getAdvanceId(), "CASH_ADVANCE_CARRY_FORWARD_INCLUDED",
+                "Amount: " + cash + ", Outstanding: " + oldOutstanding,
+                "Amount: " + newAmount + ", Outstanding: " + newAmount, actor, "Carried-forward balance of " + total + " included");
+
+        String reason = "Carried-forward balance included in Cash Advance + Carry Forward request";
+        for (java.util.Map.Entry<UUID, BigDecimal> entry : take.entrySet()) {
+            CashAdvance current = locked.get(entry.getKey());
+            takeHeld(current, destination, entry.getValue(), actor, reason,
+                    "carry-forward-request:" + destination.getAdvanceId() + ":" + current.getAdvanceId());
+        }
+        return total;
+    }
+
     /**
      * Moves part of a held carry-forward into the receiving advance: the receiving advance carries it in, and the held
      * amount drops. The source balance does not change, because the money left it when it was carried forward.
@@ -359,10 +456,9 @@ public class CashAdvanceCarryForwardService {
         if (utilizationCalculator == null) {
             return BigDecimal.ZERO;
         }
-        var utilization = utilizationCalculator.calculate(source);
-        BigDecimal claimed = utilization.claimedAmount() == null ? BigDecimal.ZERO : utilization.claimedAmount();
-        BigDecimal setAgainst = utilization.approvedUtilization() == null ? BigDecimal.ZERO : utilization.approvedUtilization();
-        return claimed.subtract(setAgainst).max(BigDecimal.ZERO);
+        // Claims on linked reports not approved yet. The same figure limits salary deduction, so both settle the same part.
+        BigDecimal inApproval = utilizationCalculator.calculate(source).inApprovalAmount();
+        return inApproval == null ? BigDecimal.ZERO : inApproval.max(BigDecimal.ZERO);
     }
 
     private static BigDecimal held(CashAdvance advance) {

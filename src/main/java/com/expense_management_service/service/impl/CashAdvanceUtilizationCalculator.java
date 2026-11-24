@@ -76,6 +76,7 @@ public class CashAdvanceUtilizationCalculator {
         BigDecimal returned = BigDecimal.ZERO;
         BigDecimal pending = BigDecimal.ZERO;
         BigDecimal reimbursementOwed = BigDecimal.ZERO;
+        BigDecimal inApproval = BigDecimal.ZERO;
 
         for (ExpenseReport report : reports) {
             UUID reportId = report.getReportId();
@@ -109,7 +110,13 @@ public class CashAdvanceUtilizationCalculator {
                     report.getReportStatus() != null ? report.getReportStatus().name() : null,
                     reportClaimed,
                     reservedByReport.getOrDefault(reportId, BigDecimal.ZERO)));
-            reimbursementOwed = reimbursementOwed.add(CashAdvanceBalanceRules.reimbursementStillOwed(report));
+            // A report still in approval owes nothing yet: its reimbursable amount is the gross claim until approval
+            // sets it to what the advance does not absorb. Its claim is held against the advance instead.
+            if (isOpen(report)) {
+                inApproval = inApproval.add(reportClaimed);
+            } else {
+                reimbursementOwed = reimbursementOwed.add(CashAdvanceBalanceRules.reimbursementStillOwed(report));
+            }
         }
 
         List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByCashAdvance_AdvanceId(advanceId);
@@ -126,6 +133,9 @@ public class CashAdvanceUtilizationCalculator {
         boolean balanceConsistent = outstanding.compareTo(nz(advance.getOutstandingBalance())) == 0;
 
         boolean closed = CLOSED.equalsIgnoreCase(advance.getStatus());
+        // Expenses in approval will be set against the advance when approved, so that part of the balance is held for
+        // them. Only the rest can be settled now.
+        BigDecimal settleable = closed ? BigDecimal.ZERO : outstanding.subtract(inApproval).max(BigDecimal.ZERO);
 
         return new CashAdvanceUtilizationResponse(
                 advanceId,
@@ -142,11 +152,13 @@ public class CashAdvanceUtilizationCalculator {
                 outstanding,
                 balanceConsistent,
                 advance.getStatus(),
-                closureStatus(closed, outstanding),
+                closureStatus(closed, outstanding, settleable),
                 closed,
                 reimbursementOwed,
                 linkedReports,
-                categories.values().stream().map(CategoryAccumulator::toResponse).toList());
+                categories.values().stream().map(CategoryAccumulator::toResponse).toList(),
+                inApproval,
+                settleable);
     }
 
     // ------------------------------------------------------------ helpers
@@ -209,13 +221,19 @@ public class CashAdvanceUtilizationCalculator {
         return nz(line.getBaseAmount() != null ? line.getBaseAmount() : line.getAmount());
     }
 
-    static String closureStatus(boolean closed, BigDecimal outstanding) {
+    /** True for a linked report whose expenses are not final yet (draft, in approval, sent back). */
+    static boolean isOpen(ExpenseReport report) {
+        return report.getReportStatus() != null
+                && CashAdvanceSettlementReadiness.OPEN_REPORT_STATUSES.contains(report.getReportStatus());
+    }
+
+    static String closureStatus(boolean closed, BigDecimal outstanding, BigDecimal settleable) {
         if (closed) {
             return CLOSED;
         }
         int sign = outstanding.signum();
         if (sign > 0) {
-            return "REPAYMENT_DUE";
+            return settleable.signum() > 0 ? "REPAYMENT_DUE" : "AWAITING_EXPENSE_APPROVAL";
         }
         if (sign < 0) {
             return "REIMBURSEMENT_DUE";

@@ -78,6 +78,10 @@ public class SalaryDeductionService {
     private final CashAdvanceAdjustmentRepository adjustmentRepository;
 
     /** The payroll component Payroll adds to the payslip for this recovery. Configurable; must exist in payroll. */
+    /** Optional so unit tests that build this service directly still work; without it the report check is skipped. */
+    @org.springframework.beans.factory.annotation.Autowired(required = false)
+    private CashAdvanceSettlementReadiness settlementReadiness;
+
     @Value("${expense.payroll.deduction-component:Cash Advance Recovery}")
     private String deductionComponent = "Cash Advance Recovery";
 
@@ -124,15 +128,24 @@ public class SalaryDeductionService {
             throw new BusinessRuleViolationException("This advance has no outstanding balance to recover.");
         }
         // Settling pays off the balance through payroll, which closes the advance. An advance with no expense linked
-        // has nothing to reconcile against, so it stays open until an expense is linked.
-        boolean hasLinkedExpense = adjustmentRepository.findByCashAdvance_AdvanceId(advanceId).stream()
-                .anyMatch(a -> a.isActive());
-        if (!hasLinkedExpense) {
-            throw new BusinessRuleViolationException("Link at least one expense to this advance before settling it. "
-                    + "Without a linked expense, the advance cannot be closed.");
+        // has nothing to reconcile against, so it stays open until an expense is linked. An expense still in approval
+        // counts: only the part of the balance it does not cover can be deducted now (see CashAdvanceSettlementReadiness).
+        var utilization = settlementReadiness != null ? settlementReadiness.utilization(advance) : null;
+        if (utilization != null) {
+            settlementReadiness.assertHasLinkedExpense(utilization, "settling it");
+        } else {
+            boolean hasLinkedExpense = adjustmentRepository.findByCashAdvance_AdvanceId(advanceId).stream()
+                    .anyMatch(a -> a.isActive());
+            if (!hasLinkedExpense) {
+                throw new BusinessRuleViolationException("Link at least one expense to this advance before settling it. "
+                        + "Without a linked expense, the advance cannot be closed.");
+            }
         }
         int decimals = CashAdvancePayrollPosting.decimals(advance);
         requireAmount(amount, balance, decimals, false);
+        if (utilization != null) {
+            settlementReadiness.assertWithinSettleable(utilization, amount, "deducted from salary");
+        }
         YearMonth month = payrollMonths.requireEligible(payrollMonth, today);
 
         for (SalaryDeductionRequest existing : requestRepository.findByAdvance_AdvanceIdOrderByRequestedAtDesc(advanceId)) {

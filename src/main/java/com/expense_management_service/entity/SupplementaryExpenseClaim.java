@@ -96,6 +96,14 @@ public class SupplementaryExpenseClaim {
     @Column(name = "settled_at")
     private LocalDateTime settledAt;
 
+    /** The cash advance the claim was set against (the one that received the original advance's carried balance). */
+    @Column(name = "settled_advance_id")
+    private UUID settledAdvanceId;
+
+    /** How much of the claim was set against {@link #settledAdvanceId}; the rest, if any, is paid by AP. */
+    @Column(name = "advance_offset_amount", precision = 19, scale = 4)
+    private BigDecimal advanceOffsetAmount;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

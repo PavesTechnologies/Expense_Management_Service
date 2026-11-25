@@ -10,6 +10,11 @@ public record SupplementaryEligibilityResponse(
         boolean eligible,
         String reason,
         BigDecimal amountOwed,
-        boolean hasCashAdvance
+        boolean hasCashAdvance,
+        /** When the advance's balance was carried forward: the advance a claim will be set against (null otherwise). */
+        java.util.UUID settleAgainstAdvanceId,
+        String settleAgainstAdvanceTitle,
+        /** What that advance still holds: up to this much is set against it, the rest is paid by AP. */
+        BigDecimal settleAgainstRemaining
 ) {
 }

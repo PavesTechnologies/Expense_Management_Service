@@ -55,6 +55,7 @@ public class SupplementaryReceiptServiceImpl implements SupplementaryReceiptServ
     private final CurrentUserService currentUserService;
     private final ApplicationEventPublisher applicationEventPublisher;
     private final ReceiptOcrRepository receiptOcrRepository;
+    private final OcrCategoryResolver ocrCategoryResolver;
 
     @Override
     @Transactional(readOnly = true)
@@ -66,10 +67,18 @@ public class SupplementaryReceiptServiceImpl implements SupplementaryReceiptServ
             throw new AccessDeniedException("You can read suggestions only for your own receipts.");
         }
         return receiptOcrRepository.findFirstByReceipt_ReceiptIdOrderByProcessedAtDesc(receiptId)
-                .map(o -> new SupplementaryReceiptSuggestionResponse(receiptId,
-                        o.getProcessingStatus() == null ? null : o.getProcessingStatus().name(),
-                        o.getAmount(), o.getCurrencyCode(), o.getReceiptDate(), o.getMerchantName()))
-                .orElseGet(() -> new SupplementaryReceiptSuggestionResponse(receiptId, "PROCESSING", null, null, null, null));
+                .map(o -> {
+                    // Same category match as a report's receipt scan, so both flows fill the same category.
+                    var category = ocrCategoryResolver == null ? null : ocrCategoryResolver.resolve(o.getCategory());
+                    return new SupplementaryReceiptSuggestionResponse(receiptId,
+                            o.getProcessingStatus() == null ? null : o.getProcessingStatus().name(),
+                            o.getAmount(), o.getCurrencyCode(), o.getReceiptDate(), o.getMerchantName(),
+                            category == null ? null : category.getCategoryId(),
+                            category == null ? null : category.getCategoryName(),
+                            o.getPaymentMethod(), o.getTaxAmount(), o.getSupplierGstin(), o.getInvoiceNumber(),
+                            o.getConfidenceScore());
+                })
+                .orElseGet(() -> SupplementaryReceiptSuggestionResponse.processing(receiptId));
     }
 
     @Override

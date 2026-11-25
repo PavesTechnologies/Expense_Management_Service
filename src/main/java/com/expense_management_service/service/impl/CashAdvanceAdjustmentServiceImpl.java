@@ -136,7 +136,8 @@ public class CashAdvanceAdjustmentServiceImpl implements CashAdvanceAdjustmentSe
         // The report's remaining claim: its total less the active offsets already applied to it, from any advance.
         // Without this, an offset could clear more than the report owes and pay the difference to nobody.
         BigDecimal reportOpen = ReimbursementCalculator.reimbursable(report.getTotalAmount(),
-                cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()));
+                cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream()
+                        .filter(CashAdvanceAdjustment::countsForReport).toList());
         if (adjustedAmount.compareTo(reportOpen) > 0) {
             throw new BusinessRuleViolationException("Offset " + adjustedAmount + " exceeds the amount still open on expense report "
                     + report.getReportNumber() + " (" + reportOpen + ").");
@@ -354,7 +355,8 @@ private boolean isAdminCaller() {
         BigDecimal before = report.getReimbursableAmount();
         PaymentRoutingStatus routingBefore = report.getPaymentRoutingStatus();
         report.setReimbursableAmount(ReimbursementCalculator.payable(ReimbursementCalculator.reimbursable(report.getTotalAmount(),
-                cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()))));
+                cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream()
+                        .filter(CashAdvanceAdjustment::countsForReport).toList())));
         reconcilePaymentDue(report);
         expenseReportRepository.save(report);
         if (before == null || before.compareTo(report.getReimbursableAmount()) != 0

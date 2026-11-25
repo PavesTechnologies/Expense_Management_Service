@@ -61,10 +61,14 @@ public class ExpenseReportController {
             @RequestParam(defaultValue = "createdAt") String sortBy,
             @RequestParam(defaultValue = "desc") String sortDirection,
             @RequestParam(required = false) String status,
-            @RequestParam(required = false) String search) {
+            @RequestParam(required = false) String search,
+            @RequestParam(required = false) String type) {
         int zeroBasedPage = Math.max(page - 1, 0);
         Sort sort = Sort.by(Sort.Direction.fromString(sortDirection), sortBy);
-        return ApiResponse.success(expenseReportService.getAll(PageRequest.of(zeroBasedPage, limit, sort), status, search));
+        // `type` (EXPENSE | SETTLEMENT) is optional; without it the original three-argument lookup runs unchanged.
+        return ApiResponse.success(type == null || type.isBlank()
+                ? expenseReportService.getAll(PageRequest.of(zeroBasedPage, limit, sort), status, search)
+                : expenseReportService.getAll(PageRequest.of(zeroBasedPage, limit, sort), status, search, type));
     }
 
     @DeleteMapping("/{reportId}")

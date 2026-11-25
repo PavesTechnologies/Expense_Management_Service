@@ -30,6 +30,9 @@ public record SupplementaryClaimResponse(
         /** NONE before Finance approval, then REQUESTED, then PAID once AP confirms the payment. */
         String paymentStatus,
         String paymentReference,
+        /** Set against this cash advance (carried-forward balance), and how much; the rest is paid by AP. */
+        UUID settledAdvanceId,
+        BigDecimal advanceOffsetAmount,
         List<SupplementaryClaimItemResponse> items,
         List<SupplementaryClaimHistoryResponse> history
 ) {

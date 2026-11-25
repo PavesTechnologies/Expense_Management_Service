@@ -47,6 +47,11 @@ public class SupplementaryPaymentServiceImpl implements SupplementaryPaymentServ
 
     @Override
     public void requestPayment(SupplementaryExpenseClaim claim) {
+        requestPayment(claim, claim.getTotalAmount());
+    }
+
+    @Override
+    public void requestPayment(SupplementaryExpenseClaim claim, BigDecimal amount) {
         // One request per claim: a second Finance approval, or a retry, cannot create a second payment.
         if (paymentRepository.existsByClaim_ClaimId(claim.getClaimId())) {
             throw new BusinessRuleViolationException("A payment has already been requested for this claim.");
@@ -55,7 +60,7 @@ public class SupplementaryPaymentServiceImpl implements SupplementaryPaymentServ
         LocalDateTime now = LocalDateTime.now();
         SupplementaryPayment payment = paymentRepository.save(SupplementaryPayment.builder()
                 .claim(claim)
-                .amount(claim.getTotalAmount().setScale(4, RoundingMode.HALF_UP))
+                .amount(amount.setScale(4, RoundingMode.HALF_UP))
                 .currencyCode(claim.getCurrencyCode())
                 .status(SupplementaryPayment.REQUESTED)
                 .requestedBy(actor)

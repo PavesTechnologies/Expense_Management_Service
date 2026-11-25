@@ -64,6 +64,10 @@ public class SalaryDeductionRequest {
     @Column(name = "status", nullable = false, length = 32)
     private String status;
 
+    /** Why Finance asked for less than the full outstanding balance. Null when the full balance was requested. */
+    @Column(name = "amount_change_reason", length = 500)
+    private String amountChangeReason;
+
     @Column(name = "requested_by", nullable = false, length = 255)
     private String requestedBy;
 

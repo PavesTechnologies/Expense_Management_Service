@@ -28,4 +28,11 @@ public interface ExpenseLineItemService {
     ExpenseDateRangeResponse expenseDateRange(UUID reportId);
 
     void delete(UUID reportId, UUID lineItemId);
+
+    /**
+     * Runs the report owner's policy rules against the line-item form as it currently stands and
+     * returns the warnings it would raise, without saving anything.
+     */
+    List<com.expense_management_service.dto.response.PolicyWarningResponse> previewPolicy(
+            UUID reportId, com.expense_management_service.dto.request.PolicyPreviewRequest request);
 }

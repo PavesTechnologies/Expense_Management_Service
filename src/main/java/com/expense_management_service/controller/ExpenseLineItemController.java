@@ -4,6 +4,8 @@ import java.util.List;
 
 import com.expense_management_service.common.ApiResponse;
 import com.expense_management_service.dto.request.ExpenseLineItemRequest;
+import com.expense_management_service.dto.request.PolicyPreviewRequest;
+import com.expense_management_service.dto.response.PolicyWarningResponse;
 import com.expense_management_service.dto.response.ExpenseDateRangeResponse;
 import com.expense_management_service.dto.response.ExpenseLineItemResponse;
 import com.expense_management_service.service.ExpenseLineItemService;
@@ -35,6 +37,17 @@ public class ExpenseLineItemController {
     public ApiResponse<ExpenseLineItemResponse> create(@PathVariable UUID reportId,
                                                         @Valid @RequestBody ExpenseLineItemRequest request) {
         return ApiResponse.success("Expense line item added", expenseLineItemService.create(reportId, request));
+    }
+
+    /**
+     * Policy warnings the line-item form would raise as it stands right now, for showing while the
+     * employee types. Saves nothing; the same rules run again (authoritatively) on create/update.
+     */
+    @PostMapping("/policy-preview")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL')")
+    public ApiResponse<List<PolicyWarningResponse>> previewPolicy(@PathVariable UUID reportId,
+                                                                  @Valid @RequestBody PolicyPreviewRequest request) {
+        return ApiResponse.success(expenseLineItemService.previewPolicy(reportId, request));
     }
 
     @PutMapping("/{lineItemId}")

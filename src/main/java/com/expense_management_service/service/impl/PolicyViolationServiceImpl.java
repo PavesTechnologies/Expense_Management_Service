@@ -84,9 +84,10 @@ public class PolicyViolationServiceImpl implements PolicyViolationService {
      * and their line item — useful for Finance/Admin/Manager to investigate, but not appropriate to
      * expose to the report's own owner (a plain employee), who has no legitimate need to know who
      * else submitted a similar-looking expense. The full detail stays in the stored entity; only the
-     * response given to a non-privileged viewer is redacted.
+     * response given to a non-privileged viewer is redacted. Static so the line-item policy preview
+     * ({@code ExpenseLineItemServiceImpl#previewPolicy}) applies the very same redaction.
      */
-    private PolicyWarningResponse redactIfNeeded(PolicyWarningResponse response, boolean privileged) {
+    static PolicyWarningResponse redactIfNeeded(PolicyWarningResponse response, boolean privileged) {
         if (privileged || response.ruleType() != PolicyRuleType.CROSS_EMPLOYEE_DUPLICATE_EXPENSE) {
             return response;
         }

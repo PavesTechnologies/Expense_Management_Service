@@ -150,4 +150,51 @@ class ExpenseLineItemControllerTest {
                         .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_ADMIN))))
                 .andExpect(status().isNoContent());
     }
+
+    // ---------------------------------------------------------------- policy preview
+
+    private static String previewBody() {
+        return "{\"categoryId\":\"" + UUID.randomUUID() + "\",\"expenseDate\":\"" + LocalDate.now().minusDays(1)
+                + "\",\"amount\":2500,\"currencyId\":\"" + UUID.randomUUID() + "\",\"receiptAttached\":false}";
+    }
+
+    @Test
+    void policyPreview_returnsWarnings_forEmployee() throws Exception {
+        UUID reportId = UUID.randomUUID();
+        var warning = new com.expense_management_service.dto.response.PolicyWarningResponse(null,
+                com.expense_management_service.enums.PolicyRuleType.AMOUNT_LIMIT, null, null,
+                "Amount 2500 exceeds the configured limit of 2000", new BigDecimal("2000"), new BigDecimal("2500"),
+                new BigDecimal("25"), null, "INR", null, null, null, null, null, null, 3);
+        when(expenseLineItemService.previewPolicy(eq(reportId), any())).thenReturn(List.of(warning));
+
+        mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/line-items/policy-preview", reportId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
+                        .contentType("application/json")
+                        .content(previewBody()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].ruleType").value("AMOUNT_LIMIT"))
+                .andExpect(jsonPath("$.data[0].limitValue").value(2000));
+    }
+
+    @Test
+    void policyPreview_returns400_whenCategoryMissing() throws Exception {
+        UUID reportId = UUID.randomUUID();
+
+        mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/line-items/policy-preview", reportId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL)))
+                        .contentType("application/json")
+                        .content("{\"amount\":100,\"currencyId\":\"" + UUID.randomUUID() + "\"}"))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void policyPreview_returns403_forFinance() throws Exception {
+        UUID reportId = UUID.randomUUID();
+
+        mockMvc.perform(post("/xms/employee/expense-reports/{reportId}/line-items/policy-preview", reportId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_FINANCE)))
+                        .contentType("application/json")
+                        .content(previewBody()))
+                .andExpect(status().isForbidden());
+    }
 }

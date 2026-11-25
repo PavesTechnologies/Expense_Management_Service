@@ -83,6 +83,10 @@ class SupplementaryClaimServiceImplTest {
     @Mock ReceiptRepository receiptRepository;
     @Mock SupplementaryPaymentService paymentService;
     @Mock SupplementaryReceiptService receiptService;
+    @Mock com.expense_management_service.repository.CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
+    @Mock com.expense_management_service.repository.CashAdvanceRepository cashAdvanceRepository;
+    @Mock CashAdvanceBalanceCalculator balanceCalculator;
+    @Mock CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
 
     @InjectMocks SupplementaryClaimServiceImpl service;
 
@@ -647,4 +651,131 @@ class SupplementaryClaimServiceImplTest {
 
         assertEquals(SupplementaryExpenseClaim.PAYMENT_PENDING, response.status());
     }
+
+    // ---------------------------------------------------------------- late bill after a carry-forward
+
+    /** Advance 1 (5,000; 3,500 spent) closed after carrying its 1,500 balance into Advance 2. */
+    private record Carried(ExpenseReport report, com.expense_management_service.entity.CashAdvance source,
+                           com.expense_management_service.entity.CashAdvance destination) {
+    }
+
+    private Carried carriedForward(String destinationStatus, String destinationOwes) {
+        var source = com.expense_management_service.entity.CashAdvance.builder()
+                .advanceId(UUID.randomUUID()).title("Advance 1").status("CLOSED").settledAt(LocalDateTime.now().minusDays(5)).build();
+        var destination = com.expense_management_service.entity.CashAdvance.builder()
+                .advanceId(UUID.randomUUID()).title("Advance 2").status(destinationStatus).build();
+        ExpenseReport report = settledReport(ReportStatus.APPROVED, BigDecimal.ZERO);
+        report.setCashAdvance(source);
+        report.setPaymentRoutingStatus(null);
+        var carry = com.expense_management_service.entity.CashAdvanceCarryForward.builder()
+                .carryForwardId(UUID.randomUUID()).sourceAdvance(source).destinationAdvance(destination)
+                .amount(new BigDecimal("1500")).status(com.expense_management_service.entity.CashAdvanceCarryForward.APPLIED)
+                .appliedAt(LocalDateTime.now().minusDays(5)).build();
+        // Like the database: the applied carry-forward comes back only when applied ones are asked for.
+        when(carryForwardRepository.findBySourceAdvance_AdvanceIdAndStatusIn(eq(source.getAdvanceId()), anyCollection()))
+                .thenAnswer(i -> ((java.util.Collection<?>) i.getArgument(1)).contains(com.expense_management_service.entity.CashAdvanceCarryForward.APPLIED)
+                        ? List.of(carry) : List.of());
+        when(balanceCalculator.rawOutstandingFor(any())).thenReturn(java.util.Map.of(destination.getAdvanceId(), new BigDecimal(destinationOwes)));
+        return new Carried(report, source, destination);
+    }
+
+    private SupplementaryExpenseClaim lateBill(ExpenseReport report, String amount) {
+        SupplementaryExpenseClaim claim = claim(SupplementaryExpenseClaim.PENDING_FINANCE, report);
+        claim.setTotalAmount(new BigDecimal(amount));
+        actAsFinance();
+        when(claimRepository.findByIdForUpdate(claim.getClaimId())).thenReturn(Optional.of(claim));
+        when(claimRepository.save(any(SupplementaryExpenseClaim.class))).thenAnswer(i -> i.getArgument(0));
+        when(cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId())).thenReturn(List.of());
+        return claim;
+    }
+
+    @Test
+    void lateBillAfterCarryForward_isSetAgainstTheNextAdvance_andSettledWithoutAnApPayment() {
+        Carried c = carriedForward("IN_PROGRESS", "1500");
+        SupplementaryExpenseClaim claim = lateBill(c.report(), "1000");
+
+        SupplementaryClaimResponse response = service.financeReview(claim.getClaimId(), Decision.APPROVE, null);
+
+        assertEquals(SupplementaryExpenseClaim.SETTLED, response.status());
+        assertEquals(c.destination().getAdvanceId(), response.settledAdvanceId());
+        assertEquals(0, new BigDecimal("1000").compareTo(response.advanceOffsetAmount()));
+        var saved = org.mockito.ArgumentCaptor.forClass(com.expense_management_service.entity.CashAdvanceAdjustment.class);
+        verify(cashAdvanceAdjustmentRepository).save(saved.capture());
+        assertEquals(c.destination(), saved.getValue().getCashAdvance());
+        assertEquals(c.report(), saved.getValue().getReport());
+        assertEquals(0, new BigDecimal("1000").compareTo(saved.getValue().getAdjustedAmount()));
+        assertEquals(com.expense_management_service.entity.CashAdvanceAdjustment.SUPPLEMENTARY_CLAIM, saved.getValue().getPaymentMethod());
+        org.junit.jupiter.api.Assertions.assertFalse(saved.getValue().countsForReport(), "does not change the original report's figures");
+        verify(cashAdvanceBalanceLedger).applyBalance(eq(c.destination()), eq(new BigDecimal("500")), eq("SUPPLEMENTARY_CLAIM_OFFSET"), any(), any());
+        verify(paymentService, never()).requestPayment(any(SupplementaryExpenseClaim.class));
+        verify(paymentService, never()).requestPayment(any(SupplementaryExpenseClaim.class), any(BigDecimal.class));
+    }
+
+    @Test
+    void lateBillLargerThanTheNextAdvanceHolds_restIsPaidByAp() {
+        Carried c = carriedForward("IN_PROGRESS", "1500");
+        SupplementaryExpenseClaim claim = lateBill(c.report(), "2000");
+
+        SupplementaryClaimResponse response = service.financeReview(claim.getClaimId(), Decision.APPROVE, null);
+
+        assertEquals(SupplementaryExpenseClaim.PAYMENT_PENDING, response.status());
+        assertEquals(0, new BigDecimal("1500").compareTo(response.advanceOffsetAmount()));
+        verify(paymentService).requestPayment(any(SupplementaryExpenseClaim.class), eq(new BigDecimal("500")));
+    }
+
+    @Test
+    void lateBillWhenTheNextAdvanceIsClosed_isPaidInFullByAp() {
+        Carried c = carriedForward("CLOSED", "0");
+        when(carryForwardRepository.findBySourceAdvance_AdvanceIdAndStatusIn(eq(c.destination().getAdvanceId()), anyCollection()))
+                .thenReturn(List.of());
+        SupplementaryExpenseClaim claim = lateBill(c.report(), "1000");
+
+        SupplementaryClaimResponse response = service.financeReview(claim.getClaimId(), Decision.APPROVE, null);
+
+        assertEquals(SupplementaryExpenseClaim.PAYMENT_PENDING, response.status());
+        verify(paymentService).requestPayment(any(SupplementaryExpenseClaim.class));
+        verify(cashAdvanceAdjustmentRepository, never()).save(any());
+    }
+
+    @Test
+    void afterAnAppliedCarryForward_theReportIsEligible_andSaysWhichAdvanceTakesTheClaim() {
+        Carried c = carriedForward("IN_PROGRESS", "1500");
+        actAs(EMPLOYEE);
+        when(reportRepository.findById(c.report().getReportId())).thenReturn(Optional.of(c.report()));
+        when(carryForwardRepository.findByDestinationAdvance_AdvanceIdAndStatusIn(any(), anyCollection())).thenReturn(List.of());
+
+        var eligibility = service.checkEligibility(c.report().getReportId());
+
+        org.junit.jupiter.api.Assertions.assertTrue(eligibility.eligible(), eligibility.reason());
+        assertEquals(c.destination().getAdvanceId(), eligibility.settleAgainstAdvanceId());
+        assertEquals("Advance 2", eligibility.settleAgainstAdvanceTitle());
+        assertEquals(0, new BigDecimal("1500").compareTo(eligibility.settleAgainstRemaining()));
+    }
+
+    @Test
+    void lateBillWhenTheNextAdvanceIsAlreadyInUse_isPaidByAp_andTheAdvanceIsNotTouched() {
+        Carried c = carriedForward("IN_PROGRESS", "1500");
+        // Advance 2 already has its own report in approval.
+        ExpenseReport onNext = settledReport(ReportStatus.PENDING_APPROVAL, new BigDecimal("2000"));
+        when(reportRepository.findByCashAdvance_AdvanceIdOrderByCreatedAtAsc(c.destination().getAdvanceId())).thenReturn(List.of(onNext));
+        SupplementaryExpenseClaim claim = lateBill(c.report(), "1000");
+
+        SupplementaryClaimResponse response = service.financeReview(claim.getClaimId(), Decision.APPROVE, null);
+
+        assertEquals(SupplementaryExpenseClaim.PAYMENT_PENDING, response.status());
+        verify(paymentService).requestPayment(any(SupplementaryExpenseClaim.class));
+        verify(cashAdvanceAdjustmentRepository, never()).save(any());
+        verify(cashAdvanceBalanceLedger, never()).applyBalance(any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void aDraftOnTheNextAdvanceDoesNotCountAsUsingIt() {
+        Carried c = carriedForward("IN_PROGRESS", "1500");
+        ExpenseReport draft = settledReport(ReportStatus.DRAFT, new BigDecimal("300"));
+        when(reportRepository.findByCashAdvance_AdvanceIdOrderByCreatedAtAsc(c.destination().getAdvanceId())).thenReturn(List.of(draft));
+        SupplementaryExpenseClaim claim = lateBill(c.report(), "1000");
+
+        assertEquals(SupplementaryExpenseClaim.SETTLED, service.financeReview(claim.getClaimId(), Decision.APPROVE, null).status());
+    }
 }
+

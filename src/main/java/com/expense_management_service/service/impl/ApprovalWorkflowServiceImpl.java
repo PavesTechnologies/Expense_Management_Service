@@ -1498,7 +1498,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     private void updateCashAdvanceStatusForReportSubmission(ExpenseReport report) {
         if (cashAdvanceAdjustmentRepository == null || cashAdvanceRepository == null || report == null) return;
-        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream()
+        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream().filter(CashAdvanceAdjustment::countsForReport)
                 .filter(CashAdvanceAdjustment::isActive).toList();
         if (adjustments == null || adjustments.isEmpty()) return;
         for (CashAdvanceAdjustment adjustment : adjustments) {
@@ -1515,7 +1515,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
 
     private void updateCashAdvanceStatusForReportReview(ExpenseReport report) {
         if (cashAdvanceAdjustmentRepository == null || cashAdvanceRepository == null || report == null) return;
-        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream()
+        List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream().filter(CashAdvanceAdjustment::countsForReport)
                 .filter(CashAdvanceAdjustment::isActive).toList();
         if (adjustments == null || adjustments.isEmpty()) return;
         for (CashAdvanceAdjustment adjustment : adjustments) {
@@ -1551,7 +1551,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         if (advance == null || advance.getDisbursedAt() == null || cashAdvanceAdjustmentRepository == null) {
             return;
         }
-        if (!cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).isEmpty()) {
+        if (cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream().anyMatch(CashAdvanceAdjustment::countsForReport)) {
             return;
         }
         BigDecimal approved = report.getTotalAmount() != null ? report.getTotalAmount() : BigDecimal.ZERO;
@@ -1603,7 +1603,7 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
         BigDecimal gross = reimbursableGross != null ? reimbursableGross
                 : (report.getTotalAmount() != null ? report.getTotalAmount() : BigDecimal.ZERO);
         List<CashAdvanceAdjustment> adjustments = cashAdvanceAdjustmentRepository == null ? List.of()
-                : cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream()
+                : cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream().filter(CashAdvanceAdjustment::countsForReport)
                         .filter(CashAdvanceAdjustment::isActive).toList();
         if (adjustments == null) {
             adjustments = List.of();

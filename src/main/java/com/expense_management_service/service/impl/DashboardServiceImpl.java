@@ -136,15 +136,37 @@ public class DashboardServiceImpl implements DashboardService {
                 .toList();
         BigDecimal caRequested = BigDecimal.ZERO;
         BigDecimal caApproved = BigDecimal.ZERO;
+        // Requested -> Approved, split so the ledger adds up per advance:
+        //   approved = requested - awaiting approval + carried in - reduced on approval + increased on approval
+        BigDecimal caAwaitingApproval = BigDecimal.ZERO;
+        BigDecimal caCarriedIn = BigDecimal.ZERO;
+        BigDecimal caReducedOnApproval = BigDecimal.ZERO;
+        BigDecimal caIncreasedOnApproval = BigDecimal.ZERO;
         BigDecimal caDisbursed = BigDecimal.ZERO;
         BigDecimal caSettled = BigDecimal.ZERO;
         List<com.expense_management_service.entity.CashAdvance> disbursedAdvances = new java.util.ArrayList<>();
         for (com.expense_management_service.entity.CashAdvance a : myAdvances) {
-            BigDecimal requested = a.getRequestedAmount() != null ? a.getRequestedAmount() : nz(a.getAmount());
+            boolean plusCarryForward = com.expense_management_service.enums.CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD.name()
+                    .equals(a.getRequestType());
+            // What the employee typed. Older records have no requested amount; for an "advance + carry forward" request the
+            // amount has already grown by the carried part, so fall back to the new cash asked for, not the grown amount.
+            BigDecimal requested = a.getRequestedAmount() != null ? a.getRequestedAmount()
+                    : plusCarryForward && a.getAdditionalAmountRequested() != null ? a.getAdditionalAmountRequested()
+                    : nz(a.getAmount());
             caRequested = caRequested.add(requested);
             boolean approved = a.getApprovedAmount() != null || a.getDisbursedAt() != null || "APPROVED".equalsIgnoreCase(a.getStatus());
             if (approved) {
-                caApproved = caApproved.add(a.getApprovedAmount() != null ? a.getApprovedAmount() : nz(a.getAmount()));
+                BigDecimal approvedAmount = a.getApprovedAmount() != null ? a.getApprovedAmount() : nz(a.getAmount());
+                caApproved = caApproved.add(approvedAmount);
+                // An "advance + carry forward" request grows on approval: the held balance moves in on top of the new cash.
+                BigDecimal carriedIn = plusCarryForward ? CashAdvanceBalanceRules.carriedIn(a) : BigDecimal.ZERO;
+                caCarriedIn = caCarriedIn.add(carriedIn);
+                // Whatever is left is the approver's change to the amount: usually a reduction.
+                BigDecimal change = approvedAmount.subtract(requested).subtract(carriedIn);
+                if (change.signum() < 0) caReducedOnApproval = caReducedOnApproval.add(change.negate());
+                else caIncreasedOnApproval = caIncreasedOnApproval.add(change);
+            } else {
+                caAwaitingApproval = caAwaitingApproval.add(requested);
             }
             if (a.getDisbursedAt() != null) {
                 disbursedAdvances.add(a);
@@ -234,6 +256,10 @@ public class DashboardServiceImpl implements DashboardService {
         kpis.add(new Kpi("advanceBalance", "Open cash advance balance", openAdvanceBalance, "money", "Still owed against your advances", openAdvanceBalance.signum() > 0 ? "amber" : "gray"));
         // Flow figures for the employee dashboard: each step reads the one before it (see the dashboard's flow rows).
         kpis.add(new Kpi("caRequested", "Requested", caRequested, "money", myAdvances.size() + " advance(s)", "indigo"));
+        kpis.add(new Kpi("caAwaitingApproval", "Awaiting approval", caAwaitingApproval, "money", "Requested, still with your manager or Finance", "amber"));
+        kpis.add(new Kpi("caCarriedIn", "Carried in", caCarriedIn, "money", "Balance from an earlier advance, added on approval", "gray"));
+        kpis.add(new Kpi("caReducedOnApproval", "Reduced on approval", caReducedOnApproval, "money", "Approver approved less than asked", "gray"));
+        kpis.add(new Kpi("caIncreasedOnApproval", "Increased on approval", caIncreasedOnApproval, "money", "Approved more than asked", "gray"));
         kpis.add(new Kpi("caApproved", "Approved", caApproved, "money", "Amount your manager and Finance approved", "blue"));
         kpis.add(new Kpi("caDisbursed", "Received", caDisbursed, "money", disbursedAdvances.size() + " advance(s) paid to you", "blue"));
         kpis.add(new Kpi("caSettled", "Settled", caSettled, "money", "Used on bills + returned + carried forward", "emerald"));

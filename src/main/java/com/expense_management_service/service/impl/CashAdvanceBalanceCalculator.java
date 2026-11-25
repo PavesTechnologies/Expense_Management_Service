@@ -64,6 +64,20 @@ public class CashAdvanceBalanceCalculator {
      */
     public Map<UUID, BigDecimal> rawOutstandingFor(Collection<CashAdvance> advances) {
         Map<UUID, BigDecimal> result = new HashMap<>();
+        partsFor(advances).forEach((id, parts) -> result.put(id, parts.outstanding()));
+        return result;
+    }
+
+    /**
+     * Where an advance's money has gone, from its records: used on approved expenses (active offsets), repaid in cash,
+     * carried out to a new advance, and what is still outstanding (the same raw figure as {@link #rawOutstandingFor}).
+     */
+    public record Parts(BigDecimal usedOnExpenses, BigDecimal repaid, BigDecimal carriedOut, BigDecimal outstanding) {
+    }
+
+    /** {@link Parts} for many advances, keyed by advance id, using two queries in total. */
+    public Map<UUID, Parts> partsFor(Collection<CashAdvance> advances) {
+        Map<UUID, Parts> result = new HashMap<>();
         if (advances == null || advances.isEmpty()) {
             return result;
         }
@@ -76,7 +90,8 @@ public class CashAdvanceBalanceCalculator {
             UUID id = advance.getAdvanceId();
             BigDecimal offsets = activeOffsets(adjustments.getOrDefault(id, List.of()));
             BigDecimal repaid = repaymentTotal(repayments.getOrDefault(id, List.of()));
-            result.put(id, CashAdvanceBalanceRules.ledgerBalance(advance, offsets, repaid));
+            result.put(id, new Parts(offsets, repaid, CashAdvanceBalanceRules.carriedOut(advance),
+                    CashAdvanceBalanceRules.ledgerBalance(advance, offsets, repaid)));
         }
         return result;
     }

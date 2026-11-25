@@ -27,6 +27,7 @@ import com.expense_management_service.service.DelegationService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -59,6 +60,7 @@ import java.util.stream.Collectors;
  * Aggregates for the role dashboards. Amounts are always summed from line items' base-currency
  * {@code baseAmount}; report totals are in each report's own currency and can't be added up.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -131,7 +133,8 @@ public class DashboardServiceImpl implements DashboardService {
 
         // ---- Cash advance flow for the employee: requested -> approved -> disbursed -> settled -> outstanding.
         // Only advances that are live (not draft, rejected or cancelled) count. Outstanding comes from the calculator.
-        List<com.expense_management_service.entity.CashAdvance> myAdvances = cashAdvanceRepository.findByEmployeeId(me).stream()
+        List<com.expense_management_service.entity.CashAdvance> allAdvances = cashAdvanceRepository.findByEmployeeId(me);
+        List<com.expense_management_service.entity.CashAdvance> myAdvances = allAdvances.stream()
                 .filter(a -> a.getStatus() != null && !List.of("DRAFT", "REJECTED", "CANCELLED").contains(a.getStatus().toUpperCase()))
                 .toList();
         BigDecimal caRequested = BigDecimal.ZERO;
@@ -271,7 +274,7 @@ public class DashboardServiceImpl implements DashboardService {
         // "Settled" ends a report that was fully covered by an advance (nothing to pay). "action" (sent back to the
         // employee) is not a step on the line; the journey shows it as a callout.
         Map<String, Long> journey = new java.util.LinkedHashMap<>();
-        for (String key : List.of("draft", "approval", "finance", "ap", "paid", "settled", "action")) {
+        for (String key : List.of("draft", "approval", "finance", "ap", "paid", "settled", "noPayment", "action")) {
             journey.put(key, 0L);
         }
         for (ExpenseReport r : reports) {
@@ -285,6 +288,7 @@ public class DashboardServiceImpl implements DashboardService {
                 new Stage("ap", "With AP", journey.get("ap")),
                 new Stage("paid", "Paid", journey.get("paid")),
                 new Stage("settled", "Settled", journey.get("settled")),
+                new Stage("noPayment", "No payment due", journey.get("noPayment")),
                 new Stage("action", "Sent back to you", journey.get("action")));
 
         List<Item> attention = reports.stream()
@@ -721,7 +725,8 @@ public class DashboardServiceImpl implements DashboardService {
 
     /**
      * The step of the employee's "Where your reports are" journey a report is in. Approved reports end in "paid" (money
-     * received), "ap" (still owed: with AP or on its way there) or "settled" (fully covered by an advance, nothing to pay).
+     * received), "ap" (still owed: with AP or on its way there), "settled" (fully covered by a linked cash advance) or
+     * "noPayment" (nothing payable and no advance involved, e.g. only non-reimbursable or company-paid lines).
      * Rejected and cancelled reports have left the journey (null).
      */
     static String journeyStep(ExpenseReport r, Map<UUID, BigDecimal> gross) {
@@ -745,7 +750,9 @@ public class DashboardServiceImpl implements DashboardService {
                 PaymentRoutingStatus routing = r.getPaymentRoutingStatus();
                 if (status == ReportStatus.REIMBURSED || routing == PaymentRoutingStatus.PAYMENT_COMPLETED) return "paid";
                 if (routing == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) return "ap";
-                return remainingPayable(owedOf(r, gross), r.getPaidAmount()).signum() > 0 ? "ap" : "settled";
+                if (remainingPayable(owedOf(r, gross), r.getPaidAmount()).signum() > 0) return "ap";
+                // Nothing to pay: "settled" only when an advance covered it; otherwise nothing was owed at all.
+                return r.getCashAdvance() != null ? "settled" : "noPayment";
             }
             default:
                 return null;

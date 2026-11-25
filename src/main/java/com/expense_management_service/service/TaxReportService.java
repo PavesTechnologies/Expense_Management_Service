@@ -21,4 +21,16 @@ public interface TaxReportService {
      * window; default: this month to date). {@code itcStatus} null = every line.
      */
     ItcRegisterResponse itcRegister(LocalDate from, LocalDate to, ItcStatus itcStatus, UUID categoryId, UUID taxCodeId);
+
+    /**
+     * Marks the lines' input tax credit as claimed in the GST return for {@code returnPeriod} (yyyy-MM). Every line must
+     * be recoverable, verified by Finance, have a supplier GSTIN and not be claimed already; otherwise nothing is marked
+     * and the error names the lines. Each change is written to the tax audit log.
+     *
+     * @return the number of lines marked
+     */
+    int claimItc(java.util.List<UUID> lineItemIds, String returnPeriod, String note, String employeeId);
+
+    /** Undoes a claim (e.g. marked in the wrong month); {@code reason} is required and audited. */
+    int unclaimItc(java.util.List<UUID> lineItemIds, String reason, String employeeId);
 }

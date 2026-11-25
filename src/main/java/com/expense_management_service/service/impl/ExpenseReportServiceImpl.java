@@ -189,6 +189,22 @@ public class ExpenseReportServiceImpl implements ExpenseReportService {
 
     @Override
     @Transactional(readOnly = true)
+    public PageResponse<ExpenseReportResponse> getAll(Pageable pageable, String status, String search, String type) {
+        String normalizedType = type == null ? "" : type.trim().toUpperCase();
+        if (normalizedType.isEmpty()) {
+            return getAll(pageable, status, search);
+        }
+        if (!normalizedType.equals("EXPENSE") && !normalizedType.equals("SETTLEMENT")) {
+            throw new BusinessRuleViolationException("Unknown report type '" + type + "'. Use EXPENSE or SETTLEMENT.");
+        }
+        CurrentUser caller = currentUserService.getCurrentUser();
+        var page = expenseReportRepository.searchByEmployeeIdAndStatusAndQueryAndType(
+                caller.employeeId(), parseStatus(status), sanitizeSearch(search), normalizedType.equals("SETTLEMENT"), pageable);
+        return PageResponse.of(page.map(this::toResponse));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public PageResponse<ExpenseReportResponse> getSubmittedForEmployees(java.util.Collection<String> employeeIds,
                                                                         Pageable pageable, String status, String search) {
         if (employeeIds.isEmpty()) {

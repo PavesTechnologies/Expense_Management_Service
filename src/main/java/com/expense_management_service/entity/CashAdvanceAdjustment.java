@@ -93,4 +93,16 @@ public class CashAdvanceAdjustment {
     public boolean isActive() {
         return !reversed;
     }
+
+    /** paymentMethod of an offset made by an approved supplementary claim (a late bill set against an advance). */
+    public static final String SUPPLEMENTARY_CLAIM = "SUPPLEMENTARY_CLAIM";
+
+    /**
+     * Whether this offset counts toward its report's own payable amount. An offset made by a supplementary claim is
+     * linked to the original report only for the record: it settles the late bill, not the report, so the report's
+     * figures are unchanged by it.
+     */
+    public boolean countsForReport() {
+        return !SUPPLEMENTARY_CLAIM.equals(paymentMethod);
+    }
 }

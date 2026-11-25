@@ -132,6 +132,43 @@ class DashboardEmployeeFlowTest {
         assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caRecordGap")), "received = settled + outstanding");
     }
 
+    /** Requested -> Approved adds up: pending requests, carried-in balances and reductions each have their own line. */
+    @Test
+    void requestedToApproved_balances_with_pending_carriedIn_and_reduction() {
+        // Asked 10,000, approved 9,000: reduced by 1,000.
+        CashAdvance reduced = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME)
+                .amount(new BigDecimal("9000.00")).requestedAmount(new BigDecimal("10000.00"))
+                .approvedAmount(new BigDecimal("9000.00")).status("APPROVED").build();
+        // Asked 5,000 of new cash; 1,518 carried in on approval, so approved 6,518.
+        CashAdvance plusCarry = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME)
+                .requestType("ADVANCE_PLUS_CARRY_FORWARD")
+                .amount(new BigDecimal("6518.00")).requestedAmount(new BigDecimal("5000.00"))
+                .carriedInAmount(new BigDecimal("1518.00")).approvedAmount(new BigDecimal("6518.00")).status("APPROVED").build();
+        // Same, but an older record with no requested amount: falls back to the new cash, not the grown amount.
+        CashAdvance legacyPlusCarry = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME)
+                .requestType("ADVANCE_PLUS_CARRY_FORWARD").additionalAmountRequested(new BigDecimal("3000.00"))
+                .amount(new BigDecimal("3500.00")).carriedInAmount(new BigDecimal("500.00"))
+                .approvedAmount(new BigDecimal("3500.00")).status("APPROVED").build();
+        // Still with the manager.
+        CashAdvance pending = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME)
+                .amount(new BigDecimal("4000.00")).requestedAmount(new BigDecimal("4000.00")).status("SUBMITTED").build();
+        when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of(reduced, plusCarry, legacyPlusCarry, pending));
+        when(balanceCalculator.partsFor(any())).thenReturn(Map.of());
+        stubData(List.of(), List.of(), List.of());
+
+        DashboardResponse r = service.employee();
+
+        assertEquals(0, new BigDecimal("22000.00").compareTo(kpi(r, "caRequested")), "10,000 + 5,000 + 3,000 + 4,000");
+        assertEquals(0, new BigDecimal("4000.00").compareTo(kpi(r, "caAwaitingApproval")));
+        assertEquals(0, new BigDecimal("2018.00").compareTo(kpi(r, "caCarriedIn")), "1,518 + 500");
+        assertEquals(0, new BigDecimal("1000.00").compareTo(kpi(r, "caReducedOnApproval")));
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caIncreasedOnApproval")));
+        assertEquals(0, new BigDecimal("19018.00").compareTo(kpi(r, "caApproved")), "9,000 + 6,518 + 3,500");
+        BigDecimal rebuilt = kpi(r, "caRequested").subtract(kpi(r, "caAwaitingApproval")).add(kpi(r, "caCarriedIn"))
+                .subtract(kpi(r, "caReducedOnApproval")).add(kpi(r, "caIncreasedOnApproval"));
+        assertEquals(0, rebuilt.compareTo(kpi(r, "caApproved")), "approved = requested - awaiting + carried in - reduced + increased");
+    }
+
     /** Direct reports and reports against an advance are counted in separate flows, and the flows add up to the totals. */
     @Test
     void reimbursement_splitsDirectAndAdvanceFlows_andTheyAddUpToTotals() {

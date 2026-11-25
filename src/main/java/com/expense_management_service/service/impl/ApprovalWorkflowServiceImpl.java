@@ -693,7 +693,8 @@ public class ApprovalWorkflowServiceImpl implements ApprovalWorkflowService {
                 report.getReportStatus() != null ? report.getReportStatus().name() : null,
                 report.getSubmittedAt(),
                 instance.getLevelOrder(), pendingLineItems, pendingSplits, eligibleForBulkApprove,
-                report.getCashAdvance() != null ? report.getCashAdvance().getAdvanceId() : null);
+                report.getCashAdvance() != null ? report.getCashAdvance().getAdvanceId() : null,
+                report.getTitle());
     }
 
     // ---------------------------------------------------------------------

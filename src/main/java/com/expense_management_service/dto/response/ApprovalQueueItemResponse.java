@@ -19,6 +19,8 @@ public record ApprovalQueueItemResponse(
         List<PendingLineItemResponse> pendingLineItems,
         List<PendingSplitResponse> pendingSplits,
         boolean eligibleForBulkApprove,
-        UUID cashAdvanceId
+        UUID cashAdvanceId,
+        /** The report's own title, shown on My Approvals instead of a list of merchants. */
+        String title
 ) {
 }

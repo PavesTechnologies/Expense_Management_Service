@@ -1,6 +1,11 @@
 package com.expense_management_service.controller;
 
 import com.expense_management_service.common.ApiResponse;
+import com.expense_management_service.dto.request.ItcClaimRequest;
+import com.expense_management_service.security.CurrentUserService;
+import jakarta.validation.Valid;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import com.expense_management_service.dto.response.ItcRegisterResponse;
 import com.expense_management_service.dto.response.TaxReportResponse;
 import com.expense_management_service.enums.ItcStatus;
@@ -21,6 +26,7 @@ import java.util.UUID;
 public class TaxReportController {
 
     private final TaxReportService taxReportService;
+    private final CurrentUserService currentUserService;
 
     @GetMapping("/xms/reports/tax")
     @PreAuthorize("hasAnyRole('FINANCE','FINANCE_EXECUTIVE','ADMIN','SUPER_ADMIN')")
@@ -43,5 +49,20 @@ public class TaxReportController {
             @RequestParam(required = false) UUID categoryId,
             @RequestParam(required = false) UUID taxCodeId) {
         return ApiResponse.success(taxReportService.itcRegister(from, to, itcStatus, categoryId, taxCodeId));
+    }
+
+    /** Marks Finance-verified lines with a supplier GSTIN as claimed in the GSTR-3B for {@code returnPeriod}. */
+    @PostMapping("/xms/reports/tax/itc-register/claim")
+    @PreAuthorize("hasAnyRole('FINANCE','FINANCE_EXECUTIVE','ADMIN','SUPER_ADMIN')")
+    public ApiResponse<Integer> claimItc(@Valid @RequestBody ItcClaimRequest request) {
+        return ApiResponse.success(taxReportService.claimItc(request.lineItemIds(), request.returnPeriod(), request.note(),
+                currentUserService.getEmployeeId()));
+    }
+
+    /** Undoes a claim; {@code note} is the required reason. */
+    @PostMapping("/xms/reports/tax/itc-register/unclaim")
+    @PreAuthorize("hasAnyRole('FINANCE','FINANCE_EXECUTIVE','ADMIN','SUPER_ADMIN')")
+    public ApiResponse<Integer> unclaimItc(@Valid @RequestBody ItcClaimRequest request) {
+        return ApiResponse.success(taxReportService.unclaimItc(request.lineItemIds(), request.note(), currentUserService.getEmployeeId()));
     }
 }

@@ -35,6 +35,14 @@ public interface ExpenseReportService {
     }
 
     /**
+     * As above, also filtered by type: {@code EXPENSE} (plain expense claims) or {@code SETTLEMENT} (reports linked to a
+     * cash advance). Blank means every type.
+     */
+    default PageResponse<ExpenseReportResponse> getAll(Pageable pageable, String status, String search, String type) {
+        return getAll(pageable, status, search);
+    }
+
+    /**
      * Submitted (non-Draft) reports of the given employees, filtered by status and/or free-text
      * search. Authorization (that the caller may see these employees) is the caller's job.
      */

@@ -9,7 +9,10 @@ import com.expense_management_service.enums.ItcStatus;
 import com.expense_management_service.enums.ReportStatus;
 import com.expense_management_service.enums.TaxSource;
 import com.expense_management_service.enums.TaxValidationStatus;
+import com.expense_management_service.enums.AuditSource;
+import com.expense_management_service.service.TaxAuditService;
 import com.expense_management_service.service.TaxReportService;
+import org.springframework.beans.factory.annotation.Autowired;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import jakarta.persistence.TypedQuery;
@@ -53,6 +56,11 @@ public class TaxReportServiceImpl implements TaxReportService {
 
     @Value("${exchange.rate.base-currency:INR}")
     private String baseCurrencyCode;
+
+    @Autowired
+    private TaxAuditService taxAuditService;
+
+    private static final String LINE_ENTITY = "ExpenseLineItem";
 
     @Override
     public TaxReportResponse report(LocalDate from, LocalDate to, String groupBy, UUID categoryId, UUID taxCodeId) {
@@ -129,7 +137,93 @@ public class TaxReportServiceImpl implements TaxReportService {
                 l.getExpenseDate(), l.getMerchantName(), l.getCategory() != null ? l.getCategory().getCategoryName() : null,
                 l.getTaxCode(), l.getSupplierGstin(), tax, l.getItcRecoverablePercent(), recoverable, tax.subtract(recoverable),
                 l.getTaxValidationStatus() != null ? l.getTaxValidationStatus().name() : null,
-                ItcStatus.of(recoverable, l.getTaxValidationStatus()).name());
+                ItcStatus.of(recoverable, l.getTaxValidationStatus()).name(),
+                l.getItcClaimPeriod(), l.getItcClaimedAt(), l.getItcClaimedBy());
+    }
+
+    @Override
+    @Transactional
+    public int claimItc(List<UUID> lineItemIds, String returnPeriod, String note, String employeeId) {
+        if (returnPeriod == null || !returnPeriod.matches("\\d{4}-(0[1-9]|1[0-2])")) {
+            throw new IllegalArgumentException("Choose the GST return month (yyyy-MM) the credit was claimed in.");
+        }
+        List<ExpenseLineItem> lines = loadLines(lineItemIds);
+        List<String> problems = new ArrayList<>();
+        for (ExpenseLineItem l : lines) {
+            String why = claimProblem(l);
+            if (why != null) problems.add(label(l) + ": " + why);
+        }
+        if (!problems.isEmpty()) {
+            throw new IllegalArgumentException("These lines cannot be claimed - " + String.join("; ", problems));
+        }
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        for (ExpenseLineItem l : lines) {
+            Map<String, Object> before = claimState(l);
+            l.setItcClaimPeriod(returnPeriod);
+            l.setItcClaimedAt(now);
+            l.setItcClaimedBy(employeeId);
+            taxAuditService.record(LINE_ENTITY, l.getLineItemId(), "ITC_CLAIMED", before, claimState(l), AuditSource.FINANCE, note);
+        }
+        return lines.size();
+    }
+
+    @Override
+    @Transactional
+    public int unclaimItc(List<UUID> lineItemIds, String reason, String employeeId) {
+        if (reason == null || reason.isBlank()) {
+            throw new IllegalArgumentException("Give a reason for undoing the claim.");
+        }
+        List<ExpenseLineItem> lines = loadLines(lineItemIds);
+        List<String> notClaimed = lines.stream().filter(l -> l.getItcClaimPeriod() == null).map(TaxReportServiceImpl::label).toList();
+        if (!notClaimed.isEmpty()) {
+            throw new IllegalArgumentException("Not claimed, nothing to undo: " + String.join(", ", notClaimed));
+        }
+        for (ExpenseLineItem l : lines) {
+            Map<String, Object> before = claimState(l);
+            l.setItcClaimPeriod(null);
+            l.setItcClaimedAt(null);
+            l.setItcClaimedBy(null);
+            taxAuditService.record(LINE_ENTITY, l.getLineItemId(), "ITC_CLAIM_UNDONE", before, claimState(l), AuditSource.FINANCE, reason.trim());
+        }
+        return lines.size();
+    }
+
+    private List<ExpenseLineItem> loadLines(List<UUID> lineItemIds) {
+        if (lineItemIds == null || lineItemIds.isEmpty()) {
+            throw new IllegalArgumentException("Select at least one line.");
+        }
+        Set<UUID> ids = Set.copyOf(lineItemIds);
+        List<ExpenseLineItem> lines = em.createQuery("select l from ExpenseLineItem l join fetch l.report where l.lineItemId in :ids",
+                ExpenseLineItem.class).setParameter("ids", ids).getResultList();
+        if (lines.size() != ids.size()) {
+            throw new IllegalArgumentException("Some of the selected lines no longer exist.");
+        }
+        return lines;
+    }
+
+    /** Why a line cannot be claimed, or null when it can. */
+    static String claimProblem(ExpenseLineItem l) {
+        if (l.getItcClaimPeriod() != null) return "already claimed in " + l.getItcClaimPeriod();
+        ItcStatus status = ItcStatus.of(dec(l.getBaseRecoverableTaxAmount()), l.getTaxValidationStatus());
+        if (status == ItcStatus.NOT_RECOVERABLE) return "no recoverable tax";
+        if (status == ItcStatus.UNVERIFIED) return "Finance has not verified the tax yet";
+        if (l.getSupplierGstin() == null || l.getSupplierGstin().isBlank()) return "no supplier GSTIN";
+        return null;
+    }
+
+    private static String label(ExpenseLineItem l) {
+        String report = l.getReport() != null ? l.getReport().getReportNumber() : "?";
+        return report + " (" + (l.getMerchantName() != null ? l.getMerchantName() : l.getLineItemId()) + ")";
+    }
+
+    private static Map<String, Object> claimState(ExpenseLineItem l) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("itcClaimPeriod", l.getItcClaimPeriod());
+        m.put("itcClaimedAt", l.getItcClaimedAt() == null ? null : l.getItcClaimedAt().toString());
+        m.put("itcClaimedBy", l.getItcClaimedBy());
+        m.put("recoverableTaxAmount", dec(l.getBaseRecoverableTaxAmount()).toPlainString());
+        m.put("supplierGstin", l.getSupplierGstin());
+        return m;
     }
 
     private static ItcRegisterResponse.Totals itcTotals(List<ItcRegisterResponse.Line> lines) {

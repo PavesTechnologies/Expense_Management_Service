@@ -27,6 +27,7 @@ import com.expense_management_service.service.DelegationService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -59,6 +60,7 @@ import java.util.stream.Collectors;
  * Aggregates for the role dashboards. Amounts are always summed from line items' base-currency
  * {@code baseAmount}; report totals are in each report's own currency and can't be added up.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -131,7 +133,8 @@ public class DashboardServiceImpl implements DashboardService {
 
         // ---- Cash advance flow for the employee: requested -> approved -> disbursed -> settled -> outstanding.
         // Only advances that are live (not draft, rejected or cancelled) count. Outstanding comes from the calculator.
-        List<com.expense_management_service.entity.CashAdvance> myAdvances = cashAdvanceRepository.findByEmployeeId(me).stream()
+        List<com.expense_management_service.entity.CashAdvance> allAdvances = cashAdvanceRepository.findByEmployeeId(me);
+        List<com.expense_management_service.entity.CashAdvance> myAdvances = allAdvances.stream()
                 .filter(a -> a.getStatus() != null && !List.of("DRAFT", "REJECTED", "CANCELLED").contains(a.getStatus().toUpperCase()))
                 .toList();
         BigDecimal caRequested = BigDecimal.ZERO;
@@ -151,19 +154,45 @@ public class DashboardServiceImpl implements DashboardService {
                 caDisbursed = caDisbursed.add(a.getDisbursedAmount() != null ? a.getDisbursedAmount() : nz(a.getAmount()));
             }
         }
+        // Carried-in balance (carry-forward from an earlier advance) is money the employee already holds, not cash paid out:
+        // disbursedAmount = amount - carriedIn, while the outstanding balance includes it. So each advance's settled part is
+        // measured from what it holds (disbursed + carried in), and the ledger reads Received + Carried in = Settled +
+        // Outstanding. Measuring from disbursed alone left the carried-in part out of the check ("Off by" the carry-in).
         Map<UUID, BigDecimal> owedByAdvance = balanceCalculator.rawOutstandingFor(disbursedAdvances);
         BigDecimal caOutstanding = BigDecimal.ZERO;
+        BigDecimal caCarriedIn = BigDecimal.ZERO;
         for (com.expense_management_service.entity.CashAdvance a : disbursedAdvances) {
             BigDecimal owed = nz(owedByAdvance.get(a.getAdvanceId()));
             caOutstanding = caOutstanding.add(owed);
             BigDecimal disbursed = a.getDisbursedAmount() != null ? a.getDisbursedAmount() : nz(a.getAmount());
-            caSettled = caSettled.add(disbursed.subtract(owed).max(BigDecimal.ZERO));
+            BigDecimal carriedIn = CashAdvanceBalanceRules.carriedIn(a);
+            caCarriedIn = caCarriedIn.add(carriedIn);
+            caSettled = caSettled.add(disbursed.add(carriedIn).subtract(owed).max(BigDecimal.ZERO));
+        }
+        // Every rupee carried into one of the employee's advances must have been carried out of another (or still be held,
+        // carried out but not yet taken in). A gap means carried-in money with no source on the records: it inflates the
+        // outstanding balance, so it is reported, never hidden or corrected silently. Finance decides how to correct it.
+        BigDecimal carriedInAll = BigDecimal.ZERO;
+        BigDecimal carriedOutAll = BigDecimal.ZERO;
+        BigDecimal heldAll = BigDecimal.ZERO;
+        for (com.expense_management_service.entity.CashAdvance a : allAdvances) {
+            carriedInAll = carriedInAll.add(CashAdvanceBalanceRules.carriedIn(a));
+            carriedOutAll = carriedOutAll.add(CashAdvanceBalanceRules.carriedOut(a));
+            heldAll = heldAll.add(nz(a.getCarryForwardReadyAmount()).max(BigDecimal.ZERO));
+        }
+        BigDecimal caCarryUnmatched = carriedInAll.subtract(carriedOutAll.subtract(heldAll));
+        if (caCarryUnmatched.signum() != 0) {
+            log.warn("[DASHBOARD] employee {}: carried in {} but carried out {} (held {}): {} has no matching carry-forward",
+                    me, carriedInAll, carriedOutAll, heldAll, caCarryUnmatched);
         }
 
         // ---- Expense reimbursement flow: claimed -> approved -> advance offset -> waiting for AP -> paid.
-        // Ledger: approved = covered by advance + payable; payable = not yet sent to AP + waiting for AP + paid.
+        // Ledger: approved = covered by advance + no payment due + payable; payable = not yet sent to AP + waiting for AP + paid.
+        // The approved amount that is not payable is "covered by advance" only when the report is linked to a cash advance.
+        // Otherwise nothing was set against an advance (e.g. non-reimbursable or company-paid lines): it is "no payment due".
         BigDecimal erApproved = BigDecimal.ZERO;
         BigDecimal erAdvanceOffset = BigDecimal.ZERO;
+        BigDecimal erNoPaymentDue = BigDecimal.ZERO;
         BigDecimal erToSendAp = BigDecimal.ZERO;
         BigDecimal erPendingAp = BigDecimal.ZERO;
         BigDecimal erPaid = BigDecimal.ZERO;
@@ -174,7 +203,12 @@ public class DashboardServiceImpl implements DashboardService {
             if (approved) {
                 erApproved = erApproved.add(gross);
                 if (r.getReimbursableAmount() != null) {
-                    erAdvanceOffset = erAdvanceOffset.add(gross.subtract(r.getReimbursableAmount()).max(BigDecimal.ZERO));
+                    BigDecimal notPayable = gross.subtract(r.getReimbursableAmount()).max(BigDecimal.ZERO);
+                    if (r.getCashAdvance() != null) {
+                        erAdvanceOffset = erAdvanceOffset.add(notPayable);
+                    } else {
+                        erNoPaymentDue = erNoPaymentDue.add(notPayable);
+                    }
                 }
             }
             PaymentRoutingStatus routing = r.getPaymentRoutingStatus();
@@ -208,13 +242,17 @@ public class DashboardServiceImpl implements DashboardService {
         kpis.add(new Kpi("caRequested", "Requested", caRequested, "money", myAdvances.size() + " advance(s)", "indigo"));
         kpis.add(new Kpi("caApproved", "Approved", caApproved, "money", "Amount your manager and Finance approved", "blue"));
         kpis.add(new Kpi("caDisbursed", "Disbursed", caDisbursed, "money", disbursedAdvances.size() + " advance(s) paid to you", "blue"));
+        kpis.add(new Kpi("caCarriedIn", "Carried in", caCarriedIn, "money", "Balance carried forward from earlier advances", "gray"));
+        kpis.add(new Kpi("caCarryUnmatched", "Carry-forward without a source", caCarryUnmatched, "money",
+                "Carried into your advances but not carried out of another one", caCarryUnmatched.signum() != 0 ? "amber" : "gray"));
         kpis.add(new Kpi("caSettled", "Settled", caSettled, "money", "Used on reports, repaid or carried forward", "emerald"));
         kpis.add(new Kpi("caOutstanding", "Outstanding", caOutstanding, "money", "Still to be settled", caOutstanding.signum() > 0 ? "amber" : "gray"));
         kpis.add(new Kpi("erClaimed", "Claimed", claimed, "money", "All reports you have submitted", "indigo"));
         kpis.add(new Kpi("erNotApproved", "Not approved yet", erNotApproved, "money", "Pending, returned or rejected", "gray"));
         kpis.add(new Kpi("erApproved", "Approved", erApproved, "money", "Approved for reimbursement", "blue"));
         kpis.add(new Kpi("erAdvanceOffset", "Covered by advance", erAdvanceOffset, "money", "Verified expenses settled against your advances", "gray"));
-        kpis.add(new Kpi("erPayable", "Payable to you", erPayable, "money", "Approved less covered by advance", "blue"));
+        kpis.add(new Kpi("erNoPaymentDue", "No payment due", erNoPaymentDue, "money", "Approved, but not payable to you and not set against an advance", "gray"));
+        kpis.add(new Kpi("erPayable", "Payable to you", erPayable, "money", "Approved less covered by advance and no payment due", "blue"));
         kpis.add(new Kpi("erToSendAp", "Not yet with AP", erToSendAp, "money", "Approved, waiting to be sent to AP", "gray"));
         kpis.add(new Kpi("erPendingAp", "Waiting for AP", erPendingAp, "money", "Sent to AP, not paid yet", erPendingAp.signum() > 0 ? "amber" : "gray"));
         kpis.add(new Kpi("erPaid", "Paid to you", erPaid, "money", "Reimbursement already paid", "emerald"));
@@ -223,7 +261,7 @@ public class DashboardServiceImpl implements DashboardService {
         // "Settled" ends a report that was fully covered by an advance (nothing to pay). "action" (sent back to the
         // employee) is not a step on the line; the journey shows it as a callout.
         Map<String, Long> journey = new java.util.LinkedHashMap<>();
-        for (String key : List.of("draft", "approval", "finance", "ap", "paid", "settled", "action")) {
+        for (String key : List.of("draft", "approval", "finance", "ap", "paid", "settled", "noPayment", "action")) {
             journey.put(key, 0L);
         }
         for (ExpenseReport r : reports) {
@@ -237,6 +275,7 @@ public class DashboardServiceImpl implements DashboardService {
                 new Stage("ap", "With AP", journey.get("ap")),
                 new Stage("paid", "Paid", journey.get("paid")),
                 new Stage("settled", "Settled", journey.get("settled")),
+                new Stage("noPayment", "No payment due", journey.get("noPayment")),
                 new Stage("action", "Sent back to you", journey.get("action")));
 
         List<Item> attention = reports.stream()
@@ -673,7 +712,8 @@ public class DashboardServiceImpl implements DashboardService {
 
     /**
      * The step of the employee's "Where your reports are" journey a report is in. Approved reports end in "paid" (money
-     * received), "ap" (still owed: with AP or on its way there) or "settled" (fully covered by an advance, nothing to pay).
+     * received), "ap" (still owed: with AP or on its way there), "settled" (fully covered by a linked cash advance) or
+     * "noPayment" (nothing payable and no advance involved, e.g. only non-reimbursable or company-paid lines).
      * Rejected and cancelled reports have left the journey (null).
      */
     static String journeyStep(ExpenseReport r, Map<UUID, BigDecimal> gross) {
@@ -697,7 +737,9 @@ public class DashboardServiceImpl implements DashboardService {
                 PaymentRoutingStatus routing = r.getPaymentRoutingStatus();
                 if (status == ReportStatus.REIMBURSED || routing == PaymentRoutingStatus.PAYMENT_COMPLETED) return "paid";
                 if (routing == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) return "ap";
-                return remainingPayable(owedOf(r, gross), r.getPaidAmount()).signum() > 0 ? "ap" : "settled";
+                if (remainingPayable(owedOf(r, gross), r.getPaidAmount()).signum() > 0) return "ap";
+                // Nothing to pay: "settled" only when an advance covered it; otherwise nothing was owed at all.
+                return r.getCashAdvance() != null ? "settled" : "noPayment";
             }
             default:
                 return null;

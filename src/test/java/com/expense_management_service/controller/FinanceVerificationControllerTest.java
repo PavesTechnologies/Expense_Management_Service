@@ -218,7 +218,7 @@ class FinanceVerificationControllerTest {
         when(currentUserService.getEmployeeId()).thenReturn("5100050");
         FinanceQueueItemResponse item = new FinanceQueueItemResponse(
                 UUID.randomUUID(), "EXP-0001", "5100001", new BigDecimal("1000"), "INR", "Engineering",
-                "PENDING_FINANCE_VERIFICATION", LocalDateTime.now(), 2, List.of(), null);
+                "PENDING_FINANCE_VERIFICATION", LocalDateTime.now(), 2, List.of(), null, "Client visit, Pune");
         when(financeVerificationService.getFinanceQueue(eq("5100050"), any(Pageable.class)))
                 .thenReturn(new PageResponse<>(List.of(item), 0, 20, 1, 1, true, true));
 

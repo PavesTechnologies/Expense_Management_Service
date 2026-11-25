@@ -414,4 +414,23 @@ class CashAdvanceControllerTest {
     }
 
     // ---------------------------------------------------------------- Slice 3: Finance allocation approval
+
+    @Test
+    void getApprovalTrail_returns200_withRecordedDecisions() throws Exception {
+        LocalDateTime at = LocalDateTime.of(2026, 11, 20, 10, 30);
+        when(cashAdvanceService.getApprovalTrail(advanceId)).thenReturn(List.of(
+                new com.expense_management_service.dto.response.CashAdvanceApprovalStepResponse(
+                        "SUBMITTED", "DRAFT", "SUBMITTED", "EMP001", at, null),
+                new com.expense_management_service.dto.response.CashAdvanceApprovalStepResponse(
+                        "APPROVED", "SUBMITTED", "PENDING_FINANCE_APPROVAL", "MGR001", at.plusHours(1), null)));
+
+        mockMvc.perform(get("/xms/employee/cash-advances/{advanceId}/approval-trail", advanceId)
+                        .with(jwt().authorities(new SimpleGrantedAuthority(ROLE_GENERAL))))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.data[1].action").value("APPROVED"))
+                .andExpect(jsonPath("$.data[1].fromStatus").value("SUBMITTED"))
+                .andExpect(jsonPath("$.data[1].toStatus").value("PENDING_FINANCE_APPROVAL"))
+                .andExpect(jsonPath("$.data[1].performedBy").value("MGR001"));
+    }
 }

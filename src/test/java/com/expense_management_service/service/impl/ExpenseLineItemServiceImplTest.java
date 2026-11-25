@@ -1315,4 +1315,96 @@ class ExpenseLineItemServiceImplTest {
         verify(expenseReportRepository).save(draftReport);
         assertThat(draftReport.getTotalAmount()).isEqualByComparingTo("100.00");
     }
+
+    // ---------------------------------------------------------------- policy preview
+
+    private com.expense_management_service.dto.request.PolicyPreviewRequest previewRequest(UUID lineItemId, Boolean receiptAttached) {
+        return new com.expense_management_service.dto.request.PolicyPreviewRequest(categoryId, LocalDate.now().minusDays(1),
+                "Uber", "Client meeting", new BigDecimal("2500.00"), currencyId, lineItemId, receiptAttached);
+    }
+
+    private void stubPreviewLookups() {
+        stubOwnerAndReport();
+        when(expenseCategoryRepository.findById(categoryId)).thenReturn(Optional.of(activeCategory("TRAVEL")));
+        when(currencyRepository.findById(currencyId)).thenReturn(Optional.of(currency));
+    }
+
+    @Test
+    void previewPolicy_returnsEvaluatorWarnings_andPersistsNothing() {
+        stubPreviewLookups();
+        PolicyViolation overLimit = PolicyViolation.builder()
+                .ruleType(PolicyRuleType.AMOUNT_LIMIT).severity(PolicySeverity.WARN).enforcementType(PolicyEnforcementType.WARN)
+                .message("Amount 2500.00 exceeds the configured limit of 2000")
+                .limitValue(new BigDecimal("2000")).actualValue(new BigDecimal("2500.00")).build();
+        when(policyEvaluator.evaluate(any(ExpenseLineItem.class))).thenReturn(List.of(overLimit));
+
+        var warnings = expenseLineItemService.previewPolicy(reportId, previewRequest(null, false));
+
+        assertThat(warnings).singleElement().satisfies(w -> {
+            assertThat(w.ruleType()).isEqualTo(PolicyRuleType.AMOUNT_LIMIT);
+            assertThat(w.limitValue()).isEqualByComparingTo("2000");
+        });
+        verify(expenseLineItemRepository, never()).save(any());
+        verifyNoInteractions(policyViolationRepository);
+        verify(expenseReportRepository, never()).save(any());
+    }
+
+    @Test
+    void previewPolicy_evaluatesConvertedDraft_withReceiptPlaceholder_whenReceiptAttached() {
+        stubPreviewLookups();
+        var captor = org.mockito.ArgumentCaptor.forClass(ExpenseLineItem.class);
+        when(policyEvaluator.evaluate(captor.capture())).thenReturn(List.of());
+
+        expenseLineItemService.previewPolicy(reportId, previewRequest(null, true));
+
+        ExpenseLineItem draft = captor.getValue();
+        assertThat(draft.getLineItemId()).isNull();
+        assertThat(draft.getReport()).isSameAs(draftReport);
+        assertThat(draft.getBaseAmount()).isEqualByComparingTo("2500.00");
+        assertThat(draft.getReceipts()).hasSize(1);
+    }
+
+    @Test
+    void previewPolicy_hasNoReceipt_whenNoneAttached() {
+        stubPreviewLookups();
+        var captor = org.mockito.ArgumentCaptor.forClass(ExpenseLineItem.class);
+        when(policyEvaluator.evaluate(captor.capture())).thenReturn(List.of());
+
+        expenseLineItemService.previewPolicy(reportId, previewRequest(null, false));
+
+        assertThat(captor.getValue().getReceipts()).isEmpty();
+    }
+
+    @Test
+    void previewPolicy_redactsCrossEmployeeDuplicate_forPlainEmployee() {
+        stubPreviewLookups();
+        PolicyViolation crossDuplicate = PolicyViolation.builder()
+                .ruleType(PolicyRuleType.CROSS_EMPLOYEE_DUPLICATE_EXPENSE).severity(PolicySeverity.WARN)
+                .enforcementType(PolicyEnforcementType.WARN)
+                .message("Possible duplicate/shared bill: employee 5100099 submitted a matching expense").build();
+        when(policyEvaluator.evaluate(any(ExpenseLineItem.class))).thenReturn(List.of(crossDuplicate));
+
+        var warnings = expenseLineItemService.previewPolicy(reportId, previewRequest(null, false));
+
+        assertThat(warnings).singleElement().satisfies(w -> assertThat(w.message()).doesNotContain("5100099"));
+    }
+
+    @Test
+    void previewPolicy_returnsNoWarnings_whenEvaluatorFails() {
+        stubPreviewLookups();
+        when(policyEvaluator.evaluate(any(ExpenseLineItem.class))).thenThrow(new RuntimeException("boom"));
+
+        assertThat(expenseLineItemService.previewPolicy(reportId, previewRequest(null, false))).isEmpty();
+    }
+
+    @Test
+    void previewPolicy_rejectsOtherEmployeesReport() {
+        when(currentUserService.getCurrentUser()).thenReturn(new CurrentUser(UUID.randomUUID(), null, "9999999",
+                "other@example.com", "Other", List.of("GENERAL"), List.of()));
+        when(expenseReportRepository.findById(reportId)).thenReturn(Optional.of(draftReport));
+
+        assertThatThrownBy(() -> expenseLineItemService.previewPolicy(reportId, previewRequest(null, false)))
+                .isInstanceOf(org.springframework.security.access.AccessDeniedException.class);
+        verifyNoInteractions(policyEvaluator);
+    }
 }

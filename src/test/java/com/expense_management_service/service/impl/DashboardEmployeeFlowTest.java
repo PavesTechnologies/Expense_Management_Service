@@ -308,9 +308,14 @@ class DashboardEmployeeFlowTest {
         return CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME).status("IN_PROGRESS")
                 .amount(new BigDecimal(amount)).requestedAmount(new BigDecimal(cash)).approvedAmount(new BigDecimal(amount))
                 .disbursedAmount(new BigDecimal(cash)).disbursedAt(LocalDateTime.now())
+                .requestType(carriedIn == null ? null : com.expense_management_service.enums.CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD.name())
                 .carriedInAmount(carriedIn == null ? null : new BigDecimal(carriedIn))
                 .carriedOutAmount(carriedOut == null ? null : new BigDecimal(carriedOut))
                 .build();
+    }
+
+    private static CashAdvanceBalanceCalculator.Parts parts(String used, String carriedOut, String outstanding) {
+        return new CashAdvanceBalanceCalculator.Parts(new BigDecimal(used), BigDecimal.ZERO, new BigDecimal(carriedOut), new BigDecimal(outstanding));
     }
 
     @Test
@@ -320,8 +325,10 @@ class DashboardEmployeeFlowTest {
         CashAdvance onsite = paidOut("5000", "5000", null, null);   // 4,032 spent, owes 968
         CashAdvance visit = paidOut("3518", "2000", "1518", null);  // 2,000 cash + 1,518 carried in, nothing spent
         when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of(pune, onsite, visit));
-        when(balanceCalculator.rawOutstandingFor(any())).thenReturn(Map.of(
-                pune.getAdvanceId(), BigDecimal.ZERO, onsite.getAdvanceId(), new BigDecimal("968"), visit.getAdvanceId(), new BigDecimal("3518")));
+        when(balanceCalculator.partsFor(any())).thenReturn(Map.of(
+                pune.getAdvanceId(), parts("3450", "550", "0"),
+                onsite.getAdvanceId(), parts("4032", "0", "968"),
+                visit.getAdvanceId(), parts("0", "0", "3518")));
         stubData(List.of(), List.of(), List.of());
 
         DashboardResponse r = service.employee();
@@ -333,6 +340,7 @@ class DashboardEmployeeFlowTest {
         assertEquals(0, kpi(r, "caDisbursed").add(kpi(r, "caCarriedIn")).compareTo(kpi(r, "caSettled").add(kpi(r, "caOutstanding"))),
                 "received + carried in = settled + outstanding");
         assertEquals(0, new BigDecimal("968").compareTo(kpi(r, "caCarryUnmatched")), "1,518 carried in, only 550 carried out");
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caRecordGap")), "carried-in money is not a record mismatch");
     }
 
     @Test
@@ -340,10 +348,19 @@ class DashboardEmployeeFlowTest {
         CashAdvance source = paidOut("4000", "4000", null, "1518");
         CashAdvance destination = paidOut("3518", "2000", "1518", null);
         when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of(source, destination));
-        when(balanceCalculator.rawOutstandingFor(any())).thenReturn(Map.of(source.getAdvanceId(), BigDecimal.ZERO, destination.getAdvanceId(), new BigDecimal("3518")));
+        when(balanceCalculator.partsFor(any())).thenReturn(Map.of(
+                source.getAdvanceId(), parts("2482", "1518", "0"),
+                destination.getAdvanceId(), parts("0", "0", "3518")));
         stubData(List.of(), List.of(), List.of());
 
-        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(service.employee(), "caCarryUnmatched")));
+        DashboardResponse r = service.employee();
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caCarryUnmatched")));
+        // 6,000 cash received; 1,518 of it moved to the second advance, so it shows on both sides of the ledger.
+        assertEquals(0, new BigDecimal("1518").compareTo(kpi(r, "caCarriedInReceived")));
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caRecordGap")), "a carry-forward is not a record mismatch");
+        assertEquals(0, kpi(r, "caDisbursed").compareTo(kpi(r, "caUsedOnBills").add(kpi(r, "caReturned"))
+                        .add(kpi(r, "caCarriedForward")).subtract(kpi(r, "caCarriedInReceived")).add(kpi(r, "caOutstanding"))),
+                "received = used + returned + carried forward - carried in + outstanding");
     }
 
     @Test

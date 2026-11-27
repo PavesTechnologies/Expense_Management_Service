@@ -177,7 +177,7 @@ public class DashboardServiceImpl implements DashboardService {
             }
         }
         // Where the received money has gone, read from the advance records (never derived as received - outstanding):
-        // received = used on expenses + returned + carried to a new advance + outstanding.
+        // received + carried in = used on expenses + returned + carried to a new advance + outstanding.
         // The balance rule starts from the advance amount; if the recorded paid-out amount differs, the ledger cannot
         // balance. That difference is reported as caRecordGap so the dashboard can say so, not hidden.
         Map<UUID, CashAdvanceBalanceCalculator.Parts> partsByAdvance = balanceCalculator.partsFor(disbursedAdvances);
@@ -185,6 +185,9 @@ public class DashboardServiceImpl implements DashboardService {
         BigDecimal caUsedOnBills = BigDecimal.ZERO;
         BigDecimal caReturned = BigDecimal.ZERO;
         BigDecimal caCarriedForward = BigDecimal.ZERO;
+        // Balance carried into an advance that has been paid out. It is part of that advance's amount (so of its
+        // outstanding and used-on-bills figures) but was never new cash, so it is not in "received".
+        BigDecimal caCarriedInReceived = BigDecimal.ZERO;
         int recordMismatches = 0;
         for (com.expense_management_service.entity.CashAdvance a : disbursedAdvances) {
             CashAdvanceBalanceCalculator.Parts p = partsByAdvance.get(a.getAdvanceId());
@@ -193,11 +196,19 @@ public class DashboardServiceImpl implements DashboardService {
             caUsedOnBills = caUsedOnBills.add(nz(p.usedOnExpenses()));
             caReturned = caReturned.add(nz(p.repaid()));
             caCarriedForward = caCarriedForward.add(nz(p.carriedOut()));
+            caCarriedInReceived = caCarriedInReceived.add(CashAdvanceBalanceRules.carriedIn(a));
             BigDecimal disbursed = a.getDisbursedAmount() != null ? a.getDisbursedAmount() : nz(a.getAmount());
             if (disbursed.compareTo(nz(a.getAmount())) != 0) recordMismatches++;
         }
         caSettled = caUsedOnBills.add(caReturned).add(caCarriedForward);
-        BigDecimal caRecordGap = caDisbursed.subtract(caSettled).subtract(caOutstanding);
+        // received + carried in = used on bills + returned + carried forward + outstanding.
+        BigDecimal caRecordGap = caDisbursed.add(caCarriedInReceived).subtract(caSettled).subtract(caOutstanding);
+        // Carry-forward only moves money between this employee's own advances, so what was carried in should equal what
+        // was carried out. A positive gap is money carried in with no source on the records (outstanding may be too high).
+        BigDecimal caCarryUnmatched = BigDecimal.ZERO;
+        for (com.expense_management_service.entity.CashAdvance a : myAdvances) {
+            caCarryUnmatched = caCarryUnmatched.add(CashAdvanceBalanceRules.carriedIn(a)).subtract(CashAdvanceBalanceRules.carriedOut(a));
+        }
 
         // ---- Expense reimbursement, split into the two flows the system has:
         //   direct  = reports not linked to a cash advance: approved -> paid to the bank by AP
@@ -270,6 +281,9 @@ public class DashboardServiceImpl implements DashboardService {
         kpis.add(new Kpi("caReturned", "Returned by you", caReturned, "money", "Cash you paid back", "emerald"));
         kpis.add(new Kpi("caCarriedForward", "Carried to a new advance", caCarriedForward, "money", "Balance moved to your next advance", "gray"));
         kpis.add(new Kpi("caOutstanding", "Still to settle", caOutstanding, "money", "Submit bills or return this amount", caOutstanding.signum() > 0 ? "amber" : "gray"));
+        kpis.add(new Kpi("caCarriedInReceived", "Carried in", caCarriedInReceived, "money", "Balance from an earlier advance, inside advances already paid out", "gray"));
+        kpis.add(new Kpi("caCarryUnmatched", "Carry-forward mismatch", caCarryUnmatched, "money",
+                "Carried in less carried out across your advances; should be zero", caCarryUnmatched.signum() != 0 ? "amber" : "gray"));
         kpis.add(new Kpi("caRecordGap", "Record mismatch", caRecordGap, "money",
                 recordMismatches + " advance(s) where the paid-out amount differs from the advance amount",
                 caRecordGap.signum() != 0 ? "amber" : "gray"));

@@ -97,6 +97,7 @@ public class TeamExpenseServiceImpl implements TeamExpenseService {
                 total(rows, Member::inProgressAmount),
                 total(rows, Member::approvedAmount),
                 total(rows, Member::reimbursedAmount),
+                total(rows, Member::settledAmount),
                 rows);
     }
 
@@ -111,6 +112,7 @@ public class TeamExpenseServiceImpl implements TeamExpenseService {
                 reports.size(), inProgress.size(),
                 reports.stream().filter(r -> r.getReportStatus() == ReportStatus.REJECTED).count(),
                 sum(claimed), sum(inProgress), sum(approved), sumPaid(reimbursed),
+                sumSettled(reimbursed),
                 reports.stream().map(ExpenseReport::getSubmittedAt).filter(Objects::nonNull)
                         .max(Comparator.naturalOrder()).orElse(null));
     }
@@ -131,6 +133,18 @@ public class TeamExpenseServiceImpl implements TeamExpenseService {
                 .map(r -> r.getPaidAmount() != null ? r.getPaidAmount()
                         : r.getReimbursableAmount() != null ? r.getReimbursableAmount() : r.getTotalAmount())
                 .filter(Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** Report total not paid in cash (e.g. offset by a cash advance): total less {@link #sumPaid}, per report, never negative. */
+    private static BigDecimal sumSettled(List<ExpenseReport> reports) {
+        return reports.stream()
+                .map(r -> {
+                    BigDecimal total = r.getTotalAmount() != null ? r.getTotalAmount() : BigDecimal.ZERO;
+                    BigDecimal paid = r.getPaidAmount() != null ? r.getPaidAmount()
+                            : r.getReimbursableAmount() != null ? r.getReimbursableAmount() : total;
+                    return total.subtract(paid).max(BigDecimal.ZERO);
+                })
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 

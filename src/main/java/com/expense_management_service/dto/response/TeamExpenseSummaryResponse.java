@@ -11,7 +11,9 @@ import java.util.List;
  *
  * @param inProgressAmount with approvers/Finance, or sent back to the employee for correction
  * @param approvedAmount   approved and not yet paid
- * @param reimbursedAmount paid out
+ * @param reimbursedAmount cash actually paid out
+ * @param settledAmount    part of paid-out reports not paid in cash (e.g. offset by a cash advance), so that
+ *                         in-progress + approved + reimbursed + settled always equals claimed
  */
 public record TeamExpenseSummaryResponse(
         String baseCurrencyCode,
@@ -21,6 +23,7 @@ public record TeamExpenseSummaryResponse(
         BigDecimal inProgressAmount,
         BigDecimal approvedAmount,
         BigDecimal reimbursedAmount,
+        BigDecimal settledAmount,
         List<Member> members
 ) {
 
@@ -36,6 +39,7 @@ public record TeamExpenseSummaryResponse(
             BigDecimal inProgressAmount,
             BigDecimal approvedAmount,
             BigDecimal reimbursedAmount,
+            BigDecimal settledAmount,
             LocalDateTime lastSubmittedAt
     ) {
     }

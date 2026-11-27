@@ -89,6 +89,23 @@ class TeamExpenseServiceImplTest {
     }
 
     @Test
+    void summary_reportsTheNonCashPartOfPaidReports_soBucketsAddUpToClaimed() {
+        when(employeeCacheRepository.findByManagerEmployeeId(MANAGER)).thenReturn(List.of(member("5100002", "Asha", "Rao")));
+        ExpenseReport paid = report("5100002", ReportStatus.APPROVED, "2840");
+        paid.setPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED);
+        paid.setReimbursableAmount(new BigDecimal("840"));
+        when(expenseReportRepository.findByEmployeeIdInAndReportStatusNot(any(), eq(ReportStatus.DRAFT)))
+                .thenReturn(List.of(paid, report("5100002", ReportStatus.PENDING_APPROVAL, "100")));
+
+        var summary = service.getSummary();
+
+        assertThat(summary.reimbursedAmount()).isEqualByComparingTo("840");
+        assertThat(summary.settledAmount()).isEqualByComparingTo("2000");
+        assertThat(summary.inProgressAmount().add(summary.approvedAmount()).add(summary.reimbursedAmount())
+                .add(summary.settledAmount())).isEqualByComparingTo(summary.claimedAmount());
+    }
+
+    @Test
     void summary_withNoDirectReports_skipsTheReportQuery() {
         when(employeeCacheRepository.findByManagerEmployeeId(MANAGER)).thenReturn(List.of());
 

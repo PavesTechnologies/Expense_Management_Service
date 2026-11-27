@@ -59,6 +59,26 @@ public interface ExpenseReportRepository extends JpaRepository<ExpenseReport, UU
             Pageable pageable);
 
     /**
+     * As {@link #searchByEmployeeIdAndStatusAndQuery}, also filtered by type: {@code settlement = true} keeps reports linked
+     * to a cash advance (advance settlements), {@code false} keeps plain expense claims.
+     */
+    @Query("""
+            SELECT r FROM ExpenseReport r
+            WHERE r.employeeId = :employeeId
+              AND (:status IS NULL OR r.reportStatus = :status)
+              AND (:query IS NULL OR :query = ''
+                   OR lower(r.title) LIKE lower(concat('%', :query, '%'))
+                   OR lower(r.reportNumber) LIKE lower(concat('%', :query, '%')))
+              AND ((:settlement = true AND r.cashAdvance IS NOT NULL) OR (:settlement = false AND r.cashAdvance IS NULL))
+            """)
+    Page<ExpenseReport> searchByEmployeeIdAndStatusAndQueryAndType(
+            @Param("employeeId") String employeeId,
+            @Param("status") ReportStatus status,
+            @Param("query") String query,
+            @Param("settlement") boolean settlement,
+            Pageable pageable);
+
+    /**
      * Paginated "My History" (§14): a single query rather than a UNION, since both outcome
      * branches are predicates against the same {@code ExpenseReport} row - approved (an EXISTS
      * against a COMPLETED assignment for this employee, regardless of the report's *current*

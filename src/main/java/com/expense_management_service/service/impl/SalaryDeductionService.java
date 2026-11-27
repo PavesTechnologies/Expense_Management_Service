@@ -111,7 +111,7 @@ public class SalaryDeductionService {
     // ------------------------------------------------------------------ create
 
     @Transactional
-    public SalaryDeductionResponse create(UUID advanceId, BigDecimal amount, String payrollMonth) {
+    public SalaryDeductionResponse create(UUID advanceId, BigDecimal amount, String payrollMonth, String amountChangeReason) {
         String actor = requireFinance();
         LocalDate today = LocalDate.now();
 
@@ -162,12 +162,16 @@ public class SalaryDeductionService {
         if (payrollEmail == null || payrollEmail.isBlank()) {
             throw new BusinessRuleViolationException("No payroll email is configured. Set the salary recovery report email in Settings first.");
         }
+        // The screen proposes the full amount that can be settled now. Any other amount needs Finance's reason.
+        BigDecimal fullAmount = utilization != null ? balance.min(settlementReadiness.settleable(advance)) : balance;
+        String changeReason = requireAmountChangeReason(amount, fullAmount, amountChangeReason);
 
         SalaryDeductionRequest request = requestRepository.save(SalaryDeductionRequest.builder()
                 .payrollRequestId(newPayrollRequestId(today))
                 .advance(advance)
                 .employeeId(advance.getEmployeeId())
                 .requestedAmount(amount)
+                .amountChangeReason(changeReason)
                 .payrollMonth(month.toString())
                 .status(SalaryDeductionRequest.PENDING_SEND)
                 .requestedBy(actor)
@@ -183,7 +187,8 @@ public class SalaryDeductionService {
 
         balanceLedger.recordChange("SalaryDeductionRequest", request.getSalaryDeductionRequestId(), "SALARY_DEDUCTION_REQUESTED",
                 null, "Status: PENDING_SEND, Amount: " + amount.toPlainString() + ", Payroll month: " + month,
-                actor, "Requested " + amount.toPlainString() + " for payroll " + month + " (" + request.getPayrollRequestId() + ")");
+                actor, "Requested " + amount.toPlainString() + " for payroll " + month + " (" + request.getPayrollRequestId() + ")"
+                        + (changeReason == null ? "" : ". Amount changed from " + fullAmount.toPlainString() + ": " + changeReason));
         return toResponse(request, advance);
     }
 
@@ -516,6 +521,7 @@ public class SalaryDeductionService {
                 request.getEmployeeId(),
                 request.getRequestedAmount(),
                 request.getPayrollMonth(),
+                request.getAmountChangeReason(),
                 request.getStatus(),
                 request.isOpen(),
                 emailStatus,
@@ -569,6 +575,25 @@ public class SalaryDeductionService {
 
     private static String blank(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    /**
+     * Returns the cleaned reason when the amount differs from the full amount, or null when the full amount was
+     * requested (any reason sent is then ignored). Package-private for tests.
+     */
+    static String requireAmountChangeReason(BigDecimal amount, BigDecimal fullAmount, String reason) {
+        if (amount.compareTo(fullAmount) == 0) {
+            return null;
+        }
+        String cleaned = blank(reason);
+        if (cleaned == null) {
+            throw new BusinessRuleViolationException("Enter the reason for deducting " + amount.toPlainString()
+                    + " instead of the full " + fullAmount.toPlainString() + ".");
+        }
+        if (cleaned.length() > 500) {
+            throw new BusinessRuleViolationException("The reason for changing the amount must be 500 characters or fewer.");
+        }
+        return cleaned;
     }
 
     private static String requireReason(String reason) {

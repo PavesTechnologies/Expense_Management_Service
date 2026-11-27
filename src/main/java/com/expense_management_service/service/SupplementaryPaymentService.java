@@ -16,6 +16,9 @@ public interface SupplementaryPaymentService {
     /** Creates the one payment request for a claim. Called in the same transaction as Finance approval. */
     void requestPayment(SupplementaryExpenseClaim claim);
 
+    /** Requests an AP payment of {@code amount}: the part of the claim not set against a cash advance. */
+    void requestPayment(SupplementaryExpenseClaim claim, java.math.BigDecimal amount);
+
     /** Requests waiting for AP, oldest first. */
     List<SupplementaryPaymentResponse> queue();
 

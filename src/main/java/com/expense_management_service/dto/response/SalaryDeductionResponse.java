@@ -15,6 +15,7 @@ public record SalaryDeductionResponse(
         String employeeId,
         BigDecimal requestedAmount,
         String payrollMonth,
+        String amountChangeReason,
         String status,
         boolean open,
         String emailStatus,

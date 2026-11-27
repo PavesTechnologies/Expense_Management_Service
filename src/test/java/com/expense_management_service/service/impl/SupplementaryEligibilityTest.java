@@ -48,9 +48,9 @@ class SupplementaryEligibilityTest {
     // ---------------------------------------------------------- carry-forwards
 
     @Test
-    void proposedAndAppliedCarryForwards_block() {
+    void onlyProposedCarryForward_blocks_appliedIsSettledAgainstTheDestinationAdvance() {
         assertThat(SupplementaryEligibility.carryForwardBlocks(CashAdvanceCarryForward.PROPOSED)).isTrue();
-        assertThat(SupplementaryEligibility.carryForwardBlocks(CashAdvanceCarryForward.APPLIED)).isTrue();
+        assertThat(SupplementaryEligibility.carryForwardBlocks(CashAdvanceCarryForward.APPLIED)).isFalse();
     }
 
     @Test

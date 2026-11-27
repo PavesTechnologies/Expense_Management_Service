@@ -283,6 +283,47 @@ public class CashAdvanceServiceImpl implements CashAdvanceService {
         return cashAdvanceMapper.toResponse(advance);
     }
 
+    private static final java.util.Map<String, String> TRAIL_ACTIONS = java.util.Map.of(
+            "CASH_ADVANCE_SUBMITTED", "SUBMITTED",
+            "CASH_ADVANCE_APPROVED", "APPROVED",
+            "CASH_ADVANCE_REJECTED", "REJECTED",
+            "CASH_ADVANCE_DEFERRED", "DEFERRED");
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<com.expense_management_service.dto.response.CashAdvanceApprovalStepResponse> getApprovalTrail(UUID advanceId) {
+        CashAdvance advance = findEntity(advanceId);
+        assertCanView(advance);
+
+        // Newest first from the repository; walk it oldest first.
+        List<AuditLog> logs = new java.util.ArrayList<>(
+                auditLogRepository.findTop200ByEntityNameAndEntityIdOrderByPerformedAtDesc("CashAdvance", advanceId));
+        java.util.Collections.reverse(logs);
+
+        List<com.expense_management_service.dto.response.CashAdvanceApprovalStepResponse> trail = new java.util.ArrayList<>();
+        for (AuditLog log : logs) {
+            String action = TRAIL_ACTIONS.get(log.getAction());
+            if (action == null) {
+                continue;
+            }
+            if ("SUBMITTED".equals(action)) {
+                // A resubmission (e.g. after a deferral) starts the chain again.
+                trail.clear();
+            }
+            String toStatus = log.getNewValue();
+            String reason = log.getReason();
+            if ("REJECTED".equals(action) && toStatus != null && toStatus.startsWith("REJECTED")) {
+                if (reason == null && toStatus.startsWith("REJECTED: ")) {
+                    reason = toStatus.substring("REJECTED: ".length());
+                }
+                toStatus = "REJECTED";
+            }
+            trail.add(new com.expense_management_service.dto.response.CashAdvanceApprovalStepResponse(
+                    action, log.getOldValue(), toStatus, log.getPerformedBy(), log.getPerformedAt(), reason));
+        }
+        return trail;
+    }
+
 
     // ============================================================
     // GET ALL

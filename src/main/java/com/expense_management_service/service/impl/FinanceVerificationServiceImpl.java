@@ -236,7 +236,8 @@ public class FinanceVerificationServiceImpl implements FinanceVerificationServic
                 report.getReportStatus() != null ? report.getReportStatus().name() : null,
                 report.getSubmittedAt(),
                 instance.getLevelOrder(), pendingLineItems,
-                report.getCashAdvance() != null ? report.getCashAdvance().getAdvanceId() : null);
+                report.getCashAdvance() != null ? report.getCashAdvance().getAdvanceId() : null,
+                report.getTitle());
     }
 
     /** Expense GL and, for recoverable tax, the tax code's input tax GL - split as the tax journal posts it. */

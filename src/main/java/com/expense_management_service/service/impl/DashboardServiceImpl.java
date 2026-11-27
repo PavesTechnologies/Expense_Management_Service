@@ -27,6 +27,7 @@ import com.expense_management_service.service.DelegationService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -59,6 +60,7 @@ import java.util.stream.Collectors;
  * Aggregates for the role dashboards. Amounts are always summed from line items' base-currency
  * {@code baseAmount}; report totals are in each report's own currency and can't be added up.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 @Transactional(readOnly = true)
@@ -131,64 +133,126 @@ public class DashboardServiceImpl implements DashboardService {
 
         // ---- Cash advance flow for the employee: requested -> approved -> disbursed -> settled -> outstanding.
         // Only advances that are live (not draft, rejected or cancelled) count. Outstanding comes from the calculator.
-        List<com.expense_management_service.entity.CashAdvance> myAdvances = cashAdvanceRepository.findByEmployeeId(me).stream()
+        List<com.expense_management_service.entity.CashAdvance> allAdvances = cashAdvanceRepository.findByEmployeeId(me);
+        List<com.expense_management_service.entity.CashAdvance> myAdvances = allAdvances.stream()
                 .filter(a -> a.getStatus() != null && !List.of("DRAFT", "REJECTED", "CANCELLED").contains(a.getStatus().toUpperCase()))
                 .toList();
         BigDecimal caRequested = BigDecimal.ZERO;
         BigDecimal caApproved = BigDecimal.ZERO;
+        // Requested -> Approved, split so the ledger adds up per advance:
+        //   approved = requested - awaiting approval + carried in - reduced on approval + increased on approval
+        BigDecimal caAwaitingApproval = BigDecimal.ZERO;
+        BigDecimal caCarriedIn = BigDecimal.ZERO;
+        BigDecimal caReducedOnApproval = BigDecimal.ZERO;
+        BigDecimal caIncreasedOnApproval = BigDecimal.ZERO;
         BigDecimal caDisbursed = BigDecimal.ZERO;
         BigDecimal caSettled = BigDecimal.ZERO;
         List<com.expense_management_service.entity.CashAdvance> disbursedAdvances = new java.util.ArrayList<>();
         for (com.expense_management_service.entity.CashAdvance a : myAdvances) {
-            BigDecimal requested = a.getRequestedAmount() != null ? a.getRequestedAmount() : nz(a.getAmount());
+            boolean plusCarryForward = com.expense_management_service.enums.CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD.name()
+                    .equals(a.getRequestType());
+            // What the employee typed. Older records have no requested amount; for an "advance + carry forward" request the
+            // amount has already grown by the carried part, so fall back to the new cash asked for, not the grown amount.
+            BigDecimal requested = a.getRequestedAmount() != null ? a.getRequestedAmount()
+                    : plusCarryForward && a.getAdditionalAmountRequested() != null ? a.getAdditionalAmountRequested()
+                    : nz(a.getAmount());
             caRequested = caRequested.add(requested);
             boolean approved = a.getApprovedAmount() != null || a.getDisbursedAt() != null || "APPROVED".equalsIgnoreCase(a.getStatus());
             if (approved) {
-                caApproved = caApproved.add(a.getApprovedAmount() != null ? a.getApprovedAmount() : nz(a.getAmount()));
+                BigDecimal approvedAmount = a.getApprovedAmount() != null ? a.getApprovedAmount() : nz(a.getAmount());
+                caApproved = caApproved.add(approvedAmount);
+                // An "advance + carry forward" request grows on approval: the held balance moves in on top of the new cash.
+                BigDecimal carriedIn = plusCarryForward ? CashAdvanceBalanceRules.carriedIn(a) : BigDecimal.ZERO;
+                caCarriedIn = caCarriedIn.add(carriedIn);
+                // Whatever is left is the approver's change to the amount: usually a reduction.
+                BigDecimal change = approvedAmount.subtract(requested).subtract(carriedIn);
+                if (change.signum() < 0) caReducedOnApproval = caReducedOnApproval.add(change.negate());
+                else caIncreasedOnApproval = caIncreasedOnApproval.add(change);
+            } else {
+                caAwaitingApproval = caAwaitingApproval.add(requested);
             }
             if (a.getDisbursedAt() != null) {
                 disbursedAdvances.add(a);
                 caDisbursed = caDisbursed.add(a.getDisbursedAmount() != null ? a.getDisbursedAmount() : nz(a.getAmount()));
             }
         }
-        Map<UUID, BigDecimal> owedByAdvance = balanceCalculator.rawOutstandingFor(disbursedAdvances);
+        // Where the received money has gone, read from the advance records (never derived as received - outstanding):
+        // received + carried in = used on expenses + returned + carried to a new advance + outstanding.
+        // The balance rule starts from the advance amount; if the recorded paid-out amount differs, the ledger cannot
+        // balance. That difference is reported as caRecordGap so the dashboard can say so, not hidden.
+        Map<UUID, CashAdvanceBalanceCalculator.Parts> partsByAdvance = balanceCalculator.partsFor(disbursedAdvances);
         BigDecimal caOutstanding = BigDecimal.ZERO;
+        BigDecimal caUsedOnBills = BigDecimal.ZERO;
+        BigDecimal caReturned = BigDecimal.ZERO;
+        BigDecimal caCarriedForward = BigDecimal.ZERO;
+        // Balance carried into an advance that has been paid out. It is part of that advance's amount (so of its
+        // outstanding and used-on-bills figures) but was never new cash, so it is not in "received".
+        BigDecimal caCarriedInReceived = BigDecimal.ZERO;
+        int recordMismatches = 0;
         for (com.expense_management_service.entity.CashAdvance a : disbursedAdvances) {
-            BigDecimal owed = nz(owedByAdvance.get(a.getAdvanceId()));
-            caOutstanding = caOutstanding.add(owed);
+            CashAdvanceBalanceCalculator.Parts p = partsByAdvance.get(a.getAdvanceId());
+            if (p == null) continue;
+            caOutstanding = caOutstanding.add(nz(p.outstanding()));
+            caUsedOnBills = caUsedOnBills.add(nz(p.usedOnExpenses()));
+            caReturned = caReturned.add(nz(p.repaid()));
+            caCarriedForward = caCarriedForward.add(nz(p.carriedOut()));
+            caCarriedInReceived = caCarriedInReceived.add(CashAdvanceBalanceRules.carriedIn(a));
             BigDecimal disbursed = a.getDisbursedAmount() != null ? a.getDisbursedAmount() : nz(a.getAmount());
-            caSettled = caSettled.add(disbursed.subtract(owed).max(BigDecimal.ZERO));
+            if (disbursed.compareTo(nz(a.getAmount())) != 0) recordMismatches++;
+        }
+        caSettled = caUsedOnBills.add(caReturned).add(caCarriedForward);
+        // received + carried in = used on bills + returned + carried forward + outstanding.
+        BigDecimal caRecordGap = caDisbursed.add(caCarriedInReceived).subtract(caSettled).subtract(caOutstanding);
+        // Carry-forward only moves money between this employee's own advances, so what was carried in should equal what
+        // was carried out. A positive gap is money carried in with no source on the records (outstanding may be too high).
+        BigDecimal caCarryUnmatched = BigDecimal.ZERO;
+        for (com.expense_management_service.entity.CashAdvance a : myAdvances) {
+            caCarryUnmatched = caCarryUnmatched.add(CashAdvanceBalanceRules.carriedIn(a)).subtract(CashAdvanceBalanceRules.carriedOut(a));
         }
 
-        // ---- Expense reimbursement flow: claimed -> approved -> advance offset -> waiting for AP -> paid.
-        // Ledger: approved = covered by advance + payable; payable = not yet sent to AP + waiting for AP + paid.
-        BigDecimal erApproved = BigDecimal.ZERO;
-        BigDecimal erAdvanceOffset = BigDecimal.ZERO;
-        BigDecimal erToSendAp = BigDecimal.ZERO;
-        BigDecimal erPendingAp = BigDecimal.ZERO;
-        BigDecimal erPaid = BigDecimal.ZERO;
+        // ---- Expense reimbursement, split into the two flows the system has:
+        //   direct  = reports not linked to a cash advance: approved -> paid to the bank by AP
+        //   advance = reports linked to a cash advance: approved -> paid from the advance, any extra paid to the bank
+        // Per flow: approved = paid from advance + payable; payable = not yet with AP + waiting for AP + paid.
+        // The er* totals are direct + advance, so the two flows always add up to the overall figures.
+        final int DIRECT = 0, ADVANCE = 1;
+        BigDecimal[] flClaimed = {BigDecimal.ZERO, BigDecimal.ZERO};
+        BigDecimal[] flApproved = {BigDecimal.ZERO, BigDecimal.ZERO};
+        BigDecimal[] flOffset = {BigDecimal.ZERO, BigDecimal.ZERO};
+        BigDecimal[] flToSendAp = {BigDecimal.ZERO, BigDecimal.ZERO};
+        BigDecimal[] flPendingAp = {BigDecimal.ZERO, BigDecimal.ZERO};
+        BigDecimal[] flPaid = {BigDecimal.ZERO, BigDecimal.ZERO};
         for (ExpenseReport r : reports) {
             BigDecimal gross = amounts.getOrDefault(r.getReportId(), BigDecimal.ZERO);
             boolean approved = r.getReportStatus() == ReportStatus.APPROVED || r.getReportStatus() == ReportStatus.REIMBURSED
                     || r.getReportStatus() == ReportStatus.CLOSED;
+            BigDecimal offset = approved && r.getReimbursableAmount() != null
+                    ? gross.subtract(r.getReimbursableAmount()).max(BigDecimal.ZERO) : BigDecimal.ZERO;
+            int f = (r.getCashAdvance() != null || offset.signum() > 0) ? ADVANCE : DIRECT;
+            if (r.getReportStatus() != null && !NOT_SUBMITTED.contains(r.getReportStatus())) {
+                flClaimed[f] = flClaimed[f].add(gross);
+            }
             if (approved) {
-                erApproved = erApproved.add(gross);
-                if (r.getReimbursableAmount() != null) {
-                    erAdvanceOffset = erAdvanceOffset.add(gross.subtract(r.getReimbursableAmount()).max(BigDecimal.ZERO));
-                }
+                flApproved[f] = flApproved[f].add(gross);
+                flOffset[f] = flOffset[f].add(offset);
             }
             PaymentRoutingStatus routing = r.getPaymentRoutingStatus();
             if (routing == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) {
                 // waiting for AP: what is still owed; the part AP already paid is shown as paid
-                erPendingAp = erPendingAp.add(remainingPayable(owedOf(r, amounts), r.getPaidAmount()));
-                erPaid = erPaid.add(nz(r.getPaidAmount()));
+                flPendingAp[f] = flPendingAp[f].add(remainingPayable(owedOf(r, amounts), r.getPaidAmount()));
+                flPaid[f] = flPaid[f].add(nz(r.getPaidAmount()));
             } else if (routing == PaymentRoutingStatus.PAYMENT_COMPLETED) {
-                erPaid = erPaid.add(payments.getOrDefault(r.getReportId(), BigDecimal.ZERO));
+                flPaid[f] = flPaid[f].add(payments.getOrDefault(r.getReportId(), BigDecimal.ZERO));
             } else if (approved) {
                 // approved but not yet with AP
-                erToSendAp = erToSendAp.add(owedOf(r, amounts));
+                flToSendAp[f] = flToSendAp[f].add(owedOf(r, amounts));
             }
         }
+        BigDecimal erApproved = flApproved[DIRECT].add(flApproved[ADVANCE]);
+        BigDecimal erAdvanceOffset = flOffset[DIRECT].add(flOffset[ADVANCE]);
+        BigDecimal erToSendAp = flToSendAp[DIRECT].add(flToSendAp[ADVANCE]);
+        BigDecimal erPendingAp = flPendingAp[DIRECT].add(flPendingAp[ADVANCE]);
+        BigDecimal erPaid = flPaid[DIRECT].add(flPaid[ADVANCE]);
         BigDecimal erPayable = erToSendAp.add(erPendingAp).add(erPaid);
         BigDecimal erNotApproved = claimed.subtract(erApproved).max(BigDecimal.ZERO);
 
@@ -206,24 +270,51 @@ public class DashboardServiceImpl implements DashboardService {
         kpis.add(new Kpi("advanceBalance", "Open cash advance balance", openAdvanceBalance, "money", "Still owed against your advances", openAdvanceBalance.signum() > 0 ? "amber" : "gray"));
         // Flow figures for the employee dashboard: each step reads the one before it (see the dashboard's flow rows).
         kpis.add(new Kpi("caRequested", "Requested", caRequested, "money", myAdvances.size() + " advance(s)", "indigo"));
+        kpis.add(new Kpi("caAwaitingApproval", "Awaiting approval", caAwaitingApproval, "money", "Requested, still with your manager or Finance", "amber"));
+        kpis.add(new Kpi("caCarriedIn", "Carried in", caCarriedIn, "money", "Balance from an earlier advance, added on approval", "gray"));
+        kpis.add(new Kpi("caReducedOnApproval", "Reduced on approval", caReducedOnApproval, "money", "Approver approved less than asked", "gray"));
+        kpis.add(new Kpi("caIncreasedOnApproval", "Increased on approval", caIncreasedOnApproval, "money", "Approved more than asked", "gray"));
         kpis.add(new Kpi("caApproved", "Approved", caApproved, "money", "Amount your manager and Finance approved", "blue"));
-        kpis.add(new Kpi("caDisbursed", "Disbursed", caDisbursed, "money", disbursedAdvances.size() + " advance(s) paid to you", "blue"));
-        kpis.add(new Kpi("caSettled", "Settled", caSettled, "money", "Used on reports, repaid or carried forward", "emerald"));
-        kpis.add(new Kpi("caOutstanding", "Outstanding", caOutstanding, "money", "Still to be settled", caOutstanding.signum() > 0 ? "amber" : "gray"));
+        kpis.add(new Kpi("caDisbursed", "Received", caDisbursed, "money", disbursedAdvances.size() + " advance(s) paid to you", "blue"));
+        kpis.add(new Kpi("caSettled", "Settled", caSettled, "money", "Used on bills + returned + carried forward", "emerald"));
+        kpis.add(new Kpi("caUsedOnBills", "Used on bills", caUsedOnBills, "money", "Approved expenses paid from your advance", "emerald"));
+        kpis.add(new Kpi("caReturned", "Returned by you", caReturned, "money", "Cash you paid back", "emerald"));
+        kpis.add(new Kpi("caCarriedForward", "Carried to a new advance", caCarriedForward, "money", "Balance moved to your next advance", "gray"));
+        kpis.add(new Kpi("caOutstanding", "Still to settle", caOutstanding, "money", "Submit bills or return this amount", caOutstanding.signum() > 0 ? "amber" : "gray"));
+        kpis.add(new Kpi("caCarriedInReceived", "Carried in", caCarriedInReceived, "money", "Balance from an earlier advance, inside advances already paid out", "gray"));
+        kpis.add(new Kpi("caCarryUnmatched", "Carry-forward mismatch", caCarryUnmatched, "money",
+                "Carried in less carried out across your advances; should be zero", caCarryUnmatched.signum() != 0 ? "amber" : "gray"));
+        kpis.add(new Kpi("caRecordGap", "Record mismatch", caRecordGap, "money",
+                recordMismatches + " advance(s) where the paid-out amount differs from the advance amount",
+                caRecordGap.signum() != 0 ? "amber" : "gray"));
         kpis.add(new Kpi("erClaimed", "Claimed", claimed, "money", "All reports you have submitted", "indigo"));
         kpis.add(new Kpi("erNotApproved", "Not approved yet", erNotApproved, "money", "Pending, returned or rejected", "gray"));
         kpis.add(new Kpi("erApproved", "Approved", erApproved, "money", "Approved for reimbursement", "blue"));
-        kpis.add(new Kpi("erAdvanceOffset", "Covered by advance", erAdvanceOffset, "money", "Verified expenses settled against your advances", "gray"));
-        kpis.add(new Kpi("erPayable", "Payable to you", erPayable, "money", "Approved less covered by advance", "blue"));
+        kpis.add(new Kpi("erAdvanceOffset", "Paid from advance", erAdvanceOffset, "money", "Approved expenses paid from your cash advance, not to your bank", "gray"));
+        kpis.add(new Kpi("erPayable", "Payable to you", erPayable, "money", "Approved less paid from advance", "blue"));
         kpis.add(new Kpi("erToSendAp", "Not yet with AP", erToSendAp, "money", "Approved, waiting to be sent to AP", "gray"));
         kpis.add(new Kpi("erPendingAp", "Waiting for AP", erPendingAp, "money", "Sent to AP, not paid yet", erPendingAp.signum() > 0 ? "amber" : "gray"));
         kpis.add(new Kpi("erPaid", "Paid to you", erPaid, "money", "Reimbursement already paid", "emerald"));
+        // The same figures per flow: dr* = direct expenses, av* = expenses against a cash advance.
+        for (int f : new int[]{DIRECT, ADVANCE}) {
+            String px = f == DIRECT ? "dr" : "av";
+            String who = f == DIRECT ? "Direct expenses" : "Expenses against your advance";
+            BigDecimal payable = flToSendAp[f].add(flPendingAp[f]).add(flPaid[f]);
+            kpis.add(new Kpi(px + "Claimed", "Claimed", flClaimed[f], "money", who + ", submitted", "indigo"));
+            kpis.add(new Kpi(px + "NotApproved", "Not approved yet", flClaimed[f].subtract(flApproved[f]).max(BigDecimal.ZERO), "money", "Pending, returned or rejected", "gray"));
+            kpis.add(new Kpi(px + "Approved", "Approved", flApproved[f], "money", who + ", approved", "blue"));
+            kpis.add(new Kpi(px + "AdvanceOffset", "Paid from advance", flOffset[f], "money", "Paid from your cash advance", "gray"));
+            kpis.add(new Kpi(px + "Payable", "Payable to your bank", payable, "money", "Approved less paid from advance", "blue"));
+            kpis.add(new Kpi(px + "ToSendAp", "Not yet with AP", flToSendAp[f], "money", "Approved, waiting to be sent to AP", "gray"));
+            kpis.add(new Kpi(px + "PendingAp", "Waiting for AP", flPendingAp[f], "money", "Sent to AP, not paid yet", flPendingAp[f].signum() > 0 ? "amber" : "gray"));
+            kpis.add(new Kpi(px + "Paid", "Paid to your bank", flPaid[f], "money", "Already paid", "emerald"));
+        }
 
         // Every report the employee can still follow is in exactly one step, so the steps add up to their reports.
         // "Settled" ends a report that was fully covered by an advance (nothing to pay). "action" (sent back to the
         // employee) is not a step on the line; the journey shows it as a callout.
         Map<String, Long> journey = new java.util.LinkedHashMap<>();
-        for (String key : List.of("draft", "approval", "finance", "ap", "paid", "settled", "action")) {
+        for (String key : List.of("draft", "approval", "finance", "ap", "paid", "settled", "noPayment", "action")) {
             journey.put(key, 0L);
         }
         for (ExpenseReport r : reports) {
@@ -237,6 +328,7 @@ public class DashboardServiceImpl implements DashboardService {
                 new Stage("ap", "With AP", journey.get("ap")),
                 new Stage("paid", "Paid", journey.get("paid")),
                 new Stage("settled", "Settled", journey.get("settled")),
+                new Stage("noPayment", "No payment due", journey.get("noPayment")),
                 new Stage("action", "Sent back to you", journey.get("action")));
 
         List<Item> attention = reports.stream()
@@ -673,7 +765,8 @@ public class DashboardServiceImpl implements DashboardService {
 
     /**
      * The step of the employee's "Where your reports are" journey a report is in. Approved reports end in "paid" (money
-     * received), "ap" (still owed: with AP or on its way there) or "settled" (fully covered by an advance, nothing to pay).
+     * received), "ap" (still owed: with AP or on its way there), "settled" (fully covered by a linked cash advance) or
+     * "noPayment" (nothing payable and no advance involved, e.g. only non-reimbursable or company-paid lines).
      * Rejected and cancelled reports have left the journey (null).
      */
     static String journeyStep(ExpenseReport r, Map<UUID, BigDecimal> gross) {
@@ -697,7 +790,9 @@ public class DashboardServiceImpl implements DashboardService {
                 PaymentRoutingStatus routing = r.getPaymentRoutingStatus();
                 if (status == ReportStatus.REIMBURSED || routing == PaymentRoutingStatus.PAYMENT_COMPLETED) return "paid";
                 if (routing == PaymentRoutingStatus.APPROVED_FOR_PAYMENT) return "ap";
-                return remainingPayable(owedOf(r, gross), r.getPaidAmount()).signum() > 0 ? "ap" : "settled";
+                if (remainingPayable(owedOf(r, gross), r.getPaidAmount()).signum() > 0) return "ap";
+                // Nothing to pay: "settled" only when an advance covered it; otherwise nothing was owed at all.
+                return r.getCashAdvance() != null ? "settled" : "noPayment";
             }
             default:
                 return null;

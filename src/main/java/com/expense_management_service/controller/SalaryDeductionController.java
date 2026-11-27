@@ -44,7 +44,7 @@ public class SalaryDeductionController {
     public ApiResponse<SalaryDeductionResponse> create(@PathVariable UUID advanceId,
                                                        @RequestBody SalaryDeductionCreateRequest request) {
         return ApiResponse.success("Salary deduction request created",
-                salaryDeductionService.create(advanceId, request.amount(), request.payrollMonth()));
+                salaryDeductionService.create(advanceId, request.amount(), request.payrollMonth(), request.amountChangeReason()));
     }
 
     @PostMapping("/{requestId}/retry-email")

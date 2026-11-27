@@ -23,6 +23,9 @@ public interface CashAdvanceService {
 
     CashAdvanceResponse getById(UUID advanceId);
 
+    /** The decisions taken on the advance's latest submission, oldest first. */
+    List<com.expense_management_service.dto.response.CashAdvanceApprovalStepResponse> getApprovalTrail(UUID advanceId);
+
     List<CashAdvanceResponse> getAll();
 
     Page<CashAdvanceResponse> getMyAdvances(String employeeId, String status, Pageable pageable);

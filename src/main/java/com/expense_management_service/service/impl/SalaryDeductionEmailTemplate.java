@@ -74,7 +74,8 @@ final class SalaryDeductionEmailTemplate {
                 "DEDUCTION REQUEST",
                 "- Payroll Request ID: " + request.getPayrollRequestId(),
                 "- Payroll Component: " + deductionComponent + " (deduction)",
-                "- Requested Deduction Amount: " + request.getRequestedAmount().toPlainString() + " " + currency,
+                "- Requested Deduction Amount: " + request.getRequestedAmount().toPlainString() + " " + currency
+                        + (request.getAmountChangeReason() == null ? "" : "\n- Reason for Partial Deduction: " + request.getAmountChangeReason()),
                 "- Payroll Month: " + request.getPayrollMonth(),
                 "- Request Initiated By: " + request.getRequestedBy(),
                 "- Request Date: " + request.getRequestedAt().format(DATE),

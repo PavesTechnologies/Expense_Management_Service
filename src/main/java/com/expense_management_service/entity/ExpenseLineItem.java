@@ -153,6 +153,18 @@ public class ExpenseLineItem {
     @Column(name = "supplier_gstin", length = 15)
     private String supplierGstin;
 
+    /** GST return month (yyyy-MM, GSTR-3B) this line's input tax credit was claimed in; null = not claimed yet. */
+    @Column(name = "itc_claim_period", length = 7)
+    private String itcClaimPeriod;
+
+    /** When Finance marked the credit as claimed. */
+    @Column(name = "itc_claimed_at")
+    private java.time.LocalDateTime itcClaimedAt;
+
+    /** Employee ID of the Finance user who marked it claimed. */
+    @Column(name = "itc_claimed_by", length = 50)
+    private String itcClaimedBy;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "tax_validation_status", length = 32)
     private TaxValidationStatus taxValidationStatus;

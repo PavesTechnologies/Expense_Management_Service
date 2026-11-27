@@ -189,6 +189,73 @@ public class ExpenseLineItemServiceImpl implements ExpenseLineItemService {
         return toResponse(saved);
     }
 
+    /**
+     * Policy preview for the line-item form ("over limit", "receipt required", ... before saving).
+     * Builds a throwaway, never-persisted line item from the form and runs the same
+     * {@link PolicyEvaluator} that {@link #refreshPolicyViolations} uses on save, so the preview and
+     * the stored result can't disagree. Read-only transaction: nothing here is flushed.
+     * <p>
+     * Fail-open like the save path: a missing exchange rate leaves {@code baseAmount} unset (the
+     * evaluator then compares the raw amount), and any evaluation failure yields no warnings rather
+     * than an error the employee can't act on — the authoritative check still runs on save.
+     */
+    @Override
+    @Transactional(readOnly = true)
+    public List<com.expense_management_service.dto.response.PolicyWarningResponse> previewPolicy(
+            UUID reportId, com.expense_management_service.dto.request.PolicyPreviewRequest request) {
+        ExpenseReport report = findReport(reportId);
+        assertOwnerOrAdmin(report);
+
+        ExpenseCategory category = findCategory(request.categoryId());
+        Currency currency = currencyRepository.findById(request.currencyId())
+                .orElseThrow(() -> new ResourceNotFoundException("Currency not found with id: " + request.currencyId()));
+
+        ExpenseLineItem existing = request.lineItemId() != null ? findLineItem(reportId, request.lineItemId()) : null;
+
+        ExpenseLineItem draft = ExpenseLineItem.builder()
+                .lineItemId(request.lineItemId())
+                .report(report)
+                .category(category)
+                .currency(currency)
+                .expenseDate(request.expenseDate())
+                .merchantName(request.merchantName() != null ? request.merchantName().trim() : null)
+                .description(request.description())
+                .amount(request.amount())
+                .build();
+        if (existing != null) {
+            draft.getReceipts().addAll(existing.getReceipts());
+        }
+        if (Boolean.TRUE.equals(request.receiptAttached()) && draft.getReceipts().isEmpty()) {
+            // Only the presence of a receipt matters to the evaluator; the file itself is checked on save.
+            draft.getReceipts().add(new com.expense_management_service.entity.Receipt());
+        }
+
+        if (request.expenseDate() != null) {
+            try {
+                applyCurrencyConversion(draft);
+            } catch (BusinessRuleViolationException ex) {
+                draft.setBaseAmount(null);
+            }
+        }
+
+        boolean privileged = isPrivilegedViewer(currentUserService.getCurrentUser());
+        try {
+            return policyEvaluator.evaluate(draft).stream()
+                    .map(policyViolationMapper::toResponse)
+                    .map(response -> PolicyViolationServiceImpl.redactIfNeeded(response, privileged))
+                    .toList();
+        } catch (Exception ex) {
+            log.warn("Policy preview failed for report {} - returning no warnings", reportId, ex);
+            return List.of();
+        }
+    }
+
+    private boolean isPrivilegedViewer(CurrentUser caller) {
+        return hasRole(caller, RoleConstants.ADMIN) || hasRole(caller, RoleConstants.FINANCE)
+                || hasRole(caller, RoleConstants.MANAGER) || hasRole(caller, RoleConstants.FINANCE_EXECUTIVE)
+                || hasRole(caller, RoleConstants.AP_EXECUTIVE);
+    }
+
     @Override
     @Transactional(readOnly = true)
     public ExpenseLineItemResponse getById(UUID reportId, UUID lineItemId) {

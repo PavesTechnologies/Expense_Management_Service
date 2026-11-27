@@ -10,6 +10,10 @@ import com.expense_management_service.dto.response.SupplementaryClaimResponse;
 import com.expense_management_service.dto.response.SupplementaryEligibilityResponse;
 import com.expense_management_service.entity.AuditLog;
 import com.expense_management_service.entity.CashAdvance;
+import com.expense_management_service.entity.CashAdvanceAdjustment;
+import com.expense_management_service.entity.CashAdvanceCarryForward;
+import com.expense_management_service.repository.CashAdvanceAdjustmentRepository;
+import com.expense_management_service.repository.CashAdvanceRepository;
 import com.expense_management_service.entity.EmployeeCache;
 import com.expense_management_service.entity.ExpenseReport;
 import com.expense_management_service.entity.SalaryDeductionRequest;
@@ -127,6 +131,10 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
     private final ReceiptRepository receiptRepository;
     private final SupplementaryPaymentService paymentService;
     private final SupplementaryReceiptService receiptService;
+    private final CashAdvanceAdjustmentRepository cashAdvanceAdjustmentRepository;
+    private final CashAdvanceRepository cashAdvanceRepository;
+    private final CashAdvanceBalanceCalculator balanceCalculator;
+    private final CashAdvanceBalanceLedger cashAdvanceBalanceLedger;
 
     // ---------------------------------------------------------------- eligibility
 
@@ -135,8 +143,12 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
     public SupplementaryEligibilityResponse checkEligibility(UUID reportId) {
         ExpenseReport report = findReport(reportId);
         Eligibility result = evaluate(report);
+        AdvanceTarget target = result.eligible() ? settlementTarget(report.getCashAdvance()) : null;
         return new SupplementaryEligibilityResponse(report.getReportId(), report.getReportNumber(), result.eligible(),
-                result.reason(), result.amountOwed(), result.hasCashAdvance());
+                result.reason(), result.amountOwed(), result.hasCashAdvance(),
+                target == null ? null : target.advance().getAdvanceId(),
+                target == null ? null : target.advance().getTitle(),
+                target == null ? null : target.remaining());
     }
 
     /**
@@ -194,6 +206,135 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
     }
 
     record Eligibility(boolean eligible, String reason, BigDecimal amountOwed, boolean hasCashAdvance) {
+    }
+
+    // ---------------------------------------------------------------- carried balance: where a claim is settled
+
+    private static final Set<String> ADVANCE_DONE = Set.of("CLOSED", "SETTLED", "CANCELLED", "REJECTED");
+    private static final int MAX_CARRY_HOPS = 5;
+
+    /** The open advance that holds the original advance's carried balance, and what it still holds. */
+    record AdvanceTarget(CashAdvance advance, BigDecimal remaining) {
+    }
+
+    /**
+     * Follows the original advance's applied carry-forwards (newest first, through closed advances) to the first open
+     * advance. Null, so AP pays, when the balance was not carried forward, every advance it reached is closed, or the
+     * open advance is already in use (a report on it has gone past draft): its figures are not changed while its own
+     * reports are being approved, the same as after a salary deduction.
+     */
+    AdvanceTarget settlementTarget(CashAdvance original) {
+        if (original == null || carryForwardRepository == null || balanceCalculator == null) {
+            return null;
+        }
+        CashAdvance current = original;
+        Set<UUID> seen = new java.util.HashSet<>();
+        for (int hop = 0; hop < MAX_CARRY_HOPS && current != null && seen.add(current.getAdvanceId()); hop++) {
+            CashAdvance next = carryForwardRepository
+                    .findBySourceAdvance_AdvanceIdAndStatusIn(current.getAdvanceId(), Set.of(CashAdvanceCarryForward.APPLIED))
+                    .stream()
+                    .max(Comparator.comparing(cf -> cf.getAppliedAt() == null ? LocalDateTime.MIN : cf.getAppliedAt()))
+                    .map(CashAdvanceCarryForward::getDestinationAdvance)
+                    .orElse(null);
+            if (next == null) {
+                return null;
+            }
+            String status = next.getStatus() == null ? "" : next.getStatus().toUpperCase(Locale.ROOT);
+            if (!ADVANCE_DONE.contains(status)) {
+                if (inUse(next)) {
+                    return null;
+                }
+                BigDecimal owed = balanceCalculator.rawOutstandingFor(List.of(next)).getOrDefault(next.getAdvanceId(), BigDecimal.ZERO);
+                return new AdvanceTarget(next, owed == null ? BigDecimal.ZERO : owed.max(BigDecimal.ZERO));
+            }
+            current = next;
+        }
+        return null;
+    }
+
+    /**
+     * On Finance approval: up to what the target advance still holds is set against it (an offset linked to the original
+     * report, marked as a supplementary claim offset, so the report's own figures do not change); the rest goes to AP.
+     * When everything is set against the advance, the claim is settled at once and no payment is requested.
+     */
+    private SupplementaryExpenseClaim settleAgainstAdvance(SupplementaryExpenseClaim claim) {
+        BigDecimal total = claim.getTotalAmount() == null ? BigDecimal.ZERO : claim.getTotalAmount();
+        AdvanceTarget target = cashAdvanceAdjustmentRepository == null ? null : settlementTarget(claim.getOriginal().getCashAdvance());
+        BigDecimal offset = target == null ? BigDecimal.ZERO : total.min(target.remaining()).max(BigDecimal.ZERO);
+        if (offset.signum() <= 0) {
+            paymentService.requestPayment(claim);
+            return claim;
+        }
+        CashAdvance advance = target.advance();
+        String actor = currentUserService.getActorId();
+        LocalDateTime now = LocalDateTime.now();
+        ExpenseReport report = claim.getOriginal();
+        // One active offset per advance and report (database unique key): a second claim on the same report adds to it.
+        CashAdvanceAdjustment existing = cashAdvanceAdjustmentRepository.findByReport_ReportId(report.getReportId()).stream()
+                .filter(CashAdvanceAdjustment::isActive)
+                .filter(a -> a.getCashAdvance() != null && advance.getAdvanceId().equals(a.getCashAdvance().getAdvanceId()))
+                .findFirst().orElse(null);
+        if (existing != null && existing.countsForReport()) {
+            // The report already has a regular offset on this advance; it must stay the report's own. Pay by AP instead.
+            paymentService.requestPayment(claim);
+            return claim;
+        }
+        if (existing != null) {
+            BigDecimal before = existing.getAdjustedAmount();
+            existing.setAdjustedAmount(before.add(offset));
+            existing.setTransactionReference(trimTo(existing.getTransactionReference() + "," + claim.getClaimNumber(), 255));
+            cashAdvanceAdjustmentRepository.save(existing);
+        } else {
+            cashAdvanceAdjustmentRepository.save(CashAdvanceAdjustment.builder()
+                    .cashAdvance(advance)
+                    .report(report)
+                    .adjustedAmount(offset)
+                    .adjustedBy(actor)
+                    .adjustedAt(now)
+                    .paymentMethod(CashAdvanceAdjustment.SUPPLEMENTARY_CLAIM)
+                    .transactionReference(claim.getClaimNumber())
+                    .idempotencyKey("supp-offset-" + claim.getClaimId())
+                    .build());
+        }
+        BigDecimal remainingAfter = target.remaining().subtract(offset).max(BigDecimal.ZERO);
+        cashAdvanceBalanceLedger.applyBalance(advance, remainingAfter, "SUPPLEMENTARY_CLAIM_OFFSET", actor,
+                "Late bill " + claim.getClaimNumber() + " (report " + report.getReportNumber() + ") set against this advance for " + offset);
+        cashAdvanceBalanceLedger.refreshStatus(advance, actor, "Rechecked after supplementary claim " + claim.getClaimNumber());
+        cashAdvanceRepository.save(advance);
+
+        claim.setSettledAdvanceId(advance.getAdvanceId());
+        claim.setAdvanceOffsetAmount(offset);
+        BigDecimal rest = total.subtract(offset);
+        String note = offset + " set against advance \"" + advance.getTitle() + "\" (carried-forward balance)";
+        if (rest.signum() > 0) {
+            SupplementaryExpenseClaim saved = claimRepository.save(claim);
+            record(saved, "SET_AGAINST_ADVANCE", SupplementaryExpenseClaim.PAYMENT_PENDING, SupplementaryExpenseClaim.PAYMENT_PENDING,
+                    note + "; " + rest + " to be paid by AP", "FINANCE");
+            paymentService.requestPayment(saved, rest);
+            return saved;
+        }
+        claim.setStatus(SupplementaryExpenseClaim.SETTLED);
+        claim.setSettledAt(now);
+        claim.setUpdatedAt(now);
+        SupplementaryExpenseClaim saved = claimRepository.save(claim);
+        record(saved, "SETTLED_AGAINST_ADVANCE", SupplementaryExpenseClaim.PAYMENT_PENDING, SupplementaryExpenseClaim.SETTLED, note, "FINANCE");
+        return saved;
+    }
+
+    /** Reports that do not put an advance in use: not yet submitted, or cancelled. */
+    private static final Set<ReportStatus> NOT_USING_ADVANCE = EnumSet.of(ReportStatus.DRAFT, ReportStatus.CANCELLED);
+
+    /** True when any expense report on the advance has gone past draft (submitted, in approval, approved or paid). */
+    private boolean inUse(CashAdvance advance) {
+        if (reportRepository == null) {
+            return true;
+        }
+        return reportRepository.findByCashAdvance_AdvanceIdOrderByCreatedAtAsc(advance.getAdvanceId()).stream()
+                .anyMatch(r -> r.getReportStatus() != null && !NOT_USING_ADVANCE.contains(r.getReportStatus()));
+    }
+
+    private static String trimTo(String s, int max) {
+        return s == null || s.length() <= max ? s : s.substring(0, max);
     }
 
     // ---------------------------------------------------------------- create
@@ -562,8 +703,8 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
         SupplementaryExpenseClaim saved = claimRepository.save(claim);
         record(saved, action, previous, next, reason, role);
         if (SupplementaryExpenseClaim.PAYMENT_PENDING.equals(next)) {
-            // Finance approval creates the one AP payment request for this claim.
-            paymentService.requestPayment(saved);
+            // Finance approval settles the claim: against the advance that holds the carried balance, then by AP.
+            saved = settleAgainstAdvance(saved);
         }
         if (decision == Decision.REJECT) {
             receiptService.detachAllForClaim(saved.getClaimId());
@@ -893,6 +1034,7 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
                 claim.getLateReasonText(), claim.getTotalAmount(), claim.getCurrencyCode(), claim.getStatus(),
                 claim.getSubmittedAt(), claim.getSettledAt(), claim.getCreatedAt(),
                 paymentService.paymentStatusOf(claim.getClaimId()), paymentService.paymentReferenceOf(claim.getClaimId()),
+                claim.getSettledAdvanceId(), claim.getAdvanceOffsetAmount(),
                 items, history);
     }
 }

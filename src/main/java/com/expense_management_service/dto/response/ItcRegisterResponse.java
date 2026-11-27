@@ -22,7 +22,11 @@ public record ItcRegisterResponse(
                        BigDecimal taxAmount, BigDecimal itcRecoverablePercent, BigDecimal recoverableTaxAmount,
                        BigDecimal nonRecoverableTaxAmount, String taxValidationStatus,
                        /** NOT_RECOVERABLE, UNVERIFIED or VERIFIED - see ItcStatus. */
-                       String itcStatus) {
+                       String itcStatus,
+                       /** GSTR-3B month (yyyy-MM) the credit was claimed in; null = not claimed. */
+                       String itcClaimPeriod,
+                       java.time.LocalDateTime itcClaimedAt,
+                       String itcClaimedBy) {
     }
 
     /**

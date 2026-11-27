@@ -329,6 +329,34 @@ class ExpenseReportServiceImplTest {
     }
 
     @Test
+    void getAll_filtersByType_settlementMeansLinkedToACashAdvance() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        PageImpl<ExpenseReport> page = new PageImpl<>(List.of(ExpenseReport.builder()
+                .reportId(UUID.randomUUID()).employeeId(employeeId).reportStatus(ReportStatus.APPROVED)
+                .title("Pune visit").reportNumber("EXP-2026-PUNE0001").build()), PageRequest.of(0, 10), 1);
+        when(expenseReportRepository.searchByEmployeeIdAndStatusAndQueryAndType(eq(employeeId), eq(null), eq(null), eq(true), any()))
+                .thenReturn(page);
+
+        PageResponse<ExpenseReportResponse> response = expenseReportService.getAll(PageRequest.of(0, 10), null, null, "settlement");
+
+        assertThat(response.content()).hasSize(1);
+        verify(expenseReportRepository).searchByEmployeeIdAndStatusAndQueryAndType(eq(employeeId), eq(null), eq(null), eq(true), any());
+    }
+
+    @Test
+    void getAll_blankType_keepsTheOriginalLookup_andAnUnknownTypeIsRejected() {
+        when(currentUserService.getCurrentUser()).thenReturn(employeeCaller());
+        when(expenseReportRepository.findByEmployeeId(eq(employeeId), any())).thenReturn(new PageImpl<>(List.of()));
+
+        expenseReportService.getAll(PageRequest.of(0, 10), null, null, " ");
+        verify(expenseReportRepository).findByEmployeeId(eq(employeeId), any());
+
+        org.junit.jupiter.api.Assertions.assertThrows(
+                com.expense_management_service.common.exception.BusinessRuleViolationException.class,
+                () -> expenseReportService.getAll(PageRequest.of(0, 10), null, null, "ADVANCE"));
+    }
+
+    @Test
     void update_throwsAccessDenied_whenCallerIsNotOwner() {
         UUID reportId = UUID.randomUUID();
         ExpenseReport existing = ExpenseReport.builder().reportId(reportId).employeeId("someone-else")

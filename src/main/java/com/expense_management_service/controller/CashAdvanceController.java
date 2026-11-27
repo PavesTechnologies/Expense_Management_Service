@@ -108,6 +108,14 @@ public class CashAdvanceController {
         return ApiResponse.success(cashAdvanceService.getById(advanceId));
     }
 
+    @Operation(summary = "The recorded approval decisions on a cash advance (who approved each level, and when)")
+    @GetMapping("/{advanceId}/approval-trail")
+    @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER') or (hasRole('REPORTING_MANAGER') and @cashAdvanceReviewAccess.isAssignedApprover(#advanceId))")
+    public ApiResponse<java.util.List<com.expense_management_service.dto.response.CashAdvanceApprovalStepResponse>> getApprovalTrail(
+            @PathVariable UUID advanceId) {
+        return ApiResponse.success(cashAdvanceService.getApprovalTrail(advanceId));
+    }
+
     @Operation(summary = "Get cash advances with optional employeeId and status filters")
     @GetMapping
     @PreAuthorize("hasAnyRole('ADMIN','GENERAL','FINANCE','FINANCE_EXECUTIVE','MANAGER')")

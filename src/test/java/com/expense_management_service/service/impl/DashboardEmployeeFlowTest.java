@@ -77,6 +77,12 @@ class DashboardEmployeeFlowTest {
                 .build();
     }
 
+    /** Links a report to a cash advance, as submitting it against an advance does. */
+    private static ExpenseReport againstAdvance(ExpenseReport r) {
+        r.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME).build());
+        return r;
+    }
+
     private static BigDecimal kpi(DashboardResponse r, String key) {
         return r.kpis().stream().filter(k -> key.equals(k.key())).findFirst()
                 .orElseThrow(() -> new AssertionError("missing KPI " + key)).value();
@@ -109,7 +115,8 @@ class DashboardEmployeeFlowTest {
         CashAdvance draft = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME)
                 .amount(new BigDecimal("5000.00")).status("DRAFT").build();
         when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of(disbursed, approvedOnly, draft));
-        when(balanceCalculator.rawOutstandingFor(any())).thenReturn(Map.of(disbursedAdvanceId, new BigDecimal("3000.00")));
+        when(balanceCalculator.partsFor(any())).thenReturn(Map.of(disbursedAdvanceId, new CashAdvanceBalanceCalculator.Parts(
+                new BigDecimal("4500.00"), new BigDecimal("1000.00"), new BigDecimal("500.00"), new BigDecimal("3000.00"))));
         stubData(List.of(), List.of(), List.of());
 
         DashboardResponse r = service.employee();
@@ -117,8 +124,96 @@ class DashboardEmployeeFlowTest {
         assertEquals(0, new BigDecimal("12000.00").compareTo(kpi(r, "caRequested")), "10,000 + 2,000; the draft is excluded");
         assertEquals(0, new BigDecimal("11000.00").compareTo(kpi(r, "caApproved")), "9,000 + 2,000");
         assertEquals(0, new BigDecimal("9000.00").compareTo(kpi(r, "caDisbursed")), "only the paid advance");
-        assertEquals(0, new BigDecimal("6000.00").compareTo(kpi(r, "caSettled")), "disbursed 9,000 less outstanding 3,000");
+        assertEquals(0, new BigDecimal("4500.00").compareTo(kpi(r, "caUsedOnBills")));
+        assertEquals(0, new BigDecimal("1000.00").compareTo(kpi(r, "caReturned")));
+        assertEquals(0, new BigDecimal("500.00").compareTo(kpi(r, "caCarriedForward")));
+        assertEquals(0, new BigDecimal("6000.00").compareTo(kpi(r, "caSettled")), "used 4,500 + returned 1,000 + carried 500");
         assertEquals(0, new BigDecimal("3000.00").compareTo(kpi(r, "caOutstanding")));
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caRecordGap")), "received = settled + outstanding");
+    }
+
+    /** Requested -> Approved adds up: pending requests, carried-in balances and reductions each have their own line. */
+    @Test
+    void requestedToApproved_balances_with_pending_carriedIn_and_reduction() {
+        // Asked 10,000, approved 9,000: reduced by 1,000.
+        CashAdvance reduced = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME)
+                .amount(new BigDecimal("9000.00")).requestedAmount(new BigDecimal("10000.00"))
+                .approvedAmount(new BigDecimal("9000.00")).status("APPROVED").build();
+        // Asked 5,000 of new cash; 1,518 carried in on approval, so approved 6,518.
+        CashAdvance plusCarry = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME)
+                .requestType("ADVANCE_PLUS_CARRY_FORWARD")
+                .amount(new BigDecimal("6518.00")).requestedAmount(new BigDecimal("5000.00"))
+                .carriedInAmount(new BigDecimal("1518.00")).approvedAmount(new BigDecimal("6518.00")).status("APPROVED").build();
+        // Same, but an older record with no requested amount: falls back to the new cash, not the grown amount.
+        CashAdvance legacyPlusCarry = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME)
+                .requestType("ADVANCE_PLUS_CARRY_FORWARD").additionalAmountRequested(new BigDecimal("3000.00"))
+                .amount(new BigDecimal("3500.00")).carriedInAmount(new BigDecimal("500.00"))
+                .approvedAmount(new BigDecimal("3500.00")).status("APPROVED").build();
+        // Still with the manager.
+        CashAdvance pending = CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME)
+                .amount(new BigDecimal("4000.00")).requestedAmount(new BigDecimal("4000.00")).status("SUBMITTED").build();
+        when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of(reduced, plusCarry, legacyPlusCarry, pending));
+        when(balanceCalculator.partsFor(any())).thenReturn(Map.of());
+        stubData(List.of(), List.of(), List.of());
+
+        DashboardResponse r = service.employee();
+
+        assertEquals(0, new BigDecimal("22000.00").compareTo(kpi(r, "caRequested")), "10,000 + 5,000 + 3,000 + 4,000");
+        assertEquals(0, new BigDecimal("4000.00").compareTo(kpi(r, "caAwaitingApproval")));
+        assertEquals(0, new BigDecimal("2018.00").compareTo(kpi(r, "caCarriedIn")), "1,518 + 500");
+        assertEquals(0, new BigDecimal("1000.00").compareTo(kpi(r, "caReducedOnApproval")));
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caIncreasedOnApproval")));
+        assertEquals(0, new BigDecimal("19018.00").compareTo(kpi(r, "caApproved")), "9,000 + 6,518 + 3,500");
+        BigDecimal rebuilt = kpi(r, "caRequested").subtract(kpi(r, "caAwaitingApproval")).add(kpi(r, "caCarriedIn"))
+                .subtract(kpi(r, "caReducedOnApproval")).add(kpi(r, "caIncreasedOnApproval"));
+        assertEquals(0, rebuilt.compareTo(kpi(r, "caApproved")), "approved = requested - awaiting + carried in - reduced + increased");
+    }
+
+    /** Direct reports and reports against an advance are counted in separate flows, and the flows add up to the totals. */
+    @Test
+    void reimbursement_splitsDirectAndAdvanceFlows_andTheyAddUpToTotals() {
+        // Direct: 1,000 approved, paid to the bank.
+        ExpenseReport direct = report("ER-DIR", ReportStatus.CLOSED, PaymentRoutingStatus.PAYMENT_COMPLETED, "1000.00", "1000.00");
+        // Against an advance: 1,500 approved, 1,200 paid from the advance, 300 extra sent to AP.
+        ExpenseReport advance = report("ER-ADV", ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT, "300.00", null);
+        advance.setCashAdvance(CashAdvance.builder().advanceId(UUID.randomUUID()).build());
+        stubData(List.of(direct, advance),
+                List.<Object[]>of(new Object[]{LocalDate.now(), new BigDecimal("1000.00"), "Travel"},
+                        new Object[]{LocalDate.now(), new BigDecimal("1500.00"), "Travel"}),
+                List.<Object[]>of(new Object[]{direct.getReportId(), new BigDecimal("1000.00")},
+                        new Object[]{advance.getReportId(), new BigDecimal("1500.00")}));
+        when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of());
+
+        DashboardResponse r = service.employee();
+
+        assertEquals(0, new BigDecimal("1000.00").compareTo(kpi(r, "drApproved")));
+        assertEquals(0, new BigDecimal("1000.00").compareTo(kpi(r, "drPaid")));
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "drAdvanceOffset")));
+        assertEquals(0, new BigDecimal("1500.00").compareTo(kpi(r, "avApproved")));
+        assertEquals(0, new BigDecimal("1200.00").compareTo(kpi(r, "avAdvanceOffset")));
+        assertEquals(0, new BigDecimal("300.00").compareTo(kpi(r, "avPendingAp")));
+        assertEquals(0, new BigDecimal("300.00").compareTo(kpi(r, "avPayable")));
+        for (String k : List.of("Claimed", "Approved", "AdvanceOffset", "Payable", "ToSendAp", "PendingAp", "Paid")) {
+            assertEquals(0, kpi(r, "er" + k).compareTo(kpi(r, "dr" + k).add(kpi(r, "av" + k))), "er" + k + " = direct + advance");
+        }
+    }
+
+    /** Paid-out amount recorded lower than the advance amount: the gap is reported, never folded into another figure. */
+    @Test
+    void cashAdvance_paidOutRecordedLowerThanAmount_reportsRecordGap() {
+        CashAdvance a = CashAdvance.builder().advanceId(disbursedAdvanceId).employeeId(ME)
+                .amount(new BigDecimal("10000.00")).approvedAmount(new BigDecimal("10000.00"))
+                .disbursedAmount(new BigDecimal("8500.00")).disbursedAt(LocalDateTime.now()).status("DISBURSED").build();
+        when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of(a));
+        // Calculator starts from the amount (10,000): 4,000 used, 6,000 outstanding.
+        when(balanceCalculator.partsFor(any())).thenReturn(Map.of(disbursedAdvanceId, new CashAdvanceBalanceCalculator.Parts(
+                new BigDecimal("4000.00"), BigDecimal.ZERO, BigDecimal.ZERO, new BigDecimal("6000.00"))));
+        stubData(List.of(), List.of(), List.of());
+
+        DashboardResponse r = service.employee();
+
+        assertEquals(0, new BigDecimal("4000.00").compareTo(kpi(r, "caSettled")), "settled is what the records say, not received - outstanding");
+        assertEquals(0, new BigDecimal("-1500.00").compareTo(kpi(r, "caRecordGap")), "8,500 received - 4,000 - 6,000");
     }
 
     /** "Where your reports are": every report the employee can follow is in one step, so the steps add up. */
@@ -134,10 +229,12 @@ class DashboardEmployeeFlowTest {
         ExpenseReport withAp = report("ER-A", ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT, "500.00", null);
         ExpenseReport paid = report("ER-P", ReportStatus.CLOSED, PaymentRoutingStatus.PAYMENT_COMPLETED, "400.00", "400.00");
         // Fully covered by the advance: nothing to pay. These were missing from the journey before.
-        ExpenseReport covered1 = report("ER-C1", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "0.00", null);
-        ExpenseReport covered2 = report("ER-C2", ReportStatus.CLOSED, PaymentRoutingStatus.NONE, "0.00", null);
+        ExpenseReport covered1 = againstAdvance(report("ER-C1", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "0.00", null));
+        ExpenseReport covered2 = againstAdvance(report("ER-C2", ReportStatus.CLOSED, PaymentRoutingStatus.NONE, "0.00", null));
+        // Nothing payable and no advance involved: not "covered by advance", just no payment due.
+        ExpenseReport nothingDue = report("ER-N", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "0.00", null);
         ExpenseReport rejected = report("ER-R", ReportStatus.REJECTED, PaymentRoutingStatus.NONE, null, null);
-        stubData(List.of(draft, submitted, withManager, queried, atFinance, owed, withAp, paid, covered1, covered2, rejected),
+        stubData(List.of(draft, submitted, withManager, queried, atFinance, owed, withAp, paid, covered1, covered2, nothingDue, rejected),
                 List.of(), List.of());
         when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of());
 
@@ -150,14 +247,15 @@ class DashboardEmployeeFlowTest {
         assertEquals(1L, steps.get("finance"));
         assertEquals(2L, steps.get("ap"), "with AP + approved and still owed");
         assertEquals(1L, steps.get("paid"));
-        assertEquals(2L, steps.get("settled"), "covered by the advance, nothing to pay");
+        assertEquals(2L, steps.get("settled"), "covered by the linked advance, nothing to pay");
+        assertEquals(1L, steps.get("noPayment"), "nothing payable, no advance involved");
         assertEquals(1L, steps.get("action"), "sent back to the employee");
-        assertEquals(10L, steps.values().stream().mapToLong(Long::longValue).sum(), "all but the rejected report");
+        assertEquals(11L, steps.values().stream().mapToLong(Long::longValue).sum(), "all but the rejected report");
     }
 
     @Test
     void reimbursementChain_claimed_approved_coveredByAdvance_waitingForAp_paid() {
-        ExpenseReport approved = report("ER-1", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "700.00", null);
+        ExpenseReport approved = againstAdvance(report("ER-1", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "700.00", null));
         ExpenseReport waiting = report("ER-2", ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT, "500.00", null);
         ExpenseReport paid = report("ER-3", ReportStatus.CLOSED, PaymentRoutingStatus.PAYMENT_COMPLETED, "400.00", "400.00");
         UUID id1 = approved.getReportId();
@@ -189,7 +287,7 @@ class DashboardEmployeeFlowTest {
     @Test
     void reimbursementChain_reconciles_approvedEqualsOffsetPlusPayable() {
         // approved = covered by advance + what is payable (waiting or paid), with nothing lost or counted twice
-        ExpenseReport waiting = report("ER-9", ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT, "800.00", null);
+        ExpenseReport waiting = againstAdvance(report("ER-9", ReportStatus.APPROVED, PaymentRoutingStatus.APPROVED_FOR_PAYMENT, "800.00", null));
         UUID id = waiting.getReportId();
         stubData(List.of(waiting),
                 List.<Object[]>of(new Object[]{LocalDate.now(), new BigDecimal("1000.00"), "Lodging"}),
@@ -203,6 +301,86 @@ class DashboardEmployeeFlowTest {
         assertEquals(0, approved.compareTo(offset.add(kpi(r, "erPayable"))), "1000 = 200 offset + 800 payable");
         assertEquals(0, kpi(r, "erPayable").compareTo(kpi(r, "erToSendAp").add(kpi(r, "erPendingAp")).add(kpi(r, "erPaid"))),
                 "payable = not yet with AP + waiting + paid");
+    }
+
+    /** A paid-out advance: {@code amount} = cash paid + carried in. */
+    private static CashAdvance paidOut(String amount, String cash, String carriedIn, String carriedOut) {
+        return CashAdvance.builder().advanceId(UUID.randomUUID()).employeeId(ME).status("IN_PROGRESS")
+                .amount(new BigDecimal(amount)).requestedAmount(new BigDecimal(cash)).approvedAmount(new BigDecimal(amount))
+                .disbursedAmount(new BigDecimal(cash)).disbursedAt(LocalDateTime.now())
+                .requestType(carriedIn == null ? null : com.expense_management_service.enums.CashAdvanceRequestType.ADVANCE_PLUS_CARRY_FORWARD.name())
+                .carriedInAmount(carriedIn == null ? null : new BigDecimal(carriedIn))
+                .carriedOutAmount(carriedOut == null ? null : new BigDecimal(carriedOut))
+                .build();
+    }
+
+    private static CashAdvanceBalanceCalculator.Parts parts(String used, String carriedOut, String outstanding) {
+        return new CashAdvanceBalanceCalculator.Parts(new BigDecimal(used), BigDecimal.ZERO, new BigDecimal(carriedOut), new BigDecimal(outstanding));
+    }
+
+    @Test
+    void cashAdvanceLedger_countsCarriedInMoney_andFlagsCarryInWithNoSource() {
+        // The case behind "Off by INR 1,518.00": 550 carried out of one advance, but 1,518 carried into another.
+        CashAdvance pune = paidOut("4000", "4000", null, "550");    // 3,450 spent, 550 carried out, owes 0
+        CashAdvance onsite = paidOut("5000", "5000", null, null);   // 4,032 spent, owes 968
+        CashAdvance visit = paidOut("3518", "2000", "1518", null);  // 2,000 cash + 1,518 carried in, nothing spent
+        when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of(pune, onsite, visit));
+        when(balanceCalculator.partsFor(any())).thenReturn(Map.of(
+                pune.getAdvanceId(), parts("3450", "550", "0"),
+                onsite.getAdvanceId(), parts("4032", "0", "968"),
+                visit.getAdvanceId(), parts("0", "0", "3518")));
+        stubData(List.of(), List.of(), List.of());
+
+        DashboardResponse r = service.employee();
+
+        assertEquals(0, new BigDecimal("11000").compareTo(kpi(r, "caDisbursed")), "cash paid out");
+        assertEquals(0, new BigDecimal("1518").compareTo(kpi(r, "caCarriedIn")));
+        assertEquals(0, new BigDecimal("8032").compareTo(kpi(r, "caSettled")), "4,000 + 4,032 + 0");
+        assertEquals(0, new BigDecimal("4486").compareTo(kpi(r, "caOutstanding")));
+        assertEquals(0, kpi(r, "caDisbursed").add(kpi(r, "caCarriedIn")).compareTo(kpi(r, "caSettled").add(kpi(r, "caOutstanding"))),
+                "received + carried in = settled + outstanding");
+        assertEquals(0, new BigDecimal("968").compareTo(kpi(r, "caCarryUnmatched")), "1,518 carried in, only 550 carried out");
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caRecordGap")), "carried-in money is not a record mismatch");
+    }
+
+    @Test
+    void carryForward_withAMatchingSource_hasNothingUnmatched() {
+        CashAdvance source = paidOut("4000", "4000", null, "1518");
+        CashAdvance destination = paidOut("3518", "2000", "1518", null);
+        when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of(source, destination));
+        when(balanceCalculator.partsFor(any())).thenReturn(Map.of(
+                source.getAdvanceId(), parts("2482", "1518", "0"),
+                destination.getAdvanceId(), parts("0", "0", "3518")));
+        stubData(List.of(), List.of(), List.of());
+
+        DashboardResponse r = service.employee();
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caCarryUnmatched")));
+        // 6,000 cash received; 1,518 of it moved to the second advance, so it shows on both sides of the ledger.
+        assertEquals(0, new BigDecimal("1518").compareTo(kpi(r, "caCarriedInReceived")));
+        assertEquals(0, BigDecimal.ZERO.compareTo(kpi(r, "caRecordGap")), "a carry-forward is not a record mismatch");
+        assertEquals(0, kpi(r, "caDisbursed").compareTo(kpi(r, "caUsedOnBills").add(kpi(r, "caReturned"))
+                        .add(kpi(r, "caCarriedForward")).subtract(kpi(r, "caCarriedInReceived")).add(kpi(r, "caOutstanding"))),
+                "received = used + returned + carried forward - carried in + outstanding");
+    }
+
+    @Test
+    void notPayableWithoutAnAdvance_isNoPaymentDue_notCoveredByAdvance() {
+        // An approved report with nothing reimbursable and no linked advance (e.g. company-paid lines): 194.25 is not
+        // "covered by advance". approved = covered by advance + no payment due + payable still holds.
+        ExpenseReport noAdvance = report("ER-X", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "0.00", null);
+        ExpenseReport covered = againstAdvance(report("ER-Y", ReportStatus.APPROVED, PaymentRoutingStatus.NONE, "0.00", null));
+        stubData(List.of(noAdvance, covered),
+                List.of(new Object[]{LocalDate.now(), new BigDecimal("194.25"), "Meals"},
+                        new Object[]{LocalDate.now(), new BigDecimal("4032.00"), "Travel"}),
+                List.<Object[]>of(new Object[]{noAdvance.getReportId(), new BigDecimal("194.25")},
+                        new Object[]{covered.getReportId(), new BigDecimal("4032.00")}));
+        when(cashAdvanceRepository.findByEmployeeId(ME)).thenReturn(List.of());
+
+        DashboardResponse r = service.employee();
+
+        assertEquals(0, new BigDecimal("4032.00").compareTo(kpi(r, "erAdvanceOffset")), "only the report linked to an advance");
+        assertEquals(0, new BigDecimal("194.25").compareTo(kpi(r, "erNoPaymentDue")));
+        assertEquals(0, kpi(r, "erApproved").compareTo(kpi(r, "erAdvanceOffset").add(kpi(r, "erNoPaymentDue")).add(kpi(r, "erPayable"))));
     }
 
     @Test

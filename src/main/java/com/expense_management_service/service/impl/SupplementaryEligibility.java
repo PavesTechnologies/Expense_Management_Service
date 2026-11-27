@@ -19,10 +19,13 @@ final class SupplementaryEligibility {
             CashAdvanceRecoveryCase.PENDING_FINANCE_REVIEW,
             CashAdvanceRecoveryCase.SENT_TO_PAYROLL);
 
-    /** Carry-forwards that still affect the advance: waiting for approval, or applied and not yet reversed. */
+    /**
+     * Carry-forwards that block a claim: only one still waiting for approval, because where the balance ends up is not
+     * known yet. An applied carry-forward does not block: the balance now sits in the destination advance, and the
+     * claim is settled against that advance (see SupplementaryClaimServiceImpl#settleAgainstAdvance).
+     */
     static final Set<String> CARRY_FORWARD_BLOCKING = Set.of(
-            CashAdvanceCarryForward.PROPOSED,
-            CashAdvanceCarryForward.APPLIED);
+            CashAdvanceCarryForward.PROPOSED);
 
     private SupplementaryEligibility() {
     }

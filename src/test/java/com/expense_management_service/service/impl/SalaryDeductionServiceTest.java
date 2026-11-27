@@ -174,7 +174,7 @@ class SalaryDeductionServiceTest {
     void create_savesRequest_queuesEmailToPayroll_andNeedsNoAuthorizationOrPayrollReference() {
         outboxStatus(OutboundEmail.PENDING);
 
-        SalaryDeductionResponse response = service.create(advanceId, new BigDecimal("4163.00"), payrollMonth);
+        SalaryDeductionResponse response = service.create(advanceId, new BigDecimal("4163.00"), payrollMonth, null);
 
         assertThat(response.payrollRequestId()).matches("PR-\\d{4}-\\d{4}-[0-9A-F]{8}");
         assertThat(response.requestedAmount()).isEqualByComparingTo("4163.00");
@@ -205,7 +205,7 @@ class SalaryDeductionServiceTest {
     void create_takesTheAdvanceLockBeforeCheckingForOpenRequests() {
         outboxStatus(OutboundEmail.PENDING);
 
-        service.create(advanceId, new BigDecimal("100.00"), payrollMonth);
+        service.create(advanceId, new BigDecimal("100.00"), payrollMonth, "Partial recovery agreed");
 
         verify(cashAdvanceRepository).findByIdForUpdate(advanceId);
         verify(cashAdvanceRepository, never()).findById(advanceId);
@@ -218,7 +218,7 @@ class SalaryDeductionServiceTest {
 
         var ex = org.junit.jupiter.api.Assertions.assertThrows(
                 com.expense_management_service.common.exception.BusinessRuleViolationException.class,
-                () -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth));
+                () -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth, null));
 
         org.junit.jupiter.api.Assertions.assertTrue(ex.getMessage().contains("Link at least one expense"));
         verify(requestRepository, never()).save(any());
@@ -226,16 +226,16 @@ class SalaryDeductionServiceTest {
 
     @Test
     void create_rejectsZeroAndNegativeAmounts() {
-        assertThatThrownBy(() -> service.create(advanceId, BigDecimal.ZERO, payrollMonth))
+        assertThatThrownBy(() -> service.create(advanceId, BigDecimal.ZERO, payrollMonth, null))
                 .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("-5"), payrollMonth))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("-5"), payrollMonth, null))
                 .isInstanceOf(IllegalArgumentException.class);
         verify(outboundEmailRepository, never()).save(any());
     }
 
     @Test
     void create_rejectsAmountAboveOutstandingBalance() {
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("5000.00"), payrollMonth))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("5000.00"), payrollMonth, null))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("cannot exceed the outstanding balance");
     }
@@ -244,23 +244,56 @@ class SalaryDeductionServiceTest {
     void create_acceptsPartialAmount() {
         outboxStatus(OutboundEmail.PENDING);
 
-        SalaryDeductionResponse response = service.create(advanceId, new BigDecimal("2000.00"), payrollMonth);
+        SalaryDeductionResponse response = service.create(advanceId, new BigDecimal("2000.00"), payrollMonth, "Employee asked to split the recovery");
 
         assertThat(response.requestedAmount()).isEqualByComparingTo("2000.00");
+        assertThat(response.amountChangeReason()).isEqualTo("Employee asked to split the recovery");
+
+        ArgumentCaptor<OutboundEmail> email = ArgumentCaptor.forClass(OutboundEmail.class);
+        verify(outboundEmailRepository).save(email.capture());
+        assertThat(email.getValue().getBody()).contains("Reason for Partial Deduction: Employee asked to split the recovery");
+    }
+
+    @Test
+    void create_partialAmount_requiresAReason() {
+        outboxStatus(OutboundEmail.PENDING);
+
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("2000.00"), payrollMonth, "   "))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("reason");
+        verify(requestRepository, never()).save(any());
+        verify(outboundEmailRepository, never()).save(any());
+    }
+
+    @Test
+    void create_fullAmount_needsNoReason_andIgnoresOneSent() {
+        outboxStatus(OutboundEmail.PENDING);
+
+        SalaryDeductionResponse response = service.create(advanceId, new BigDecimal("4163.00"), payrollMonth, "not needed");
+
+        assertThat(response.amountChangeReason()).isNull();
+    }
+
+    @Test
+    void create_rejectsAnAmountChangeReasonOver500Characters() {
+        assertThatThrownBy(() -> SalaryDeductionService.requireAmountChangeReason(
+                new BigDecimal("100"), new BigDecimal("200"), "x".repeat(501)))
+                .isInstanceOf(BusinessRuleViolationException.class)
+                .hasMessageContaining("500 characters");
     }
 
     @Test
     void create_rejectsMoreThanTwoDecimalPlaces() {
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("10.005"), payrollMonth))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("10.005"), payrollMonth, null))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("decimal places");
     }
 
     @Test
     void create_rejectsMissingOrInvalidPayrollMonth() {
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), null))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), null, null))
                 .isInstanceOf(BusinessRuleViolationException.class);
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), "2026-13"))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), "2026-13", null))
                 .isInstanceOf(BusinessRuleViolationException.class);
     }
 
@@ -269,10 +302,10 @@ class SalaryDeductionServiceTest {
         String pastMonth = YearMonth.now().minusMonths(1).toString();
         String beyondWindow = YearMonth.now().plusMonths(12).toString();
 
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), pastMonth))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), pastMonth, null))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("outside the eligible window");
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), beyondWindow))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), beyondWindow, null))
                 .isInstanceOf(BusinessRuleViolationException.class);
     }
 
@@ -280,7 +313,7 @@ class SalaryDeductionServiceTest {
     void create_refusesNonFinanceUsers() {
         setFinanceRole("ROLE_GENERAL");
 
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth, null))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("Only Finance");
     }
@@ -290,7 +323,7 @@ class SalaryDeductionServiceTest {
         SalaryDeductionRequest open = request(SalaryDeductionRequest.SENT_TO_PAYROLL, "1000.00", true, false);
         when(requestRepository.findByAdvance_AdvanceIdOrderByRequestedAtDesc(advanceId)).thenReturn(List.of(open));
 
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("500.00"), payrollMonth))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("500.00"), payrollMonth, null))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("still open");
         verify(outboundEmailRepository, never()).save(any());
@@ -302,7 +335,7 @@ class SalaryDeductionServiceTest {
         when(requestRepository.findByAdvance_AdvanceIdOrderByRequestedAtDesc(advanceId)).thenReturn(List.of(failed));
         outboxStatus(OutboundEmail.PENDING);
 
-        assertThat(service.create(advanceId, new BigDecimal("4163.00"), payrollMonth).status())
+        assertThat(service.create(advanceId, new BigDecimal("4163.00"), payrollMonth, null).status())
                 .isEqualTo(SalaryDeductionRequest.PENDING_SEND);
     }
 
@@ -311,7 +344,7 @@ class SalaryDeductionServiceTest {
         when(recoveryCaseRepository.findFirstByAdvance_AdvanceIdAndStatusIn(eq(advanceId), anyCollection()))
                 .thenReturn(Optional.of(CashAdvanceRecoveryCase.builder().status(CashAdvanceRecoveryCase.NOTICE_SENT).build()));
 
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth, null))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("automated refund notice");
     }
@@ -320,7 +353,7 @@ class SalaryDeductionServiceTest {
     void create_refusesAnAdvanceThatIsNotDisbursed() {
         advance.setStatus("APPROVED");
 
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth, null))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("not available");
     }
@@ -329,7 +362,7 @@ class SalaryDeductionServiceTest {
     void create_refusesWhenNoPayrollEmailIsConfigured() {
         buildService("");
 
-        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth))
+        assertThatThrownBy(() -> service.create(advanceId, new BigDecimal("100.00"), payrollMonth, null))
                 .isInstanceOf(BusinessRuleViolationException.class)
                 .hasMessageContaining("No payroll email");
     }

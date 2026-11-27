@@ -89,6 +89,25 @@ class TeamExpenseServiceImplTest {
     }
 
     @Test
+    void summary_reimbursedCountsTheClaimedTotal_andSplitsAdvanceFromCash() {
+        when(employeeCacheRepository.findByManagerEmployeeId(MANAGER)).thenReturn(List.of(member("5100021", "Nia", "K")));
+        ExpenseReport offset = report("5100021", ReportStatus.APPROVED, "2089.50");
+        offset.setPaymentRoutingStatus(PaymentRoutingStatus.PAYMENT_COMPLETED);
+        offset.setReimbursableAmount(new BigDecimal("89.50"));
+        offset.setPaidAmount(new BigDecimal("89.50"));
+        when(expenseReportRepository.findByEmployeeIdInAndReportStatusNot(any(), eq(ReportStatus.DRAFT))).thenReturn(List.of(
+                offset, report("5100021", ReportStatus.APPROVED, "500")));
+
+        var summary = service.getSummary();
+
+        assertThat(summary.reimbursedAmount()).isEqualByComparingTo("2089.50");
+        assertThat(summary.paidAmount()).isEqualByComparingTo("89.50");
+        assertThat(summary.advanceCoveredAmount()).isEqualByComparingTo("2000");
+        assertThat(summary.inProgressAmount().add(summary.approvedAmount()).add(summary.reimbursedAmount()))
+                .isEqualByComparingTo(summary.claimedAmount());
+    }
+
+    @Test
     void summary_withNoDirectReports_skipsTheReportQuery() {
         when(employeeCacheRepository.findByManagerEmployeeId(MANAGER)).thenReturn(List.of());
 

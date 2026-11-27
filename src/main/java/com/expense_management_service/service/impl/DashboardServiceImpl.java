@@ -139,6 +139,8 @@ public class DashboardServiceImpl implements DashboardService {
                 .toList();
         BigDecimal caRequested = BigDecimal.ZERO;
         BigDecimal caApproved = BigDecimal.ZERO;
+        // Reduced by the approvers, on approved advances only: cash asked for less cash approved.
+        BigDecimal caCut = BigDecimal.ZERO;
         BigDecimal caDisbursed = BigDecimal.ZERO;
         BigDecimal caSettled = BigDecimal.ZERO;
         List<com.expense_management_service.entity.CashAdvance> disbursedAdvances = new java.util.ArrayList<>();
@@ -147,7 +149,12 @@ public class DashboardServiceImpl implements DashboardService {
             caRequested = caRequested.add(requested);
             boolean approved = a.getApprovedAmount() != null || a.getDisbursedAt() != null || "APPROVED".equalsIgnoreCase(a.getStatus());
             if (approved) {
-                caApproved = caApproved.add(a.getApprovedAmount() != null ? a.getApprovedAmount() : nz(a.getAmount()));
+                // Cash approved: the approved amount includes any balance carried in, which is not newly approved money.
+                // Every page reads Requested -> Cut off -> Approved -> Disbursed in cash, with Carried in shown apart.
+                BigDecimal approvedTotal = a.getApprovedAmount() != null ? a.getApprovedAmount() : nz(a.getAmount());
+                BigDecimal approvedCash = approvedTotal.subtract(CashAdvanceBalanceRules.carriedIn(a)).max(BigDecimal.ZERO);
+                caApproved = caApproved.add(approvedCash);
+                caCut = caCut.add(requested.subtract(approvedCash).max(BigDecimal.ZERO));
             }
             if (a.getDisbursedAt() != null) {
                 disbursedAdvances.add(a);
@@ -163,6 +170,9 @@ public class DashboardServiceImpl implements DashboardService {
         BigDecimal caUsedOnBills = BigDecimal.ZERO;
         BigDecimal caReturned = BigDecimal.ZERO;
         BigDecimal caCarriedForward = BigDecimal.ZERO;
+        // Balance carried in from an earlier advance: held by the employee but not cash paid out (disbursed = amount -
+        // carried in). The ledger reads Received + Carried in = Used + Returned + Carried forward + Still to settle.
+        BigDecimal caCarriedIn = BigDecimal.ZERO;
         int recordMismatches = 0;
         for (com.expense_management_service.entity.CashAdvance a : disbursedAdvances) {
             CashAdvanceBalanceCalculator.Parts p = partsByAdvance.get(a.getAdvanceId());
@@ -172,10 +182,13 @@ public class DashboardServiceImpl implements DashboardService {
             caReturned = caReturned.add(nz(p.repaid()));
             caCarriedForward = caCarriedForward.add(nz(p.carriedOut()));
             BigDecimal disbursed = a.getDisbursedAmount() != null ? a.getDisbursedAmount() : nz(a.getAmount());
-            if (disbursed.compareTo(nz(a.getAmount())) != 0) recordMismatches++;
+            BigDecimal carriedIn = CashAdvanceBalanceRules.carriedIn(a);
+            caCarriedIn = caCarriedIn.add(carriedIn);
+            // A carry-in is not a mismatch: cash paid out + carried in should equal the advance amount.
+            if (disbursed.add(carriedIn).compareTo(nz(a.getAmount())) != 0) recordMismatches++;
         }
         caSettled = caUsedOnBills.add(caReturned).add(caCarriedForward);
-        BigDecimal caRecordGap = caDisbursed.subtract(caSettled).subtract(caOutstanding);
+        BigDecimal caRecordGap = caDisbursed.add(caCarriedIn).subtract(caSettled).subtract(caOutstanding);
 
         // ---- Expense reimbursement, split into the two flows the system has:
         //   direct  = reports not linked to a cash advance: approved -> paid to the bank by AP
@@ -238,7 +251,9 @@ public class DashboardServiceImpl implements DashboardService {
         // Flow figures for the employee dashboard: each step reads the one before it (see the dashboard's flow rows).
         kpis.add(new Kpi("caRequested", "Requested", caRequested, "money", myAdvances.size() + " advance(s)", "indigo"));
         kpis.add(new Kpi("caApproved", "Approved", caApproved, "money", "Amount your manager and Finance approved", "blue"));
+        kpis.add(new Kpi("caCut", "Cut off", caCut, "money", "Reduced by the approvers", caCut.signum() > 0 ? "rose" : "gray"));
         kpis.add(new Kpi("caDisbursed", "Received", caDisbursed, "money", disbursedAdvances.size() + " advance(s) paid to you", "blue"));
+        kpis.add(new Kpi("caCarriedIn", "Carried in", caCarriedIn, "money", "Balance moved in from your earlier advances", "gray"));
         kpis.add(new Kpi("caSettled", "Settled", caSettled, "money", "Used on bills + returned + carried forward", "emerald"));
         kpis.add(new Kpi("caUsedOnBills", "Used on bills", caUsedOnBills, "money", "Approved expenses paid from your advance", "emerald"));
         kpis.add(new Kpi("caReturned", "Returned by you", caReturned, "money", "Cash you paid back", "emerald"));

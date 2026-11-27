@@ -97,6 +97,8 @@ public class TeamExpenseServiceImpl implements TeamExpenseService {
                 total(rows, Member::inProgressAmount),
                 total(rows, Member::approvedAmount),
                 total(rows, Member::reimbursedAmount),
+                total(rows, Member::paidAmount),
+                total(rows, Member::advanceCoveredAmount),
                 rows);
     }
 
@@ -110,7 +112,10 @@ public class TeamExpenseServiceImpl implements TeamExpenseService {
         return new Member(who.employeeId(), who.name(), who.email(), member.getEmploymentStatus(),
                 reports.size(), inProgress.size(),
                 reports.stream().filter(r -> r.getReportStatus() == ReportStatus.REJECTED).count(),
-                sum(claimed), sum(inProgress), sum(approved), sumPaid(reimbursed),
+                // Reimbursed counts the claimed total, like the other stages, so the stages add up to Claimed. What AP
+                // paid in cash and what a cash advance already covered are reported alongside it.
+                sum(claimed), sum(inProgress), sum(approved), sum(reimbursed), sumPaid(reimbursed),
+                sum(reimbursed).subtract(sumPaid(reimbursed)).max(BigDecimal.ZERO),
                 reports.stream().map(ExpenseReport::getSubmittedAt).filter(Objects::nonNull)
                         .max(Comparator.naturalOrder()).orElse(null));
     }

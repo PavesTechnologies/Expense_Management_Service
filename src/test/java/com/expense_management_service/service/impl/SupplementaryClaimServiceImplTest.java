@@ -724,6 +724,37 @@ class SupplementaryClaimServiceImplTest {
     }
 
     @Test
+    void setOffIsCappedAtTheCarriedAmount_evenWhenTheNextAdvanceHoldsMore_restIsPaidByAp() {
+        // 1,500 carried in, but Advance 2 holds 3,500 (2,000 of its own cash for its own trip).
+        Carried c = carriedForward("IN_PROGRESS", "3500");
+        SupplementaryExpenseClaim claim = lateBill(c.report(), "2000");
+
+        SupplementaryClaimResponse response = service.financeReview(claim.getClaimId(), Decision.APPROVE, null);
+
+        assertEquals(SupplementaryExpenseClaim.PAYMENT_PENDING, response.status());
+        assertEquals(0, new BigDecimal("1500").compareTo(response.advanceOffsetAmount()));
+        verify(paymentService).requestPayment(any(SupplementaryExpenseClaim.class), eq(new BigDecimal("500")));
+        // Advance 2 keeps its own 2,000: 3,500 held less the 1,500 carried amount.
+        verify(cashAdvanceBalanceLedger).applyBalance(eq(c.destination()), eq(new BigDecimal("2000")), eq("SUPPLEMENTARY_CLAIM_OFFSET"), any(), any());
+    }
+
+    @Test
+    void anEarlierClaimFromTheSameAdvanceUsesUpPartOfTheCarriedAmount() {
+        Carried c = carriedForward("IN_PROGRESS", "2500");
+        SupplementaryExpenseClaim earlier = claim(SupplementaryExpenseClaim.SETTLED, c.report());
+        earlier.setSettledAdvanceId(c.destination().getAdvanceId());
+        earlier.setAdvanceOffsetAmount(new BigDecimal("1000"));
+        when(claimRepository.findBySettledAdvanceId(c.destination().getAdvanceId())).thenReturn(List.of(earlier));
+        SupplementaryExpenseClaim claim = lateBill(c.report(), "800");
+
+        SupplementaryClaimResponse response = service.financeReview(claim.getClaimId(), Decision.APPROVE, null);
+
+        // 1,500 carried − 1,000 already used = 500 set against the advance; 300 paid by AP.
+        assertEquals(0, new BigDecimal("500").compareTo(response.advanceOffsetAmount()));
+        verify(paymentService).requestPayment(any(SupplementaryExpenseClaim.class), eq(new BigDecimal("300")));
+    }
+
+    @Test
     void lateBillWhenTheNextAdvanceIsClosed_isPaidInFullByAp() {
         Carried c = carriedForward("CLOSED", "0");
         when(carryForwardRepository.findBySourceAdvance_AdvanceIdAndStatusIn(eq(c.destination().getAdvanceId()), anyCollection()))

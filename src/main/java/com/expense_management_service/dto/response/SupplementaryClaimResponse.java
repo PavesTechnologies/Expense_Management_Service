@@ -33,6 +33,8 @@ public record SupplementaryClaimResponse(
         /** Set against this cash advance (carried-forward balance), and how much; the rest is paid by AP. */
         UUID settledAdvanceId,
         BigDecimal advanceOffsetAmount,
+        /** The original report's cost center, which the claim's expenses are charged to. */
+        String costCenterName,
         List<SupplementaryClaimItemResponse> items,
         List<SupplementaryClaimHistoryResponse> history
 ) {

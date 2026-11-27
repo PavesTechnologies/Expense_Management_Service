@@ -89,6 +89,15 @@ public class SupplementaryPaymentServiceImpl implements SupplementaryPaymentServ
     }
 
     @Override
+    public List<SupplementaryPaymentResponse> paid() {
+        return paymentRepository.findByStatusOrderByRequestedAtAsc(SupplementaryPayment.PAID).stream()
+                .map(this::toResponse)
+                .sorted(java.util.Comparator.comparing(SupplementaryPaymentResponse::paidAt,
+                        java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())))
+                .toList();
+    }
+
+    @Override
     public SupplementaryPaymentResponse confirm(UUID paymentId, SupplementaryPaymentConfirmRequest request) {
         SupplementaryPayment payment = paymentRepository.findByIdForUpdate(paymentId)
                 .orElseThrow(() -> new ResourceNotFoundException("Supplementary payment not found."));

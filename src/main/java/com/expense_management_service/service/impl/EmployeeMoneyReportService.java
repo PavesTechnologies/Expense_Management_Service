@@ -414,13 +414,13 @@ public class EmployeeMoneyReportService {
             if (a.getDisbursedAt() == null) {
                 if (PENDING_ADVANCE.contains(status)) pendingApproval = pendingApproval.add(req);
                 else {
-                    BigDecimal appr = base(a.getApprovedAmount() != null ? a.getApprovedAmount() : a.getAmount(), rate);
+                    BigDecimal appr = base(cashApproved(a), rate);
                     approved = approved.add(appr);
                     approvedNotPaid = approvedNotPaid.add(appr);
                 }
                 return;
             }
-            approved = approved.add(base(a.getApprovedAmount() != null ? a.getApprovedAmount() : a.getAmount(), rate));
+            approved = approved.add(base(cashApproved(a), rate));
             paidOut = paidOut.add(base(a.getDisbursedAmount() != null ? a.getDisbursedAmount() : a.getAmount(), rate));
             carriedIn = carriedIn.add(base(CashAdvanceBalanceRules.carriedIn(a), rate));
             carriedOut = carriedOut.add(base(CashAdvanceBalanceRules.carriedOut(a), rate));
@@ -436,6 +436,13 @@ public class EmployeeMoneyReportService {
         /** What was paid out on the advance, in the base currency. */
         BigDecimal paidOutBase(CashAdvance a) {
             return base(a.getDisbursedAmount() != null ? a.getDisbursedAmount() : a.getAmount(), rate(a));
+        }
+
+        /** Cash approved: the approved amount less any balance carried in (the same rule on every page). */
+        private static BigDecimal cashApproved(CashAdvance a) {
+            BigDecimal total = a.getApprovedAmount() != null ? a.getApprovedAmount() : a.getAmount();
+            if (total == null) return BigDecimal.ZERO;
+            return total.subtract(CashAdvanceBalanceRules.carriedIn(a)).max(BigDecimal.ZERO);
         }
 
         /**

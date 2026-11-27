@@ -22,6 +22,9 @@ public interface SupplementaryPaymentService {
     /** Requests waiting for AP, oldest first. */
     List<SupplementaryPaymentResponse> queue();
 
+    /** Payments AP has confirmed, newest first. */
+    List<SupplementaryPaymentResponse> paid();
+
     /** Confirms a payment. Marks the request PAID and the claim SETTLED, once and only once. */
     SupplementaryPaymentResponse confirm(UUID paymentId, SupplementaryPaymentConfirmRequest request);
 

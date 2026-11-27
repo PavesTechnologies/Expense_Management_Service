@@ -31,6 +31,12 @@ public class ApSupplementaryPaymentController {
         return ApiResponse.success(service.queue());
     }
 
+    /** Supplementary payments AP has already made, so the AP Payments page can list them with the paid reports. */
+    @GetMapping("/paid")
+    public ApiResponse<List<SupplementaryPaymentResponse>> paid() {
+        return ApiResponse.success(service.paid());
+    }
+
     @PostMapping("/{paymentId}/confirm")
     public ApiResponse<SupplementaryPaymentResponse> confirm(@PathVariable UUID paymentId,
                                                              @Valid @RequestBody SupplementaryPaymentConfirmRequest request) {

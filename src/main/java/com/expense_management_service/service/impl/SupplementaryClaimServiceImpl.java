@@ -213,8 +213,15 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
     private static final Set<String> ADVANCE_DONE = Set.of("CLOSED", "SETTLED", "CANCELLED", "REJECTED");
     private static final int MAX_CARRY_HOPS = 5;
 
-    /** The open advance that holds the original advance's carried balance, and what it still holds. */
-    record AdvanceTarget(CashAdvance advance, BigDecimal remaining) {
+    /**
+     * The open advance that holds the original advance's carried balance. {@code remaining} is what a late bill may be
+     * set against: the carried-forward amount (less what earlier claims from the same original advance already used),
+     * never more than the advance still holds. {@code holds} is the advance's whole outstanding balance.
+     */
+    record AdvanceTarget(CashAdvance advance, BigDecimal remaining, BigDecimal holds) {
+        AdvanceTarget(CashAdvance advance, BigDecimal remaining) {
+            this(advance, remaining, remaining);
+        }
     }
 
     /**
@@ -230,12 +237,12 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
         CashAdvance current = original;
         Set<UUID> seen = new java.util.HashSet<>();
         for (int hop = 0; hop < MAX_CARRY_HOPS && current != null && seen.add(current.getAdvanceId()); hop++) {
-            CashAdvance next = carryForwardRepository
+            CashAdvanceCarryForward carry = carryForwardRepository
                     .findBySourceAdvance_AdvanceIdAndStatusIn(current.getAdvanceId(), Set.of(CashAdvanceCarryForward.APPLIED))
                     .stream()
                     .max(Comparator.comparing(cf -> cf.getAppliedAt() == null ? LocalDateTime.MIN : cf.getAppliedAt()))
-                    .map(CashAdvanceCarryForward::getDestinationAdvance)
                     .orElse(null);
+            CashAdvance next = carry == null ? null : carry.getDestinationAdvance();
             if (next == null) {
                 return null;
             }
@@ -245,15 +252,30 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
                     return null;
                 }
                 BigDecimal owed = balanceCalculator.rawOutstandingFor(List.of(next)).getOrDefault(next.getAdvanceId(), BigDecimal.ZERO);
-                return new AdvanceTarget(next, owed == null ? BigDecimal.ZERO : owed.max(BigDecimal.ZERO));
+                BigDecimal holds = owed == null ? BigDecimal.ZERO : owed.max(BigDecimal.ZERO);
+                // Only the balance carried from the original advance's chain pays for its late bills; the new advance's own
+                // cash is for its own trip. What earlier claims from the same original advance used is taken off.
+                BigDecimal carried = carry.getAmount() == null ? BigDecimal.ZERO : carry.getAmount();
+                BigDecimal available = carried.subtract(alreadySetAgainst(next, original)).max(BigDecimal.ZERO).min(holds);
+                return new AdvanceTarget(next, available, holds);
             }
             current = next;
         }
         return null;
     }
 
+    /** What earlier claims from the same original advance already set against {@code target}. */
+    private BigDecimal alreadySetAgainst(CashAdvance target, CashAdvance original) {
+        return claimRepository.findBySettledAdvanceId(target.getAdvanceId()).stream()
+                .filter(c -> c.getOriginal() != null && c.getOriginal().getCashAdvance() != null
+                        && original.getAdvanceId().equals(c.getOriginal().getCashAdvance().getAdvanceId()))
+                .map(SupplementaryExpenseClaim::getAdvanceOffsetAmount)
+                .filter(java.util.Objects::nonNull)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
     /**
-     * On Finance approval: up to what the target advance still holds is set against it (an offset linked to the original
+     * On Finance approval: up to the carried-forward amount (see {@link #settlementTarget}) is set against it (an offset linked to the original
      * report, marked as a supplementary claim offset, so the report's own figures do not change); the rest goes to AP.
      * When everything is set against the advance, the claim is settled at once and no payment is requested.
      */
@@ -296,7 +318,7 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
                     .idempotencyKey("supp-offset-" + claim.getClaimId())
                     .build());
         }
-        BigDecimal remainingAfter = target.remaining().subtract(offset).max(BigDecimal.ZERO);
+        BigDecimal remainingAfter = target.holds().subtract(offset).max(BigDecimal.ZERO);
         cashAdvanceBalanceLedger.applyBalance(advance, remainingAfter, "SUPPLEMENTARY_CLAIM_OFFSET", actor,
                 "Late bill " + claim.getClaimNumber() + " (report " + report.getReportNumber() + ") set against this advance for " + offset);
         cashAdvanceBalanceLedger.refreshStatus(advance, actor, "Rechecked after supplementary claim " + claim.getClaimNumber());
@@ -1035,6 +1057,7 @@ public class SupplementaryClaimServiceImpl implements SupplementaryClaimService 
                 claim.getSubmittedAt(), claim.getSettledAt(), claim.getCreatedAt(),
                 paymentService.paymentStatusOf(claim.getClaimId()), paymentService.paymentReferenceOf(claim.getClaimId()),
                 claim.getSettledAdvanceId(), claim.getAdvanceOffsetAmount(),
+                report.getCostCenter() == null ? null : report.getCostCenter().getCostCenterName(),
                 items, history);
     }
 }

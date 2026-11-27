@@ -23,6 +23,9 @@ public interface SupplementaryExpenseClaimRepository extends JpaRepository<Suppl
 
     List<SupplementaryExpenseClaim> findByEmployeeIdOrderByCreatedAtDesc(String employeeId);
 
+    /** Claims already set (in part) against this advance's carried-forward balance. */
+    List<SupplementaryExpenseClaim> findBySettledAdvanceId(UUID settledAdvanceId);
+
     List<SupplementaryExpenseClaim> findByStatusInOrderBySubmittedAtAsc(Collection<String> statuses);
 
     boolean existsByOriginal_ReportIdAndStatusIn(UUID reportId, Collection<String> statuses);
